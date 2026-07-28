@@ -1,0 +1,49 @@
+/*
+ * Batch 1 UI primitives.
+ * Every rule is rooted in an owning surface so component styles cannot leak
+ * into the start screen, game shell, or unrelated dialogs.
+ */
+
+.system-modal .ui-modal-header {
+  min-width: 0;
+}
+
+.system-modal .ui-list-detail {
+  min-width: 0;
+}
+
+.system-modal .ui-metric-grid {
+  min-width: 0;
+}
+
+.system-modal .ui-panel-note {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-left: 2px solid rgba(184, 138, 42, 0.6);
+  background: rgba(184, 138, 42, 0.07);
+  color: var(--color-text-subtle);
+  line-height: 1.6;
+}
+
+.system-modal .ui-panel-empty {
+  display: grid;
+  min-height: 7rem;
+  place-items: center;
+  padding: var(--space-6);
+  border: 1px dashed rgba(184, 138, 42, 0.28);
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.system-modal .ui-panel-close {
+  transition:
+    border-color var(--duration-normal) var(--ease-standard),
+    color var(--duration-normal) var(--ease-standard),
+    background-color var(--duration-normal) var(--ease-standard);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .system-modal .ui-panel-close {
+    transition: none;
+  }
+}

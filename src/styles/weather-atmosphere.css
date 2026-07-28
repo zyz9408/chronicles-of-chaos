@@ -1,0 +1,258 @@
+/* Desktop status-bar weather projection. Visual only; never intercepts input. */
+.game-topbar > :not(.desktop-weather-atmosphere) {
+  position: relative;
+  z-index: 2;
+}
+
+.desktop-weather-atmosphere {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: paint;
+}
+
+.desktop-weather-tone,
+.desktop-weather-field {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.desktop-weather-tone {
+  opacity: 0.72;
+}
+
+.desktop-weather-particle {
+  position: absolute;
+  left: var(--weather-x);
+  display: block;
+  pointer-events: none;
+  will-change: opacity, transform;
+}
+
+/* AVG-style sunlight: bloom, diagonal shafts, lens dust. */
+.desktop-weather-atmosphere--sunny.desktop-weather-atmosphere--day {
+  background:
+    radial-gradient(ellipse 360px 120px at 24% -38px, rgba(255, 244, 202, 0.31), rgba(222, 165, 69, 0.08) 50%, transparent 76%),
+    linear-gradient(104deg, rgba(192, 137, 52, 0.08), transparent 58%);
+}
+
+.desktop-weather-atmosphere--sunny.desktop-weather-atmosphere--day::before {
+  position: absolute;
+  inset: -42px -5%;
+  background:
+    linear-gradient(108deg, transparent 22%, rgba(255, 226, 150, 0.13) 32%, rgba(255, 242, 199, 0.27) 37%, transparent 49%),
+    linear-gradient(116deg, transparent 36%, rgba(248, 205, 118, 0.14) 42%, transparent 55%),
+    linear-gradient(101deg, transparent 44%, rgba(255, 240, 197, 0.1) 49%, transparent 61%);
+  animation: desktop-weather-sunlight-drift 10s ease-in-out infinite alternate;
+  content: '';
+  filter: blur(5px);
+  transform-origin: 24% 0;
+}
+
+.desktop-weather-atmosphere--sunny.desktop-weather-atmosphere--day::after {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 37% 31%, rgba(255, 245, 207, 0.64) 0 1px, transparent 2px),
+    radial-gradient(circle at 48% 74%, rgba(255, 222, 147, 0.42) 0 1px, transparent 2px),
+    radial-gradient(circle at 60% 27%, rgba(255, 241, 194, 0.5) 0 1px, transparent 2px),
+    radial-gradient(circle at 73% 68%, rgba(255, 218, 136, 0.34) 0 1px, transparent 2px);
+  animation: desktop-weather-sun-dust 8s ease-in-out infinite alternate;
+  content: '';
+}
+
+.desktop-weather-celestial {
+  position: absolute;
+  top: -76px;
+  left: 14%;
+  width: 340px;
+  height: 170px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse, rgba(255, 250, 222, 0.76), rgba(247, 209, 126, 0.2) 29%, rgba(216, 153, 54, 0.06) 50%, transparent 73%);
+  animation: desktop-weather-celestial-bloom 7s ease-in-out infinite alternate;
+  filter: blur(2px);
+}
+
+.desktop-weather-atmosphere--night {
+  background:
+    radial-gradient(circle at 70% -15%, rgba(134, 178, 202, 0.24), transparent 36%),
+    linear-gradient(100deg, rgba(18, 33, 51, 0.32), transparent 58%);
+}
+
+.desktop-weather-atmosphere--night .desktop-weather-celestial {
+  top: -18px;
+  left: 68%;
+  width: 66px;
+  height: 66px;
+  background: radial-gradient(circle, rgba(202, 225, 232, 0.32), transparent 68%);
+}
+
+.desktop-weather-atmosphere--night .desktop-weather-celestial::before {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 34% 35%, rgba(148, 172, 180, 0.36) 0 7%, transparent 8%),
+    radial-gradient(circle at 64% 62%, rgba(136, 160, 170, 0.28) 0 11%, transparent 12%),
+    radial-gradient(circle at 72% 28%, rgba(152, 178, 186, 0.24) 0 5%, transparent 6%),
+    #dce9eb;
+  box-shadow:
+    0 0 12px rgba(205, 231, 239, 0.72),
+    0 0 25px rgba(148, 191, 211, 0.4);
+  content: '';
+}
+
+.desktop-weather-atmosphere--night .desktop-weather-celestial::after {
+  position: absolute;
+  top: 21px;
+  left: 22px;
+  width: 23px;
+  height: 23px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  content: '';
+}
+
+.desktop-weather-atmosphere--cloudy .desktop-weather-tone {
+  background: linear-gradient(105deg, rgba(86, 104, 114, 0.2), transparent 48%, rgba(118, 130, 136, 0.13));
+}
+
+.desktop-weather-particle--cloud {
+  top: calc(var(--weather-y) * 0.28);
+  width: var(--weather-size);
+  height: 42px;
+  border-radius: 50%;
+  background:
+    radial-gradient(ellipse at 27% 60%, rgba(167, 182, 188, 0.25) 0 30%, transparent 62%),
+    radial-gradient(ellipse at 54% 42%, rgba(174, 187, 192, 0.27) 0 34%, transparent 66%),
+    radial-gradient(ellipse at 78% 62%, rgba(151, 169, 176, 0.22) 0 30%, transparent 64%);
+  animation: desktop-weather-cloud-drift var(--weather-duration) linear var(--weather-delay) infinite;
+  filter: blur(6px);
+  opacity: 0.74;
+}
+
+.desktop-weather-atmosphere--rain .desktop-weather-tone {
+  background: linear-gradient(105deg, rgba(54, 82, 100, 0.2), rgba(24, 45, 62, 0.08) 55%, transparent);
+}
+
+.desktop-weather-particle--rain {
+  top: -24px;
+  width: 1px;
+  height: var(--weather-size);
+  background: linear-gradient(to bottom, transparent, rgba(164, 211, 229, 0.9));
+  animation: desktop-weather-rain-fall var(--weather-duration) linear var(--weather-delay) infinite;
+  opacity: 0.7;
+  transform: rotate(13deg);
+}
+
+.desktop-weather-atmosphere--snow .desktop-weather-tone {
+  background: linear-gradient(100deg, rgba(190, 208, 216, 0.16), transparent 64%);
+}
+
+.desktop-weather-particle--snow {
+  top: -8px;
+  width: var(--weather-size);
+  height: var(--weather-size);
+  border-radius: 50%;
+  background: rgba(235, 245, 247, 0.88);
+  box-shadow: 0 0 4px rgba(210, 235, 240, 0.58);
+  animation: desktop-weather-snow-fall var(--weather-duration) linear var(--weather-delay) infinite;
+}
+
+.desktop-weather-atmosphere--fog .desktop-weather-tone {
+  background: linear-gradient(90deg, rgba(180, 195, 199, 0.1), rgba(180, 195, 199, 0.2), transparent 76%);
+}
+
+.desktop-weather-particle--fog {
+  top: calc(var(--weather-y) * 0.58);
+  width: var(--weather-size);
+  height: 18px;
+  background: linear-gradient(90deg, transparent, rgba(210, 220, 221, 0.44), transparent);
+  animation: desktop-weather-fog-drift var(--weather-duration) ease-in-out var(--weather-delay) infinite alternate;
+  filter: blur(4px);
+}
+
+.desktop-weather-atmosphere--haze .desktop-weather-tone {
+  background:
+    radial-gradient(ellipse at 18% 45%, rgba(171, 128, 76, 0.19), transparent 42%),
+    linear-gradient(90deg, rgba(122, 103, 79, 0.17), rgba(89, 82, 75, 0.09), transparent);
+}
+
+.desktop-weather-particle--haze {
+  top: var(--weather-y);
+  width: var(--weather-size);
+  height: var(--weather-size);
+  border-radius: 50%;
+  background: rgba(214, 178, 119, 0.58);
+  animation: desktop-weather-haze-drift var(--weather-duration) ease-in-out var(--weather-delay) infinite alternate;
+  box-shadow: 18px 4px 0 rgba(171, 145, 104, 0.22);
+}
+
+@keyframes desktop-weather-sunlight-drift {
+  from { opacity: 0.5; transform: translate3d(-1.2%, -1px, 0) rotate(-0.7deg); }
+  to { opacity: 0.82; transform: translate3d(1.4%, 1px, 0) rotate(0.8deg); }
+}
+
+@keyframes desktop-weather-sun-dust {
+  from { opacity: 0.28; transform: translate3d(-4px, 2px, 0); }
+  to { opacity: 0.58; transform: translate3d(8px, -3px, 0); }
+}
+
+@keyframes desktop-weather-celestial-bloom {
+  from { opacity: 0.74; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1.04); }
+}
+
+@keyframes desktop-weather-cloud-drift {
+  from { transform: translate3d(-190px, 0, 0); }
+  to { transform: translate3d(170px, 0, 0); }
+}
+
+@keyframes desktop-weather-rain-fall {
+  from { transform: translate3d(14px, -18px, 0) rotate(13deg); }
+  to { transform: translate3d(-16px, 105px, 0) rotate(13deg); }
+}
+
+@keyframes desktop-weather-snow-fall {
+  from { opacity: 0; transform: translate3d(0, -8px, 0); }
+  18% { opacity: 0.88; }
+  to { opacity: 0; transform: translate3d(18px, 84px, 0); }
+}
+
+@keyframes desktop-weather-fog-drift {
+  from { opacity: 0.32; transform: translate3d(-150px, 0, 0); }
+  to { opacity: 0.62; transform: translate3d(120px, 0, 0); }
+}
+
+@keyframes desktop-weather-haze-drift {
+  from { opacity: 0.22; transform: translate3d(-22px, 4px, 0); }
+  to { opacity: 0.58; transform: translate3d(35px, -3px, 0); }
+}
+
+@media (max-width: 760px) {
+  .desktop-weather-atmosphere {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desktop-weather-atmosphere::before,
+  .desktop-weather-atmosphere::after,
+  .desktop-weather-atmosphere *,
+  .desktop-weather-atmosphere *::before,
+  .desktop-weather-atmosphere *::after {
+    animation: none !important;
+  }
+
+  .desktop-weather-field--rain,
+  .desktop-weather-field--snow,
+  .desktop-weather-field--haze {
+    display: none;
+  }
+}

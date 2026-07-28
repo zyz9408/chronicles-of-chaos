@@ -1,0 +1,834 @@
+/* Task 5.3: explicit narrow-screen regions without changing the desktop three-column layout. */
+.mobile-region-switcher {
+  display: none;
+}
+
+/* 宽屏阅读密度：把空间优先交给正文，窄屏与移动端保持原布局。 */
+@media (min-width: 1281px) {
+  .game-body {
+    grid-template-columns:
+      clamp(228px, 13vw, 250px)
+      minmax(0, 1fr)
+      clamp(190px, 10.75vw, 220px);
+  }
+
+  .narrative-scroll {
+    padding: 0.8rem 1rem 0.5rem;
+  }
+
+  .narrative-stream-box {
+    margin-bottom: 0.5rem;
+    padding: 0.8rem 0.75rem 0.55rem;
+  }
+
+  .narrative-turn:last-child {
+    padding-bottom: 0.25rem;
+  }
+}
+
+@media (max-width: 760px) {
+  .start-shell.game-shell {
+    width: 100%;
+    max-width: 100vw;
+    height: 100dvh;
+    min-height: 100dvh;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .start-shell.game-screen-shell {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .game-screen-shell .game-frame {
+    height: 100%;
+    min-height: 0;
+  }
+
+  .game-topbar {
+    display: grid;
+    grid-template-areas:
+      "back time export"
+      "place place place";
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 0.15rem 0.45rem;
+    min-height: 0;
+    padding: max(0.3rem, env(safe-area-inset-top)) 0.5rem 0.3rem;
+  }
+
+  .gtb-left {
+    display: contents;
+    min-width: 0;
+  }
+
+  .gtb-right {
+    grid-area: export;
+  }
+
+  .gtb-center {
+    display: contents;
+  }
+
+  .gtb-back-btn {
+    grid-area: back;
+    padding: 0.2rem 0.45rem;
+    font-size: 0.74rem;
+  }
+
+  .gtb-export-btn {
+    padding: 0.18rem 0.4rem;
+    font-size: 0.72rem;
+  }
+
+  .gtb-story-export-btn {
+    display: none;
+  }
+
+  .gtb-title {
+    display: none;
+  }
+
+  .gtb-weather-row,
+  .gtb-tag {
+    display: none;
+  }
+
+  .gtb-time-row {
+    grid-area: time;
+    align-self: center;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 0.72rem;
+    line-height: 1.15;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .gtb-time-full {
+    display: none;
+  }
+
+  .gtb-time-mobile {
+    display: inline;
+  }
+
+  .gtb-place-row {
+    grid-area: place;
+    justify-content: center;
+    width: 100%;
+    min-width: 0;
+    font-size: 0.7rem;
+    line-height: 1.15;
+  }
+
+  .gtb-weather-icon {
+    display: inline-grid;
+    place-items: center;
+    width: 1rem;
+    height: 1rem;
+    font-size: 0.78rem;
+  }
+
+  .gtb-place-label {
+    max-width: calc(100% - 2rem);
+    overflow: hidden;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-region-switcher {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    flex-shrink: 0;
+    padding: 0.2rem 0.5rem;
+    border-bottom: 1px solid rgba(184, 138, 42, 0.24);
+    background: rgba(7, 9, 13, 0.98);
+  }
+
+  .mobile-region-switcher button {
+    min-width: 0;
+    min-height: 2rem;
+    border: 1px solid rgba(184, 138, 42, 0.32);
+    background: rgba(0, 0, 0, 0.16);
+    color: var(--text-secondary);
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .mobile-region-switcher button + button {
+    border-left: 0;
+  }
+
+  .mobile-region-switcher button.active {
+    border-color: #f2d66f;
+    background: rgba(184, 138, 42, 0.16);
+    color: #f2d66f;
+  }
+
+  .game-body {
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .game-body > .game-panel-left,
+  .game-body > .game-panel-center,
+  .game-body > .game-panel-right {
+    display: none;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .game-panel-left[data-mobile-active="true"] {
+    display: block;
+  }
+
+  .game-panel-center[data-mobile-active="true"],
+  .game-panel-right[data-mobile-active="true"] {
+    display: flex;
+  }
+
+  .narrative-scroll {
+    padding: 0.5rem;
+    scrollbar-gutter: auto;
+  }
+
+  .game-input-footer {
+    padding: 0.4rem 0.5rem max(0.45rem, env(safe-area-inset-bottom));
+  }
+
+  .action-option-row {
+    gap: 0.35rem;
+    margin-bottom: 0.4rem;
+  }
+
+  .suggested-actions {
+    min-height: 2.1rem;
+  }
+
+  .persistent-prompt-trigger {
+    display: none;
+  }
+
+  .mobile-action-tools {
+    position: relative;
+    display: block;
+    flex: 0 0 auto;
+  }
+
+  .mobile-action-tools-trigger {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 2.2rem;
+    height: 2.1rem;
+    border: 1px solid rgba(184, 138, 42, 0.5);
+    border-radius: 3px;
+    background: rgba(14, 12, 8, 0.92);
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 1.15rem;
+    line-height: 1;
+  }
+
+  .mobile-action-tools-trigger span {
+    position: absolute;
+    top: -0.3rem;
+    right: -0.25rem;
+    min-width: 1rem;
+    height: 1rem;
+    background: rgba(5, 7, 10, 0.98);
+    font-size: 0.58rem;
+  }
+
+  .mobile-action-tools-menu {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 0.35rem);
+    z-index: 12;
+    width: min(13rem, calc(100vw - 1rem));
+    border: 1px solid rgba(184, 138, 42, 0.62);
+    background: rgba(7, 9, 13, 0.98);
+    box-shadow: 0 0.8rem 2rem rgba(0, 0, 0, 0.5);
+    padding: 0.3rem;
+  }
+
+  .mobile-action-tools-menu button {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    width: 100%;
+    min-height: 2.3rem;
+    border: 1px solid rgba(184, 138, 42, 0.28);
+    background: rgba(18, 20, 24, 0.72);
+    color: var(--text-primary);
+    padding: 0.35rem 0.55rem;
+    font-family: inherit;
+    text-align: left;
+  }
+
+  .mobile-action-tools-menu small {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    white-space: nowrap;
+  }
+
+  .input-row {
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr) 78px;
+    gap: 0.4rem;
+    align-items: stretch;
+  }
+
+  .reroll-btn {
+    width: 36px;
+    min-height: 40px;
+  }
+
+  .input-row > textarea {
+    display: none;
+  }
+
+  .mobile-action-draft-trigger {
+    display: block;
+    justify-self: stretch;
+    width: 100%;
+    height: 40px;
+    min-width: 0;
+    min-height: 40px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 0.35rem 0.5rem;
+    color: var(--text-primary);
+    background: var(--bg-input);
+    font-family: inherit;
+    font-size: 0.76rem;
+    line-height: 1.35;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-action-draft-trigger > span {
+    color: var(--text-secondary);
+  }
+
+  .input-row .submit-btn {
+    grid-column: auto;
+    width: 100%;
+    min-width: 0;
+    min-height: 40px;
+    padding: 0.35rem 0.2rem;
+    font-size: 0.78rem;
+  }
+
+  .mobile-action-editor {
+    height: min(560px, calc(100dvh - 1rem));
+    padding: 0.75rem;
+  }
+
+  .system-menu-panel {
+    padding: 0.2rem 0;
+  }
+
+  .system-menu-buttons {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.3rem;
+    padding: 0.1rem;
+  }
+
+  .system-menu-button {
+    min-height: 2.15rem;
+    grid-template-columns: 18px minmax(0, 1fr);
+    border-width: 1px;
+    padding: 0.25rem 0.2rem;
+    font-size: 0.78rem;
+  }
+
+  .system-menu-spacer {
+    display: none;
+  }
+
+  .game-side-system-actions {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.3rem;
+    padding: 0.35rem 0.4rem;
+  }
+
+  .system-utility-button {
+    min-width: 0;
+    min-height: 2.15rem;
+    padding: 0.3rem 0.1rem;
+    font-size: 0.7rem;
+    letter-spacing: 0;
+  }
+
+  .game-bottombar {
+    min-height: 24px;
+    gap: 0.45rem;
+    padding: 0.15rem 0.55rem max(0.15rem, env(safe-area-inset-bottom));
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .game-bottombar .gbb-world,
+  .game-bottombar .gbb-opening,
+  .game-bottombar .gbb-sep {
+    display: none;
+  }
+
+  .game-bottombar .gbb-turn {
+    flex: 0 0 auto;
+    color: var(--accent);
+  }
+
+  .game-bottombar .gbb-quest,
+  .game-bottombar .gbb-rumor {
+    min-width: 0;
+    max-width: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    box-sizing: border-box;
+    padding: 0.5rem;
+    overflow: hidden;
+  }
+
+  .settings-modal,
+  .save-modal {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .settings-modal {
+    padding: 0.7rem;
+    border-radius: 4px;
+  }
+
+  .settings-modal::before {
+    inset: 5px;
+    border-radius: 2px;
+  }
+
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 0.65rem;
+  }
+
+  .settings-nav {
+    padding: 0 0 0.55rem;
+    border-right: 0;
+    border-bottom: 1px solid rgba(184, 138, 42, 0.2);
+  }
+
+  .settings-nav-main {
+    display: flex;
+    gap: 0.35rem;
+    overflow-x: auto;
+    padding-bottom: 0.45rem;
+  }
+
+  .settings-nav-main > h2 {
+    display: none;
+  }
+
+  .settings-nav-intro,
+  .settings-nav-section-label {
+    display: none;
+  }
+
+  .settings-nav-item,
+  .settings-nav-group-toggle,
+  .settings-nav-subitem {
+    flex: 0 0 auto;
+    width: auto;
+    margin-top: 0;
+    padding: 0.55rem 0.65rem;
+    white-space: nowrap;
+  }
+
+  .settings-nav-subitems {
+    display: contents;
+  }
+
+  .settings-nav-close {
+    width: 100%;
+    margin-top: 0;
+    padding: 0.55rem;
+  }
+
+  .settings-content {
+    padding: 0 0.15rem 0 0;
+    scrollbar-gutter: auto;
+  }
+
+  .game-settings-heading,
+  .settings-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .game-settings-subtitle {
+    max-width: none;
+    text-align: left;
+  }
+
+  .settings-heading-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .api-settings-grid,
+  .form-grid.two,
+  .form-grid.model-row,
+  .route-row,
+  .route-selectors {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .api-archive-list {
+    max-height: 12rem;
+  }
+
+  .editor-actions {
+    flex-wrap: wrap;
+  }
+
+  .save-modal-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 0.8rem;
+  }
+
+  .save-modal-title {
+    min-width: 0;
+  }
+
+  .save-modal-actions {
+    grid-column: 1 / -1;
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .gs-setting-row {
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+
+  .gs-setting-left {
+    width: 100%;
+    max-width: none;
+  }
+
+  .gs-setting-left input[type="number"],
+  .gs-setting-left select {
+    width: 100%;
+  }
+
+  .save-modal-actions-main,
+  .save-modal-danger-zone {
+    flex: 1 1 100%;
+  }
+
+  .save-modal-danger-zone {
+    padding: 0.4rem 0 0;
+    border-top: 1px solid rgba(139, 58, 58, 0.32);
+    border-left: 0;
+  }
+
+  .save-modal-actions .nav-btn {
+    flex: 1 1 8rem;
+  }
+
+  .save-modal-close {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .save-modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+    overflow-y: auto;
+    padding: 0.8rem;
+  }
+
+  .save-section {
+    flex: 0 0 auto;
+    overflow: visible;
+  }
+
+  .save-section-divider {
+    width: 100%;
+    height: 1px;
+    flex-shrink: 0;
+  }
+
+  .save-section-scroll {
+    max-height: 14rem;
+  }
+
+  .system-modal-backdrop {
+    inset: 0;
+    box-sizing: border-box;
+    padding: 0.5rem;
+  }
+
+  .system-modal {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: none;
+    max-height: calc(100dvh - 1rem);
+    padding: 0.55rem;
+  }
+
+  .system-modal.ui-system-workspace {
+    height: calc(100dvh - 1rem);
+    max-height: calc(100dvh - 1rem);
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+
+  .persistent-prompt-modal {
+    height: min(520px, calc(100dvh - 1rem));
+    max-height: calc(100dvh - 1rem);
+    overflow: hidden;
+  }
+
+  .persistent-prompt-modal > .system-modal-head {
+    flex: 0 0 auto;
+  }
+
+  .persistent-prompt-notice {
+    margin-top: 0.55rem;
+    font-size: 0.75rem;
+    line-height: 1.45;
+  }
+
+  .persistent-prompt-compose {
+    margin-top: 0.5rem;
+    padding: 0.45rem;
+  }
+
+  .persistent-prompt-compose textarea {
+    min-height: 3.8rem;
+    font-size: 0.78rem;
+  }
+
+  .persistent-prompt-item {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.35rem 0.5rem;
+    padding: 0.45rem;
+  }
+
+  .persistent-prompt-delete {
+    grid-column: 1 / -1;
+    justify-self: end;
+  }
+
+  .system-modal.ui-system-workspace > .system-modal-head {
+    position: sticky;
+    top: -0.55rem;
+    z-index: 8;
+    align-items: center;
+    gap: 0.5rem;
+    padding-top: 0.45rem;
+    padding-bottom: 0.45rem;
+    background: rgba(8, 10, 14, 0.98);
+  }
+
+  .system-modal.ui-system-workspace > .system-modal-head span {
+    font-size: 1.08rem;
+  }
+
+  .system-modal.ui-system-workspace > .system-modal-head small {
+    margin-top: 0.08rem;
+    font-size: 0.64rem;
+    letter-spacing: 0.08em;
+  }
+
+  .system-modal.ui-system-workspace > .system-modal-head .system-modal-close {
+    padding: 0.28rem 0.5rem;
+    font-size: 0.75rem;
+  }
+
+  .system-modal.ui-system-workspace > .strategic-archive-layout,
+  .system-modal.ui-system-workspace > .npc-archive-layout,
+  .system-modal.ui-system-workspace.backpack-modal .backpack-grid {
+    flex: 0 0 auto;
+    overflow: visible;
+  }
+
+  .npc-panel-modal,
+  .map-panel-modal {
+    width: 100%;
+    height: calc(100dvh - 1rem);
+    max-height: calc(100dvh - 1rem);
+    overflow-y: auto;
+  }
+
+  .npc-archive-layout {
+    flex: 0 0 auto;
+    overflow: visible;
+  }
+
+  .npc-roster-panel {
+    max-height: 15rem;
+  }
+
+  .map-v2-toolbar {
+    position: static;
+    flex-wrap: wrap;
+    margin-bottom: 0.6rem;
+  }
+
+  .map-v2-national-stage {
+    min-height: 22rem;
+  }
+
+  .map-v2-map-surface {
+    height: 20rem;
+    min-height: 20rem;
+  }
+
+  .dynamic-panel-modal {
+    width: 100%;
+    height: calc(100dvh - 1rem);
+    max-height: calc(100dvh - 1rem);
+  }
+
+  .dynamic-stage-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dynamic-panel-layout {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    overflow: visible;
+  }
+
+  .dynamic-sidebar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    flex: 0 0 auto;
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+    padding-bottom: 0.75rem;
+    border-right: 0;
+    border-bottom: 1px solid rgba(205, 170, 74, 0.18);
+  }
+
+  .dynamic-content,
+  .dynamic-section,
+  .dynamic-card-list {
+    flex: 0 0 auto;
+    overflow: visible;
+  }
+
+  .dynamic-panel-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .archive-record-card {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+  }
+
+  .archive-record-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .archive-record-actions {
+    justify-content: stretch;
+  }
+
+  .archive-record-actions button {
+    width: 100%;
+  }
+
+  .npc-panel-summary,
+  .backpack-summary-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.3rem;
+    margin-top: 0.5rem;
+  }
+
+  .npc-panel-summary span,
+  .backpack-summary-grid > div {
+    padding: 0.38rem 0.32rem;
+  }
+
+  .npc-panel-summary span,
+  .backpack-summary-grid span {
+    font-size: 0.68rem;
+  }
+
+  .npc-panel-summary strong,
+  .backpack-summary-grid strong {
+    font-size: 0.88rem;
+    line-height: 1.25;
+  }
+
+  .npc-panel-modal .npc-archive-layout,
+  .backpack-modal .backpack-grid {
+    margin-top: 0.55rem;
+  }
+
+  .strategic-metric-grid,
+  .strategic-metric-grid--four,
+  .strategic-detail-grid--compact,
+  .holding-collection-grid,
+  .troop-group-summary,
+  .holding-resource-grid,
+  .holding-overview-grid,
+  .holding-score-grid,
+  .holding-siege-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .strategic-metric-grid > div,
+  .holding-collection-grid > div,
+  .troop-group-summary > div,
+  .holding-resource-grid > div,
+  .holding-overview-grid > div,
+  .holding-score-card {
+    padding: 0.5rem;
+  }
+
+  .system-modal.ui-system-workspace.archive-report-modal {
+    width: 100%;
+    height: calc(100dvh - 1rem);
+    max-height: calc(100dvh - 1rem);
+  }
+
+  .archive-report-modal .battle-briefing-visual-caption {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .archive-report-modal .battle-briefing-visual-caption strong {
+    text-align: left;
+  }
+}

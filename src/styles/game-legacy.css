@@ -1,0 +1,72 @@
+/* ===== Game Screen — 旧调试样式保留兼容 ===== */
+.game-screen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.game-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 2rem;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.game-header h1 {
+  font-size: 1.3rem;
+  color: var(--accent);
+}
+
+.back-btn {
+  padding: 0.4rem 1rem;
+  background: transparent;
+  border: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  border-radius: 3px;
+  font-size: 0.85rem;
+}
+
+.back-btn:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.game-info-bar {
+  display: flex;
+  gap: 2rem;
+  padding: 0.6rem 2rem;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+
+.info-item {
+  color: var(--text-secondary);
+}
+
+.game-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.game-main {
+  flex: 2;
+  padding: 1.5rem;
+  overflow-y: auto;
+  max-height: calc(100vh - 100px);
+}
+
+.game-sidebar {
+  flex: 1;
+  padding: 1rem;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  max-height: calc(100vh - 100px);
+  min-width: 280px;
+}

@@ -1,0 +1,102 @@
+/* ============================================================
+   Chronicles of Chaos V2 - Styles
+   乱世风云录 V2 主样式
+   ============================================================ */
+
+:root {
+  color-scheme: dark;
+
+  /* Typography */
+  --font-body: "Noto Serif SC", "SimSun", "STSong", serif;
+  --font-display: "Long Cang", "KaiTi", "STKaiti", serif;
+  --font-latin-display: "Cinzel Decorative", serif;
+
+  /* Surfaces and semantic colors */
+  --bg-primary: #090b0f;
+  --bg-secondary: #11151c;
+  --bg-card: #181b22;
+  --bg-input: #0b0d12;
+  --text-primary: #e8dec9;
+  --text-secondary: #a79b86;
+  --text-muted: #655b4c;
+  --accent: #b88a2a;
+  --accent-hover: #d3aa45;
+  --teal: #24b7b8;
+  --danger: #8b3a3a;
+  --danger-hover: #a04040;
+  --success: #4a7c59;
+  --border: #2b2419;
+  --border-light: #5f4824;
+
+  /* Stable aliases used by newly scoped components. */
+  --surface-canvas: var(--bg-primary);
+  --surface-panel: var(--bg-secondary);
+  --surface-card: var(--bg-card);
+  --surface-field: var(--bg-input);
+  --color-text: var(--text-primary);
+  --color-text-subtle: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-accent: var(--accent);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+
+  /* Spacing */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+
+  /* Shape, depth and motion */
+  --radius-sm: 3px;
+  --radius-md: 6px;
+  --radius-lg: 14px;
+  --line-subtle: 1px solid rgba(184, 138, 42, 0.18);
+  --line-default: 1px solid rgba(184, 138, 42, 0.32);
+  --line-strong: 1px solid rgba(184, 138, 42, 0.62);
+  --shadow-panel: 0 18px 60px rgba(0, 0, 0, 0.55);
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --duration-slow: 320ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Layer ownership */
+  --layer-base: 0;
+  --layer-content: 1;
+  --layer-sticky: 3;
+  --layer-modal: 5;
+  --layer-confirm: 6;
+  --scrollbar-size: 8px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-body);
+  background:
+    radial-gradient(circle at 50% 18%, rgba(184, 138, 42, 0.08), transparent 24rem),
+    linear-gradient(180deg, #0d1015 0%, #08090d 100%);
+  color: var(--text-primary);
+  min-height: 100vh;
+  line-height: 1.6;
+  overflow: hidden;
+}
+
+#root {
+  min-height: 100vh;
+}
+html[data-coc-motion='reduced'] *,
+html[data-coc-motion='reduced'] *::before,
+html[data-coc-motion='reduced'] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+  transition-duration: 0.001ms !important;
+}
