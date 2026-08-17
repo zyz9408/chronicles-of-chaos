@@ -1,18 +1,16 @@
 import type { ApiTaskId } from '../engine/settings/ApiConfigManager';
+import { getNarrativeLengthContract } from '../engine/prompts/NarrativeLengthGuidance';
 import {
-  ADULT_INTIMACY_STYLE_OPTIONS,
-  DEFAULT_ADULT_INTIMACY_STYLE,
   DEFAULT_NARRATIVE_LENGTH,
   DEFAULT_PREGNANCY_MODE,
   NARRATIVE_LENGTH_OPTIONS,
   PREGNANCY_MODE_OPTIONS,
-  type AdultIntimacyStylePreference,
   type NarrativeLengthPreference,
   type PregnancyModePreference,
 } from '../engine/settings/DisplaySettings';
 
-export type SettingsMainTab = 'game' | 'display' | 'api' | 'tavern' | 'promptRegistry' | 'promptTokenEstimate' | 'save' | 'data';
-export type SettingsFunctionTab = 'memory' | 'vector' | 'npcProfile' | 'npcSimulation' | 'stateWriteback';
+export type SettingsMainTab = 'game' | 'display' | 'api' | 'tavern' | 'promptRegistry' | 'promptTokenEstimate' | 'save' | 'variables' | 'data';
+export type SettingsFunctionTab = 'memory' | 'vector' | 'npcProfile' | 'npcSimulation' | 'worldEvolution' | 'stateWriteback';
 export type SettingsTab = SettingsMainTab | SettingsFunctionTab;
 
 export interface SettingsNavItem {
@@ -36,7 +34,7 @@ export interface InlineApiEditorState {
 }
 
 export interface GameSettingsToggleControl {
-  id: 'npcPresenceHints';
+  id: 'npcPresenceHints' | 'narrativeLengthRetry';
   type: 'toggle';
   label: string;
   description: string;
@@ -57,19 +55,6 @@ export interface GameSettingsNarrativeLengthSelectControl {
   }>;
 }
 
-export interface GameSettingsAdultIntimacyStyleSelectControl {
-  id: 'adultIntimacyStyle';
-  type: 'select';
-  label: string;
-  description: string;
-  defaultValue: AdultIntimacyStylePreference;
-  options: Array<{
-    value: AdultIntimacyStylePreference;
-    label: string;
-    description: string;
-  }>;
-}
-
 export interface GameSettingsPregnancyModeSelectControl {
   id: 'pregnancyMode';
   type: 'select';
@@ -85,7 +70,6 @@ export interface GameSettingsPregnancyModeSelectControl {
 
 export type GameSettingsSelectControl =
   | GameSettingsNarrativeLengthSelectControl
-  | GameSettingsAdultIntimacyStyleSelectControl
   | GameSettingsPregnancyModeSelectControl;
 
 export type GameSettingsControl = GameSettingsToggleControl | GameSettingsSelectControl;
@@ -108,8 +92,8 @@ export const FUNCTION_CONFIG_PANELS: FunctionConfigPanel[] = [
   {
     tab: 'npcProfile',
     label: 'NPC建档配置',
-    description: '管理开局历史人物补全与 NPC 基础档案生成 API。',
-    routeTaskIds: ['npcCompletion'],
+    description: '管理开局历史人物补全与 NPC 基础档案生成的主要、备用 API；主要 API 失败 60 秒后自动切换备用 API。',
+    routeTaskIds: ['npcCompletion', 'npcCompletionFallback'],
     status: 'active',
   },
   {
@@ -120,21 +104,29 @@ export const FUNCTION_CONFIG_PANELS: FunctionConfigPanel[] = [
     status: 'active',
   },
   {
+    tab: 'worldEvolution',
+    label: '后台世界演化配置',
+    description: '管理离场羁绊与红颜人物的到期行动、历史轨迹推进和近况投递；它独立于当前回合 NPC 反应模拟。未单独选择 API 时跟随主剧情 API。',
+    routeTaskIds: ['worldEvolution'],
+    status: 'active',
+  },
+  {
     tab: 'stateWriteback',
     label: '状态写回配置',
     description: '管理主回合后的状态补丁与写回结构整理 API；未选择 API 时不额外调用。',
-    routeTaskIds: ['stateWriteback'],
+    routeTaskIds: ['stateWriteback', 'stateWritebackFallback'],
     status: 'active',
   },
 ];
 
-const hiddenRouteTaskIds: ApiTaskId[] = ['quickInteraction', 'worldEvolution', 'imagePrompt'];
+const hiddenRouteTaskIds: ApiTaskId[] = ['quickInteraction', 'imagePrompt'];
 
 export function getSettingsNavItems(): SettingsNavItem[] {
   return [
     { tab: 'game', label: '游戏设定', disabled: false, group: 'common' },
     { tab: 'display', label: '阅读与动效', disabled: false, group: 'common' },
     { tab: 'save', label: '存档管理', disabled: false, group: 'common' },
+    { tab: 'variables', label: '变量管理', disabled: false, group: 'common' },
     { tab: 'data', label: '数据管理', disabled: false, group: 'common' },
     { tab: 'api', label: 'API 配置', disabled: false, group: 'ai' },
     { label: '功能配置', disabled: false, group: 'ai' },
@@ -183,51 +175,12 @@ export function getGameSettingsControls(): GameSettingsControl[] {
       description: '选择主剧情正文的目标字数范围；实际长度会随剧情复杂度和模型输出略有浮动。',
       defaultValue: DEFAULT_NARRATIVE_LENGTH,
       options: NARRATIVE_LENGTH_OPTIONS.map((value) => {
-        const labels: Record<NarrativeLengthPreference, string> = {
-          compact: '精简',
-          standard: '标准',
-          rich: '丰富',
-          long: '长篇',
-        };
-        const wordCountHints: Record<NarrativeLengthPreference, string> = {
-          compact: '约 300-600 字',
-          standard: '约 600-1000 字',
-          rich: '约 1000-1600 字',
-          long: '约 1600-2400 字',
-        };
-        const descriptions: Record<NarrativeLengthPreference, string> = {
-          compact: '约 300-600 字，更短的剧情推进，适合快速测试。',
-          standard: '约 600-1000 字，默认篇幅，兼顾细节和推进。',
-          rich: '约 1000-1600 字，更重视画面、对白和氛围。',
-          long: '约 1600-2400 字，更长的沉浸式正文，消耗更多 token。',
-        };
+        const contract = getNarrativeLengthContract(value);
         return {
           value,
-          label: labels[value],
-          wordCountHint: wordCountHints[value],
-          description: descriptions[value],
-        };
-      }),
-    },
-    {
-      id: 'adultIntimacyStyle',
-      type: 'select',
-      label: '成人描写风格',
-      description: '控制成人亲密场景进入正文后的描写侧重点。只影响已通过门禁的成人内容，不改变年龄门禁和写回规则。',
-      defaultValue: DEFAULT_ADULT_INTIMACY_STYLE,
-      options: ADULT_INTIMACY_STYLE_OPTIONS.map((value) => {
-        const labels: Record<AdultIntimacyStylePreference, string> = {
-          relationshipImmersion: '关系沉浸',
-          directRealism: '直白写实',
-        };
-        const descriptions: Record<AdultIntimacyStylePreference, string> = {
-          relationshipImmersion: '默认风格，强调关系阶段、心理变化、身份处境、边界变化和事后余韵；具体部位和动作仍使用直白词汇，不使用委婉比喻。',
-          directRealism: '更直接呈现具体身体词、动作、摩擦、体液和生理反应，禁止用比喻或含蓄代称遮蔽具体部位和动作，同时保留关系与场景逻辑。',
-        };
-        return {
-          value,
-          label: labels[value],
-          description: descriptions[value],
+          label: contract.label,
+          wordCountHint: `约 ${contract.rangeText}`,
+          description: `约 ${contract.rangeText}，${contract.settingsDescription}`,
         };
       }),
     },
@@ -252,6 +205,13 @@ export function getGameSettingsControls(): GameSettingsControl[] {
         };
         return { value, label: labels[value], description: descriptions[value] };
       }),
+    },
+    {
+      id: 'narrativeLengthRetry',
+      type: 'toggle',
+      label: '字数不足时自动重写',
+      description: '开启后，“丰富/长篇”正文低于目标下限的 90% 时会整份重写一次；关闭后仍保留目标字数要求和篇幅诊断，但不会因字数不足重写或拒绝本回合。',
+      defaultEnabled: true,
     },
     {
       id: 'npcPresenceHints',

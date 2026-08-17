@@ -1,9 +1,11 @@
 import type {
   EncounterActionLogEntry,
   EncounterOutcome,
+  EncounterScopedCombatant,
   EncounterSide,
   EquipmentSemanticProfile,
   ItemCombatProfile,
+  ItemQualityTier,
   PersonalCombatStartIntent,
   SemanticProjection,
   TraitSemanticProfile,
@@ -17,6 +19,7 @@ import type {
   CharacterVitals,
   InventoryItem,
 } from '../types/actor';
+import type { GameDifficultyLevel } from '../types/runtimeState';
 
 export type CombatThreatTier = 'minor' | 'standard' | 'major' | 'deadly';
 export type CombatWeaponWeight = 'unarmed' | 'light' | 'standard' | 'polearm' | 'heavy' | 'ranged';
@@ -31,11 +34,14 @@ export interface CombatCharacterSource {
   xp?: number;
   abilityScores?: Record<string, number>;
   vitals?: CharacterVitals;
+  /** Persistent statuses already present before this encounter begins. */
+  combatStatuses?: string[];
   traits?: CharacterTrait[];
   uniqueArts?: CharacterUniqueArt[];
   equipment?: CharacterEquipmentItem[];
   inventory?: InventoryItem[];
   persistent?: boolean;
+  combatArchetype?: EncounterScopedCombatant['archetype'];
 }
 
 export interface CombatProjectionBundle {
@@ -44,6 +50,7 @@ export interface CombatProjectionBundle {
 
 export interface CombatWeaponSnapshot {
   sourceId: string | null;
+  qualityTier: ItemQualityTier | null;
   weight: CombatWeaponWeight;
   baseDamage: number;
   accuracyBonus: number;
@@ -52,6 +59,7 @@ export interface CombatWeaponSnapshot {
 
 export interface CombatArmorSnapshot {
   sourceId: string | null;
+  qualityTier: ItemQualityTier | null;
   weight: CombatArmorWeight;
   armorTier: 0 | 1 | 2 | 3 | 4 | 5;
   blockBonus: number;
@@ -68,6 +76,7 @@ export interface CombatantSnapshot {
   side: EncounterSide;
   stableOrder: number;
   persistent: boolean;
+  combatArchetype?: EncounterScopedCombatant['archetype'];
   level: number;
   xp: number;
   martial: number;
@@ -76,6 +85,8 @@ export interface CombatantSnapshot {
   maxHp: number;
   stamina: number;
   maxStamina: number;
+  /** Frozen persistent-status baseline used by the result transaction. */
+  combatStatuses?: string[];
   speed: number;
   weapon: CombatWeaponSnapshot;
   armor: CombatArmorSnapshot;
@@ -88,12 +99,14 @@ export interface CombatantSnapshot {
 }
 
 export interface CombatEncounterSnapshot {
-  snapshotVersion: 1;
+  snapshotVersion: 1 | 2;
   snapshotHash: string;
   sessionId: string;
   intent: PersonalCombatStartIntent;
   seed: string;
   threatTier: CombatThreatTier;
+  /** Frozen per-save combat difficulty. Legacy snapshots default to standard. */
+  combatDifficulty?: GameDifficultyLevel;
   combatants: CombatantSnapshot[];
   lootableItemIds: string[];
   capturableEquipmentItemIds: string[];

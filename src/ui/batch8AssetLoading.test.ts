@@ -29,6 +29,8 @@ describe('Batch 8 production asset loading boundaries', () => {
     expect(mapBaseSource).toContain('mapVisualManifest');
     expect(mapBaseSource).toContain('max-width: 760px');
     expect(mapBaseSource).toContain('?retry=');
-    expect(mapPanelSource).toContain("closest('button, a, input, select, textarea, [role=\"button\"]')");
+    expect(mapBaseSource).toContain('draggable={false}');
+    expect(mapPanelSource).toContain('button:not(.map-v2-marker)');
+    expect(mapPanelSource).toContain('onDragStart={(event) => event.preventDefault()}');
   });
 });

@@ -6,6 +6,7 @@ import {
   migrateRuntimeStateForPersistence,
   type RuntimeStateMigrationDiagnostic,
 } from '../state/RuntimeStateMigration';
+import { normalizeNarrativePerspective } from '../settings/NarrativePerspective';
 
 declare const normalizedTurnRollbackSnapshot: unique symbol;
 
@@ -43,11 +44,14 @@ export function createTurnRollbackSnapshot(input: TurnRollbackSnapshotInput): Tu
 
 export function restoreTurnRollbackSnapshot(
   snapshot: TurnRollbackSnapshot,
-  _currentState: RuntimeState,
+  currentState: RuntimeState,
 ): RestoredTurnRollback {
   const normalizedSnapshot = cloneRollbackSnapshot(snapshot);
   return {
-    state: cloneState(normalizedSnapshot.beforeState),
+    state: {
+      ...cloneState(normalizedSnapshot.beforeState),
+      narrativePerspective: normalizeNarrativePerspective(currentState.narrativePerspective),
+    },
     actionText: normalizedSnapshot.actionText,
   };
 }

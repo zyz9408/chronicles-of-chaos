@@ -59,7 +59,7 @@ const baseState: RuntimeState = {
 };
 
 describe('applyLuanShiCommand', () => {
-  it('clears stale dependent identity text when currentIdentity changes without paired fields', () => {
+  it('rejects an incomplete identity change and preserves the stable profile', () => {
     const state = {
       ...baseState,
       player: {
@@ -77,9 +77,9 @@ describe('applyLuanShiCommand', () => {
       militaryTitle: '讨寇校尉',
     } as any);
 
-    expect(next.player.currentIdentity).toBe('讨寇校尉');
-    expect(next.player.currentIdentityDescription).toBeUndefined();
-    expect(next.player.identitySummary).toBeUndefined();
+    expect(next.player.currentIdentity).toBe('别部司马');
+    expect(next.player.currentIdentityDescription).toBe('统领一曲步卒的基层带兵武官。');
+    expect(next.player.identitySummary).toBe('以别部司马身份统领一曲步卒。');
   });
 
   it('atomically applies a changed identity with its paired description and summary', () => {
@@ -100,6 +100,11 @@ describe('applyLuanShiCommand', () => {
       currentIdentityDescription: '受州牧府正式加封，可独立统领数千兵马的校尉。',
       identitySummary: '受封讨寇校尉，奉命扼守云梦泽水路。',
       militaryTitle: '讨寇校尉',
+      personalEscortEntitlement: {
+        status: 'customary',
+        bases: ['military_command'],
+        updatedAt: '公元189年09月01日 12:00（午时）',
+      },
     } as any);
 
     expect(next.player).toMatchObject({
@@ -107,6 +112,46 @@ describe('applyLuanShiCommand', () => {
       currentIdentityDescription: '受州牧府正式加封，可独立统领数千兵马的校尉。',
       identitySummary: '受封讨寇校尉，奉命扼守云梦泽水路。',
     });
+  });
+
+  it('clears stale escort entitlement on authority changes and atomically stores a replacement', () => {
+    const state = {
+      ...baseState,
+      player: {
+        ...baseState.player,
+        militaryTitle: '军侯',
+        personalEscortEntitlement: {
+          status: 'customary' as const,
+          bases: ['military_command' as const],
+          updatedAt: baseState.currentDate,
+        },
+      },
+    };
+    const cleared = applyLuanShiCommand(state, {
+      action: 'updateCharacterIdentity',
+      characterId: 'player',
+      currentIdentity: null,
+      militaryTitle: null,
+      personalEscortEntitlement: null,
+    });
+    expect(cleared.player.personalEscortEntitlement).toBeUndefined();
+
+    const replacement = {
+      status: 'customary' as const,
+      bases: ['official_position' as const],
+      updatedAt: '公元189年09月02日 08:00（辰时）',
+    };
+    const replaced = applyLuanShiCommand(state, {
+      action: 'updateCharacterIdentity',
+      characterId: 'player',
+      currentIdentity: null,
+      militaryTitle: null,
+      officeTitle: '县令',
+      personalEscortEntitlement: replacement,
+    });
+    expect(replaced.player.personalEscortEntitlement).toEqual(replacement);
+    expect(replaced.player.personalEscortEntitlement).not.toBe(replacement);
+    expect(replaced.player.personalEscortEntitlement?.bases).not.toBe(replacement.bases);
   });
 
   it('preserves dependent identity text when currentIdentity is written unchanged', () => {
@@ -125,6 +170,11 @@ describe('applyLuanShiCommand', () => {
       characterId: 'player',
       currentIdentity: ' 讨寇校尉 ',
       factionName: '荆州官府',
+      personalEscortEntitlement: {
+        status: 'none',
+        bases: [],
+        updatedAt: '公元189年09月01日 12:00（午时）',
+      },
     } as any);
 
     expect(next.player.currentIdentityDescription).toBe('受州牧府正式加封的校尉。');
@@ -142,6 +192,8 @@ describe('applyLuanShiCommand', () => {
       characterId: 'npc_guard',
       name: '张铁',
       currentIdentity: '白杨湾屯长',
+      currentIdentityDescription: '受白杨湾乡民推举，负责统领本地守备。',
+      identitySummary: '张铁现任白杨湾屯长。',
     } as any);
 
     expect(state.npcs.find((npc) => npc.npcId === 'npc_guard')).toMatchObject({
@@ -178,7 +230,7 @@ describe('applyLuanShiCommand', () => {
       id: 'eq_guard_sabre',
       slot: 'weapon' as const,
       name: '守营刀',
-      quality: '军中精造',
+      quality: 'blue',
       description: '陈达随身守营兵器。',
       condition: '锋刃完好',
       statBonuses: { 武力: 3 },
@@ -193,7 +245,7 @@ describe('applyLuanShiCommand', () => {
       quantity: 1,
       description: '用于调动守营士卒。',
       category: 'token',
-      quality: '官造',
+      quality: 'green',
       equipSlot: 'treasure' as const,
       condition: '字迹清晰',
       statBonuses: { 交涉: 2 },
@@ -306,14 +358,16 @@ describe('applyLuanShiCommand', () => {
   it('writes resource, faction, and troop ledger entries without disturbing NPC data', () => {
     const withResources = applyLuanShiCommand(baseState, {
       action: 'updateResourceLedger',
-      money: 120,
+      previousMoneyGuan: 0,
+      moneyDeltaGuan: 120,
+      moneyGuan: 120,
       grain: 300,
       horses: 12,
       weapons: ['环首刀x20'],
       documents: ['军令一封'],
       tokens: ['北军符节'],
       importantSupplies: ['箭矢三箱'],
-      playerResources: { 粮饷: 36, 粮草: 50 },
+      playerResources: { 粮饷: 36, 军需券: 50 },
     } as any);
     const withFaction = applyLuanShiCommand(withResources, {
       action: 'upsertFactionLedger',
@@ -363,12 +417,12 @@ describe('applyLuanShiCommand', () => {
       tokens: ['北军符节'],
       importantSupplies: ['箭矢三箱'],
     });
-    expect(next.playerResources).toMatchObject({ 粮饷: 36, 粮草: 50 });
+    expect(next.playerResources).toMatchObject({ 粮饷: 36, 军需券: 50 });
     expect(next.factions).toEqual([
       expect.objectContaining({
         factionId: 'faction_local_guard',
         name: '市镇守卒',
-        recentActions: ['封锁北门'],
+        recentActions: ['【亲历】封锁北门'],
       }),
     ]);
     expect(next.troops).toEqual([
@@ -675,8 +729,44 @@ describe('applyLuanShiCommand', () => {
       quality: '精锐',
       readiness: '低',
       fatigue: '低',
+      warFatiguePercent: 15,
       size: 120,
     }));
+  });
+
+  it('synchronizes ordinary-turn fatigue recovery with the exact War V2 value', () => {
+    const stateWithStaleWarFatigue = {
+      ...baseState,
+      troops: [{
+        troopId: 'troop_resting',
+        name: '休整营曲',
+        size: 120,
+        morale: 50,
+        training: 55,
+        supplies: 70,
+        task: '营中休整',
+        relationToPlayer: 'self',
+        quality: '中',
+        readiness: '中',
+        fatigue: '极高',
+        warFatiguePercent: 85,
+        lifecycleStatus: 'active',
+        knownLevel: '亲历',
+        certainty: 'confirmed',
+      }],
+    } as unknown as RuntimeState;
+
+    const next = applyLuanShiCommand(stateWithStaleWarFatigue, {
+      action: 'upsertTroopLedger',
+      troopId: 'troop_resting',
+      fatigue: '中',
+      updatedAt: '公元189年09月02日 12:00（午时）',
+    } as any);
+
+    expect(next.troops?.[0]).toMatchObject({
+      fatigue: '中',
+      warFatiguePercent: 35,
+    });
   });
 
   it('merges partial updates into an existing troop without creating a duplicate', () => {
@@ -1262,6 +1352,72 @@ describe('applyLuanShiCommand', () => {
     expect(afterDisband.conflicts[0].involvedTroopIds).toEqual(['troop_old_camp']);
   });
 
+  it('archives a routed formation and removes it from current faction and garrison references', () => {
+    const routedTroop = {
+      troopId: 'troop_defeated_camp',
+      name: '败退旧营',
+      size: 260,
+      factionId: 'faction_player_band',
+      lifecycleStatus: 'active' as const,
+      morale: 20,
+      training: 45,
+      supplies: 25,
+      task: '战场整队',
+      relationToPlayer: '你直接统领',
+    };
+    const state = {
+      ...baseState,
+      troops: [routedTroop],
+      factions: [{
+        factionId: 'faction_player_band',
+        name: '主角军府',
+        type: '军府',
+        summary: '主角所属势力。',
+        stanceToPlayer: 'self',
+        knownLevel: '亲历',
+        recentActions: [],
+        relatedTroopIds: ['troop_defeated_camp'],
+      }],
+      holdings: [{
+        holdingId: 'holding_main_camp',
+        name: '中军营',
+        type: 'camp',
+        status: 'controlled',
+        summary: '主角中军营。',
+        scaleLevel: 1,
+        agriculture: 0,
+        commerce: 0,
+        population: 10,
+        publicOrder: 80,
+        popularSupport: 70,
+        defense: 60,
+        recruitPotential: 20,
+        armory: 50,
+        horseSupply: 30,
+        corruption: 0,
+        garrisonTroopIds: ['troop_defeated_camp'],
+        updatedAt: '189-09-02 08:00',
+      }],
+    } as RuntimeState;
+
+    const archived = applyLuanShiCommand(state, {
+      action: 'upsertTroopLedger',
+      troopId: 'troop_defeated_camp',
+      lifecycleStatus: 'routed',
+      lastBattleId: 'battle_defeat',
+      lastChangeReason: 'War V2 战败溃散',
+    } as any);
+
+    expect(archived.troops).toHaveLength(1);
+    expect(archived.troops[0]).toMatchObject({
+      troopId: 'troop_defeated_camp',
+      lifecycleStatus: 'routed',
+      lastBattleId: 'battle_defeat',
+    });
+    expect(archived.factions[0].relatedTroopIds).toEqual([]);
+    expect(archived.holdings[0].garrisonTroopIds).toEqual([]);
+  });
+
   it('maintains merge and split lineage from either side of stable troop-id relations', () => {
     const withSuccessor = applyLuanShiCommand(baseState, {
       action: 'upsertTroopLedger',
@@ -1377,9 +1533,109 @@ describe('applyLuanShiCommand', () => {
       knownSphere: '陈留郡府、郡兵、募兵网络',
       sourceNote: '使者当面试探',
     });
-    expect(second.factions[0].recentActions).toEqual(['派人探问主角营中兵马']);
+    expect(second.factions[0].recentActions).toEqual([
+      '【听闻】在陈留招募兵马',
+      '【亲历】派人探问主角营中兵马',
+    ]);
     expect(second.factions[0].aliases).toEqual(['陈留郡府', '张邈部']);
     expect(second.factions[0].relatedTroopIds).toEqual(['troop_chenliu_recruits']);
+  });
+
+  it('records firsthand and rumored faction actions without replacing the faction profile', () => {
+    const stateWithFaction = applyLuanShiCommand(baseState, {
+      action: 'upsertFactionLedger',
+      factionId: 'faction_player_command',
+      name: '主角军府',
+      type: '军府',
+      summary: '主角任职并参与军务的现有势力。',
+      stanceToPlayer: '自势力相关',
+      knownLevel: '亲历',
+      recentActions: ['完成营寨整编'],
+    });
+
+    const afterPlayerAction = applyLuanShiCommand(stateWithFaction, {
+      action: 'recordFactionRecentAction',
+      factionId: 'faction_player_command',
+      summary: '主角代表军府向郡守交付军粮',
+      knownLevel: '亲历',
+      sourceNote: '主角当面交割',
+    });
+    const afterRumor = applyLuanShiCommand(afterPlayerAction, {
+      action: 'recordFactionRecentAction',
+      factionId: 'faction_player_command',
+      summary: '军府另遣偏师驰援北门',
+      knownLevel: '听闻',
+      observedAt: '公元189年09月02日 08:00（辰时）',
+      sourceNote: '斥候军报',
+    });
+    const afterDuplicate = applyLuanShiCommand(afterRumor, {
+      action: 'recordFactionRecentAction',
+      factionId: 'faction_player_command',
+      summary: '军府另遣偏师驰援北门',
+      knownLevel: '听闻',
+    });
+
+    expect(afterDuplicate.factions[0]).toMatchObject({
+      factionId: 'faction_player_command',
+      name: '主角军府',
+      summary: '主角任职并参与军务的现有势力。',
+      knownLevel: '亲历',
+      sourceNote: '斥候军报',
+      lastKnownAt: '公元189年09月02日 08:00（辰时）',
+      updatedAt: baseState.currentDate,
+      recentActions: [
+        '【亲历】完成营寨整编',
+        '【亲历】主角代表军府向郡守交付军粮',
+        '【听闻】军府另遣偏师驰援北门',
+      ],
+    });
+    expect(afterDuplicate.factions[0].recentActionRecords).toEqual([
+      {
+        summary: '完成营寨整编',
+        knownLevel: '亲历',
+        observedAt: baseState.currentDate,
+      },
+      {
+        summary: '主角代表军府向郡守交付军粮',
+        knownLevel: '亲历',
+        observedAt: baseState.currentDate,
+        sourceNote: '主角当面交割',
+      },
+      {
+        summary: '军府另遣偏师驰援北门',
+        knownLevel: '听闻',
+        observedAt: '公元189年09月02日 08:00（辰时）',
+        sourceNote: '斥候军报',
+      },
+    ]);
+  });
+
+  it('keeps up to two hundred recent unique faction actions for the full-history view', () => {
+    let state = applyLuanShiCommand(baseState, {
+      action: 'upsertFactionLedger',
+      factionId: 'faction_recent_action_window',
+      name: '州郡军府',
+      type: '军府',
+      summary: '测试近期动作窗口的现有势力。',
+      stanceToPlayer: '中立',
+      knownLevel: '听闻',
+      recentActions: ['旧动作'],
+    });
+
+    for (let index = 1; index <= 201; index += 1) {
+      state = applyLuanShiCommand(state, {
+        action: 'recordFactionRecentAction',
+        factionId: 'faction_recent_action_window',
+        summary: `动作${index}`,
+        knownLevel: '听闻',
+      });
+    }
+
+    expect(state.factions[0].recentActions).toHaveLength(200);
+    expect(state.factions[0].recentActionRecords).toHaveLength(200);
+    expect(state.factions[0].recentActions[0]).toBe('【听闻】动作2');
+    expect(state.factions[0].recentActions[state.factions[0].recentActions.length - 1])
+      .toBe('【听闻】动作201');
   });
 
   it('upserts personal combat records separately from war conflict records', () => {
@@ -1547,14 +1803,21 @@ describe('applyLuanShiCommand', () => {
   it('upserts player holdings and domestic reports through stable ids', () => {
     const withHolding = applyLuanShiCommand(baseState, {
       action: 'upsertHoldingLedger',
+      operation: 'create',
       holdingId: 'holding_yingchuan',
-      name: 'Yingchuan commandery',
-      type: 'commandery',
+      name: 'Yangdi county seat',
+      type: 'county',
       status: 'controlled',
-      summary: 'A commandery under player administration.',
+      summary: 'A county seat under player administration.',
       civilAdministrationScope: 'territorial',
       factionId: 'faction_player',
       actualController: 'player faction',
+      controlEvidence: {
+        kind: 'formal_handover',
+        occurredAt: '189-09-01',
+        sourceRefId: 'turn_event_yingchuan_handover',
+        summary: 'The county administration was formally handed over to the player faction.',
+      },
       scaleLevel: 3,
       agriculture: 75,
       commerce: 60,
@@ -1584,11 +1847,12 @@ describe('applyLuanShiCommand', () => {
 
     const updatedHolding = applyLuanShiCommand(withHolding, {
       action: 'upsertHoldingLedger',
+      operation: 'update',
       holdingId: 'holding_yingchuan',
-      name: 'Yingchuan commandery',
-      type: 'commandery',
+      name: 'Yangdi county seat',
+      type: 'county',
       status: 'controlled',
-      summary: 'A commandery with improved public order after repairs.',
+      summary: 'A county seat with improved public order after repairs.',
       civilAdministrationScope: 'territorial',
       factionId: 'faction_player',
       actualController: 'player faction',
@@ -1613,7 +1877,7 @@ describe('applyLuanShiCommand', () => {
     expect(updatedHolding.holdings).toHaveLength(1);
     expect(updatedHolding.holdings[0]).toEqual(expect.objectContaining({
       holdingId: 'holding_yingchuan',
-      summary: 'A commandery with improved public order after repairs.',
+      summary: 'A county seat with improved public order after repairs.',
       publicOrder: 72,
       farmlandMu: 12200,
       registeredHouseholds: 1840,
@@ -1624,7 +1888,7 @@ describe('applyLuanShiCommand', () => {
         supplyLine: 'cut',
         preparation: 'none',
         cutOffAtTurn: 1,
-        initialEnduranceTurns: 16,
+        initialEnduranceTurns: 15,
       },
       updatedAt: '189-09-02',
     }));
@@ -1634,7 +1898,7 @@ describe('applyLuanShiCommand', () => {
     const convertedToMilitaryFacility = applyLuanShiCommand(updatedHolding, {
       action: 'upsertHoldingLedger',
       holdingId: 'holding_yingchuan',
-      name: 'Yingchuan commandery',
+      name: 'Yangdi county seat',
       type: 'camp',
       status: 'controlled',
       summary: 'The former civil ledger is now represented as a pure military facility for transition testing.',
@@ -1805,14 +2069,21 @@ describe('applyLuanShiCommand', () => {
   it('preserves existing holding fields when a later update only changes current scores', () => {
     const withHolding = applyLuanShiCommand(baseState, {
       action: 'upsertHoldingLedger',
+      operation: 'create',
       holdingId: 'holding_yingchuan',
-      name: 'Yingchuan commandery',
-      type: 'commandery',
+      name: 'Yangdi county seat',
+      type: 'county',
       status: 'controlled',
-      summary: 'A commandery under player administration.',
+      summary: 'A county seat under player administration.',
       civilAdministrationScope: 'territorial',
       factionId: 'faction_player',
       actualController: 'player faction',
+      controlEvidence: {
+        kind: 'opening',
+        occurredAt: '189-09-01',
+        sourceRefId: 'opening_yingchuan_holding',
+        summary: 'The opening state establishes the player faction as the county administrator.',
+      },
       scaleLevel: 3,
       agriculture: 75,
       commerce: 60,
@@ -1849,9 +2120,10 @@ describe('applyLuanShiCommand', () => {
 
     const updated = applyLuanShiCommand(withLegacyHolding, {
       action: 'upsertHoldingLedger',
+      operation: 'update',
       holdingId: 'holding_yingchuan',
-      name: 'Yingchuan commandery',
-      type: 'commandery',
+      name: 'Yangdi county seat',
+      type: 'county',
       status: 'controlled',
       summary: 'Public order improves after the player negotiates with local elders.',
       civilAdministrationScope: 'territorial',

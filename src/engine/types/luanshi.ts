@@ -11,6 +11,20 @@ import type { MapNode, MapRouteEdgeV1 } from './map';
 
 export type NpcMemorySource = '亲历' | '听闻' | '误会' | '推测';
 
+/**
+ * 新人物进入长期人物志时的准入依据。
+ *
+ * 该字段只属于写回协议，不持久化到 LuanShiNpc。已有 NPC 的正常更新不需要
+ * 重复声明；新 NPC 必须给出一个可由本回合事实承接的理由和证据。
+ */
+export type NpcProfilePersistenceReason =
+  | 'opening_cast'
+  | 'historical_figure'
+  | 'active_system_role'
+  | 'recurring_contact'
+  | 'player_committed_relationship'
+  | 'strategic_actor';
+
 export interface NpcMemoryEntry {
   memoryId: string;
   eventId?: string;
@@ -64,6 +78,164 @@ export interface NpcPresenceUpdate {
   readByPlayer: boolean;
 }
 
+export type CorrespondenceParty =
+  | {
+      kind: 'player';
+      playerId?: string;
+      name: string;
+    }
+  | {
+      kind: 'npc';
+      npcId: string;
+      name: string;
+    };
+
+export type CorrespondenceDirection = 'outgoing' | 'incoming';
+
+export type CorrespondenceSource = 'ui' | 'narrative' | 'npcEvolution' | 'system';
+
+export type CorrespondenceChannel = 'letter' | 'envoy';
+
+export type CorrespondenceStatus =
+  | 'draft'
+  | 'queued'
+  | 'inTransit'
+  | 'deliveredPendingProcessing'
+  | 'delivered'
+  | 'read'
+  | 'processed'
+  | 'cancelled'
+  | 'lost';
+
+/**
+ * 书信正文的长期真值。NPC 记忆只保存概括；letterId 仅留在内部关联字段中，
+ * 不复制第二份全文，也不向玩家显示内部编码。
+ */
+export interface CorrespondenceEntry {
+  letterId: string;
+  direction: CorrespondenceDirection;
+  sender: CorrespondenceParty;
+  recipient: CorrespondenceParty;
+  subject: string;
+  body: string;
+  summary?: string;
+  source: CorrespondenceSource;
+  sourceRefId?: string;
+  sourceTurnNumber?: number;
+  replyToLetterId?: string;
+  channel: CorrespondenceChannel;
+  status: CorrespondenceStatus;
+  originLocationId?: string;
+  targetLocationId?: string;
+  createdAt: string;
+  sentAt?: string;
+  deliveryDueAt?: string;
+  deliveredAt?: string;
+  readAt?: string;
+  processedAt?: string;
+  /** 处理该来信的结构化动作 ID，用于 noReply/reply 重放幂等。 */
+  processedBySourceRefId?: string;
+  relatedCommitmentIds?: string[];
+  /** 关联事务已经结束时，尚未送达的提醒信保留记录但不再投递。 */
+  cancelledAt?: string;
+  cancelReason?: string;
+}
+
+export interface CorrespondenceResourceBundle {
+  /** 玩家个人钱财，底层单位为钱。 */
+  playerMoneyQian?: number;
+  /** 势力/府库公共钱财，底层单位为贯。 */
+  moneyGuan?: number;
+  grain?: number;
+  horses?: number;
+  arms?: number;
+  recruits?: number;
+}
+
+export type CorrespondenceCommitmentDeliverable =
+  | {
+      kind: 'visit';
+      npcId: string;
+      entourageSummary?: string;
+    }
+  | {
+      kind: 'troop';
+      troopIds: string[];
+      expectedCount?: number;
+      compositionSummary?: string;
+    }
+  | {
+      kind: 'resources';
+      resources: CorrespondenceResourceBundle;
+    }
+  | {
+      kind: 'items';
+      itemIds: string[];
+      itemSummary?: string;
+    }
+  | {
+      kind: 'intel';
+      summary: string;
+    }
+  | {
+      kind: 'other';
+      summary: string;
+    };
+
+export type CorrespondenceCommitmentStatus =
+  | 'accepted'
+  | 'preparing'
+  | 'inTransit'
+  | 'due'
+  | 'fulfilled'
+  | 'partial'
+  | 'delayed'
+  | 'failed'
+  | 'cancelled';
+
+export interface CorrespondenceCommitmentResolution {
+  /** Stable resolution fact ID. Replaying the same turn must not settle twice. */
+  sourceRefId?: string;
+  status: Extract<
+    CorrespondenceCommitmentStatus,
+    'fulfilled' | 'partial' | 'delayed' | 'failed' | 'cancelled'
+  >;
+  summary: string;
+  resolvedAt: string;
+  nextExpectedAt?: string;
+  /** The exact subset delivered by a partial settlement. */
+  deliveredDeliverables?: CorrespondenceCommitmentDeliverable[];
+  appliedOperationIds?: string[];
+}
+
+/**
+ * NPC 通过已送达书信明确接受的未来承诺。待履约不提前增加资源；到期后必须由
+ * 正常回合结构化结算，重试依靠 commitmentId 保证幂等。
+ */
+export interface CorrespondenceCommitment {
+  commitmentId: string;
+  sourceCorrespondenceId: string;
+  sourceRefId?: string;
+  promisorNpcId: string;
+  promisorName: string;
+  promisee: CorrespondenceParty;
+  summary: string;
+  status: CorrespondenceCommitmentStatus;
+  acceptedAt: string;
+  originLocationId?: string;
+  targetLocationId: string;
+  expectedAt: string;
+  deliverables: CorrespondenceCommitmentDeliverable[];
+  /** Outstanding balance after one or more partial settlements. */
+  remainingDeliverables?: CorrespondenceCommitmentDeliverable[];
+  conditions?: string[];
+  progressSummary?: string;
+  lastUpdatedAt: string;
+  resolution?: CorrespondenceCommitmentResolution;
+  /** Bounded idempotency/audit history for repeated partial settlements. */
+  resolutionHistory?: CorrespondenceCommitmentResolution[];
+}
+
 export type NpcBackgroundActivityStatus = 'planned' | 'active' | 'blocked' | 'completed' | 'cancelled';
 
 export type NpcBackgroundActivitySource = 'narrative' | 'quest' | 'plot' | 'worldTrend' | 'conflict' | 'system';
@@ -81,6 +253,17 @@ export interface NpcBackgroundActivity {
   sourceType?: NpcBackgroundActivitySource;
   sourceIds?: string[];
   visibility?: NpcBackgroundActivityVisibility;
+}
+
+/**
+ * 后台世界演化的轻量调度元数据。事实本体仍只写入 backgroundActivity、
+ * memories、presenceUpdates 与既有世界账本；这里不保存第二份剧情事实。
+ */
+export interface NpcBackgroundEvolutionMeta {
+  lastAttemptAt?: string;
+  nextRetryAt?: string;
+  lastEvaluationId?: string;
+  consecutiveFailures?: number;
 }
 
 export interface RemoteNpcPresenceBeat {
@@ -224,8 +407,11 @@ export interface LuanShiNpc {
   aliases?: string[];
   commonAddress?: string;
   sex: '男' | '女' | '其他';
+  /** Legacy compatibility snapshot; runtime age is derived from birthDate. */
   age: number;
+  /** Canonical complete in-world birthday after persistence migration. */
   birthDate?: string;
+  /** Legacy migration input only. New writes must not depend on this field. */
   ageKnownAtDate?: string;
   role: string;
   factionId?: string;
@@ -249,6 +435,7 @@ export interface LuanShiNpc {
   relationToPlayer: string;
   contactLevel: number;
   recentAttitude: string;
+  backgroundEvolutionMeta?: NpcBackgroundEvolutionMeta;
   abilityScores?: Record<string, number>;
   vitals?: CharacterVitals;
   combatStatuses?: string[];
@@ -300,6 +487,7 @@ export interface RouteLedgerEntry {
 }
 
 export interface ResourceLedger {
+  /** 势力/府库公共钱财，固定以“贯”为底层单位；不得与 player.personalMoney 的“钱”混用。 */
   money: number;
   grain: number;
   horses: number;
@@ -329,7 +517,35 @@ export type HoldingCivilAdministrationScope =
   | 'territorial'
   | 'mixed';
 
+/**
+ * 民政辖境的实际体量，与城防/设施规模 scaleLevel 分离。
+ * 例如一座城防规模为 3 的郡治，仍可管理 5 级民政辖境。
+ */
+export type HoldingCivilScaleLevel = 1 | 2 | 3 | 4 | 5;
+
 export type HoldingStatus = 'controlled' | 'contested' | 'temporary' | 'lost' | 'archived';
+
+export type HoldingControlEvidenceKind =
+  | 'opening'
+  | 'formal_handover'
+  | 'grant'
+  | 'capture'
+  | 'founding'
+  | 'temporary_administration'
+  | 'active_contest'
+  | 'war_target'
+  | 'control_loss';
+
+/**
+ * 当前领地控制状态的结构化事实依据。旧存档允许缺失；新建领地以及控制状态变化必须提供。
+ * 单纯驻守、守城、经过或位于城墙之上不是合法 kind。
+ */
+export interface HoldingControlEvidence {
+  kind: HoldingControlEvidenceKind;
+  occurredAt: string;
+  sourceRefId: string;
+  summary: string;
+}
 
 export type HoldingSiegeStatus = 'blockaded' | 'encircled';
 export type HoldingSupplyLineStatus = 'open' | 'strained' | 'cut';
@@ -357,12 +573,17 @@ export interface HoldingLedgerEntry {
   factionId?: string;
   nominalAllegiance?: string;
   actualController?: string;
+  controlEvidence?: HoldingControlEvidence;
   stewardNpcId?: string;
+  /** 已被结构化任命、可参与本领地治理项目的其他 NPC。 */
+  governanceOfficerNpcIds?: string[];
   /**
    * 民政账本适用范围。旧存档可缺省，由兼容层仅按既有结构字段保守归类；
    * 新写回必须显式提供，禁止按名称或正文关键词猜测。
    */
   civilAdministrationScope?: HoldingCivilAdministrationScope;
+  /** 旧存档可缺省，由地点档案与既有田亩/编户数据确定性推导。 */
+  civilScaleLevel?: HoldingCivilScaleLevel;
   scaleLevel: 1 | 2 | 3 | 4 | 5;
   agriculture: number;
   commerce: number;
@@ -393,6 +614,98 @@ export interface HoldingLedgerEntry {
   updatedAt: string;
 }
 
+export type HoldingGovernanceProjectType =
+  | 'land_survey'
+  | 'household_registration'
+  | 'irrigation'
+  | 'anti_corruption'
+  | 'public_order'
+  | 'refugee_resettlement'
+  | 'commerce'
+  | 'relief'
+  | 'garrison_drill'
+  | 'position_fortification'
+  | 'armory_maintenance'
+  | 'beacon_maintenance'
+  | 'route_patrol';
+
+export type HoldingGovernanceProjectStatus = 'active' | 'blocked' | 'completed' | 'cancelled';
+export type HoldingGovernanceProjectRisk = 'low' | 'moderate' | 'high';
+export type HoldingGovernanceActorType = 'player' | 'npc';
+
+export interface HoldingGovernanceActorRef {
+  actorType: HoldingGovernanceActorType;
+  actorId: string;
+}
+
+export interface HoldingGovernanceProjectFieldRange {
+  min: number;
+  max: number;
+}
+
+export interface HoldingGovernanceProjectEffects {
+  farmlandMu?: number;
+  registeredHouseholds?: number;
+  population?: number;
+  agriculture?: number;
+  commerce?: number;
+  publicOrder?: number;
+  popularSupport?: number;
+  corruption?: number;
+  defense?: number;
+  recruitPotential?: number;
+  armory?: number;
+  horseSupply?: number;
+}
+
+export type HoldingGovernanceProjectEffectRanges = {
+  [K in keyof HoldingGovernanceProjectEffects]?: HoldingGovernanceProjectFieldRange;
+};
+
+export interface HoldingGovernanceProjectBaseline extends HoldingGovernanceProjectEffects {
+  holdingStatus: HoldingStatus;
+  civilAdministrationScope: HoldingCivilAdministrationScope;
+  civilScaleLevel?: HoldingCivilScaleLevel;
+  scaleLevel: HoldingLedgerEntry['scaleLevel'];
+}
+
+export interface HoldingGovernanceProjectResult {
+  completedAt: string;
+  deltas: HoldingGovernanceProjectEffects;
+  summary: string;
+}
+
+export interface HoldingGovernanceProjectModifiers {
+  hostAbilityScore: number;
+  assistantAbilityScore?: number;
+  durationMultiplier: number;
+  costMultiplier: number;
+  effectMultiplier: number;
+  riskStepsReduced: number;
+}
+
+export interface HoldingGovernanceProjectEntry {
+  projectId: string;
+  holdingId: string;
+  type: HoldingGovernanceProjectType;
+  status: HoldingGovernanceProjectStatus;
+  host: HoldingGovernanceActorRef;
+  assistant?: HoldingGovernanceActorRef;
+  startedAt: string;
+  expectedCompleteAt: string;
+  investedMoney: number;
+  investedGrain: number;
+  baseline: HoldingGovernanceProjectBaseline;
+  expectedEffects: HoldingGovernanceProjectEffectRanges;
+  risk: HoldingGovernanceProjectRisk;
+  modifiers: HoldingGovernanceProjectModifiers;
+  appliedArtIds?: string[];
+  result?: HoldingGovernanceProjectResult;
+  blockedReason?: string;
+  cancelledAt?: string;
+  updatedAt: string;
+}
+
 export type PrivateAssetType =
   | 'estate'
   | 'farmland'
@@ -407,9 +720,28 @@ export type PrivateAssetOwnerScope = 'personal' | 'clan' | 'household' | 'retain
 
 export type PrivateAssetStatus = 'active' | 'damaged' | 'occupied' | 'disputed' | 'archived';
 
+export type PrivateAssetAcquisitionKind =
+  | 'opening'
+  | 'purchase'
+  | 'grant'
+  | 'inheritance'
+  | 'construction'
+  | 'seizure'
+  | 'transfer';
+
+export interface PrivateAssetAcquisition {
+  kind: PrivateAssetAcquisitionKind;
+  occurredAt: string;
+  sourceRefId: string;
+  summary: string;
+  costMoney?: number;
+  costGrain?: number;
+}
+
 export interface PrivateAssetEntry {
   privateAssetId: string;
   name: string;
+  aliases?: string[];
   type: PrivateAssetType;
   ownerScope: PrivateAssetOwnerScope;
   status: PrivateAssetStatus;
@@ -426,6 +758,7 @@ export interface PrivateAssetEntry {
   riskNotes?: string[];
   recentChanges?: string[];
   sourceNote?: string;
+  acquisition?: PrivateAssetAcquisition;
   updatedAt: string;
 }
 
@@ -462,6 +795,12 @@ export interface PrivateAssetProjectEntry {
   investedMoney?: number;
   investedGrain?: number;
   targetDelta?: PrivateAssetProjectDelta;
+  host?: HoldingGovernanceActorRef;
+  assistant?: HoldingGovernanceActorRef;
+  risk?: HoldingGovernanceProjectRisk;
+  modifiers?: HoldingGovernanceProjectModifiers;
+  appliedArtIds?: string[];
+  cancelledAt?: string;
   riskNotes?: string[];
   progressNotes?: string[];
   updatedAt: string;
@@ -509,6 +848,13 @@ export interface DomesticReportEntry {
   readByPlayer: boolean;
 }
 
+export interface FactionRecentActionEntry {
+  summary: string;
+  knownLevel: '亲历' | '听闻' | '推测';
+  observedAt?: string;
+  sourceNote?: string;
+}
+
 export interface FactionLedgerEntry {
   factionId: string;
   name: string;
@@ -528,19 +874,39 @@ export interface FactionLedgerEntry {
   lastKnownAt?: string;
   updatedAt?: string;
   recentActions: string[];
+  /** 引擎维护的逐条动作档案；recentActions 保留为旧存档与提示词兼容投影。 */
+  recentActionRecords?: FactionRecentActionEntry[];
 }
 
 export interface TroopLedgerEntry {
   troopId: string;
   name: string;
   aliases?: string[];
+  /**
+   * intelligence 只表示“这支军事力量已被玩家知晓”，不得直接进入确定性战争、
+   * 征募维护或精确兵力结算；operational 才是字段足以执行本地规则的完整建制。
+   * 旧存档缺省时按 operational 兼容。
+   */
+  detailLevel?: 'intelligence' | 'operational';
   size: number;
+  /** 军情层可保存区间估计，避免为了准入友军/敌军而伪造精确 size。 */
+  strengthEstimate?: {
+    min: number;
+    max: number;
+    asOf?: string;
+    basis?: string;
+  };
+  /** Locally maintained field for units temporarily unable to deploy because of logistics. */
+  deployableSize?: number;
   previousSize?: number;
   factionId?: string;
   previousFactionId?: string;
   allegianceChangedAt?: string;
   allegianceChangeReason?: string;
   troopType?: string;
+  /** Stable logistics class. New heavy cavalry must use the local formation/evidence contract. */
+  logisticsClass?: 'ordinary' | 'heavy_cavalry';
+  acquisitionEvidence?: TroopAcquisitionEvidence;
   specialDesignation?: string;
   quality?: '低' | '中' | '高' | '精锐';
   fatigue?: '低' | '中' | '高' | '极高';
@@ -549,7 +915,12 @@ export interface TroopLedgerEntry {
   readiness?: '低' | '中' | '高';
   lifecycleStatus?: 'active' | 'routed' | 'merged' | 'split' | 'destroyed' | 'surrendered' | 'disbanded' | 'unknown' | 'archived';
   statusTags?: string[];
+  /** 实际带领该建制的将领；玩家本人亲自统领时可使用玩家稳定 ID。 */
   leaderNpcId?: string;
+  /** 随军副将，最多两名；只保存稳定 NPC ID，不保存姓名副本。 */
+  deputyNpcIds?: string[];
+  /** 随军军师，最多一名；只保存稳定 NPC ID。 */
+  strategistNpcId?: string;
   locationId?: string;
   lastKnownLocationId?: string;
   lastKnownAt?: string;
@@ -576,6 +947,8 @@ export interface TroopLedgerEntry {
   upkeepSource?: 'player_resources' | 'superior_provision' | 'mixed' | 'unknown';
   task: string;
   relationToPlayer: string;
+  /** 当前作战隶属关系；不同于 parentTroopId 的拆分/合并建制谱系。 */
+  operationalParentForceId?: string;
   parentTroopId?: string;
   childTroopIds?: string[];
   /** 由 reducer 按 mergedIntoTroopId 反向维护的合并来源，不依赖 LLM 重复填写。 */
@@ -586,7 +959,77 @@ export interface TroopLedgerEntry {
   strengthTrend?: 'increased' | 'decreased' | 'stable' | 'unknown';
   sourceNote?: string;
   lastChangeReason?: string;
+  /** 由 reducer 根据结构化 changeEvent 追加；模型不得整段覆盖。 */
+  changeHistory?: TroopChangeRecord[];
   updatedAt?: string;
+}
+
+export type TroopChangeKind =
+  | 'observed'
+  | 'commander_changed'
+  | 'strength_changed'
+  | 'defeated'
+  | 'routed'
+  | 'reorganized'
+  | 'merged'
+  | 'split'
+  | 'surrendered'
+  | 'destroyed'
+  | 'moved';
+
+export interface TroopChangeRecord {
+  eventId: string;
+  kind: TroopChangeKind;
+  occurredAt: string;
+  summary: string;
+  sourceNote?: string;
+}
+
+export type TroopAcquisitionKind =
+  | 'opening'
+  | 'formation_project'
+  | 'superior_grant'
+  | 'transfer'
+  | 'incorporation'
+  | 'observed_existing';
+
+export interface TroopAcquisitionEvidence {
+  kind: TroopAcquisitionKind;
+  occurredAt: string;
+  sourceRefId: string;
+  summary: string;
+}
+
+export type HeavyCavalrySupportLevel = 'limited' | 'stable' | 'major_faction' | 'state_level';
+export type HeavyCavalryFormationStatus = 'active' | 'completed' | 'cancelled';
+
+/** Local deterministic project; LLM may request it but cannot choose costs, duration or final quality. */
+export interface HeavyCavalryFormationProjectEntry {
+  projectId: string;
+  troopId: string;
+  troopName: string;
+  holdingId: string;
+  factionId?: string;
+  requestedSize: number;
+  supportLevel: HeavyCavalrySupportLevel;
+  supportEvidenceRefId?: string;
+  status: HeavyCavalryFormationStatus;
+  startedAt: string;
+  expectedCompleteAt: string;
+  investedMoney: number;
+  investedGrain: number;
+  investedHorses: number;
+  investedArms: number;
+  investedRecruits: number;
+  /** 兵员可来自府库可征召人手，也可从玩家实际控制的现役部队原子转编。 */
+  personnelSource?: 'recruit_pool' | 'existing_troop';
+  sourceTroopId?: string;
+  reserveHorseCount: number;
+  leaderNpcId?: string;
+  relationToPlayer: string;
+  upkeepSource: NonNullable<TroopLedgerEntry['upkeepSource']>;
+  completedAt?: string;
+  updatedAt: string;
 }
 
 export interface CourtLedger {
@@ -931,11 +1374,13 @@ export interface LuanShiRuntimeFields {
   routeEdges: MapRouteEdgeV1[];
   resources: ResourceLedger;
   holdings: HoldingLedgerEntry[];
+  holdingGovernanceProjects: HoldingGovernanceProjectEntry[];
   privateAssets: PrivateAssetEntry[];
   privateAssetProjects: PrivateAssetProjectEntry[];
   domesticReports: DomesticReportEntry[];
   factions: FactionLedgerEntry[];
   troops: TroopLedgerEntry[];
+  heavyCavalryFormationProjects: HeavyCavalryFormationProjectEntry[];
   court: CourtLedger;
   situationOverview: SituationOverview;
   plotPlan: PlotPlanEntry[];
@@ -945,4 +1390,6 @@ export interface LuanShiRuntimeFields {
   npcAwarenessIndex: NpcAwarenessEntry[];
   heroineThreads: HeroineThreadEntry[];
   bondThreads: BondThreadEntry[];
+  correspondence: CorrespondenceEntry[];
+  correspondenceCommitments: CorrespondenceCommitment[];
 }

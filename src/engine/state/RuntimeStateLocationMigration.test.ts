@@ -196,7 +196,7 @@ describe('RuntimeState location migration', () => {
 
     const migrated = normalizeRuntimeStateForPersistence(input);
 
-    expect(CURRENT_RUNTIME_STATE_MIGRATION_VERSION).toBe(8);
+    expect(CURRENT_RUNTIME_STATE_MIGRATION_VERSION).toBe(20);
     expect(input).toEqual(snapshot);
     expect(migrated.currentLocationId).toBe('place_seed');
     expect(migrated.currentPlaceId).toBe('place_seed');

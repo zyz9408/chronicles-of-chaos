@@ -15,12 +15,18 @@ import { assertValidEncounterResultPayload } from './EncounterContractValidation
 import {
   ARMOR_REDUCTION_BY_TIER,
   COMBAT_GAUGE_THRESHOLD,
+  COMBAT_STABILIZE_HP_COST,
+  COMBAT_STABILIZE_HP_RESTORE,
+  COMBAT_STABILIZE_STAMINA_RESTORE,
+  SCOPED_NORMAL_ATTACK_DAMAGE_CAP,
+  canStabilizeAlly,
   calculateBlockChance,
   calculateCriticalChance,
   calculateHitChance,
   calculateNormalAttackDamage,
   calculateRetreatChance,
   clamp,
+  normalizeCombatStatuses,
 } from './CombatRules';
 import type {
   CombatAction,
@@ -30,13 +36,23 @@ import type {
   CombatRuntimeCombatant,
   CombatantSnapshot,
 } from './CombatTypes';
+import { experienceRewardFromPercent } from '../character/progression';
+import { getEncounterDifficultyProfile } from '../settings/GameDifficulty';
 
-const THREAT_XP_MULTIPLIER = {
-  minor: 5,
-  standard: 10,
-  major: 20,
-  deadly: 30,
+const THREAT_XP_PERCENT = {
+  minor: 10,
+  standard: 20,
+  major: 35,
+  deadly: 50,
 } as const;
+
+function combatExperiencePercent(state: CombatEngineState): number {
+  if (state.snapshot.intent.policy.lethality === 'nonlethal') return 5;
+  const victoryPercent = THREAT_XP_PERCENT[state.snapshot.threatTier];
+  if (state.outcome === 'player_victory' || state.outcome === 'enemy_retreat') return victoryPercent;
+  if (state.outcome === 'draw') return Math.max(5, Math.round(victoryPercent * 0.5));
+  return Math.max(5, Math.round(victoryPercent * 0.3));
+}
 
 function cloneCombatant(combatant: CombatRuntimeCombatant): CombatRuntimeCombatant {
   return {
@@ -123,7 +139,9 @@ function effectConditionMatches(
 
 function passiveEffects(state: CombatEngineState, owner: CombatRuntimeCombatant): SemanticEffect[] {
   const snapshot = snapshotFor(state, owner.actorId);
-  return [...snapshot.traitProfiles, ...snapshot.equipmentProfiles]
+  const passiveUniqueArts = snapshot.uniqueArtProfiles
+    .filter((profile) => profile.activation === 'passive' || profile.activation === 'hybrid');
+  return [...snapshot.traitProfiles, ...snapshot.equipmentProfiles, ...passiveUniqueArts]
     .flatMap((profile) => profile.effects)
     .slice()
     .sort((left, right) => left.priority - right.priority);
@@ -211,7 +229,7 @@ export function createCombatEngineState(snapshot: CombatEncounterSnapshot): Comb
     defending: false,
     downCount: 0,
     revivedOnce: false,
-    statuses: [],
+    statuses: normalizeCombatStatuses(combatant.combatStatuses),
     artUsage: {},
     itemUsage: {},
     itemQuantities: Object.fromEntries(combatant.inventory.map((item) => [item.itemId, item.quantity])),
@@ -265,6 +283,7 @@ export function advanceCombatToNextAction(input: CombatEngineState): CombatEngin
     });
   const actor = ready[0];
   if (!actor) throw new Error('速度槽推进后没有可行动角色。');
+  applyRoundStartPassiveUniqueArts(state, actor);
   state.phase = 'awaiting_action';
   state.currentActorId = actor.actorId;
   return state;
@@ -345,9 +364,15 @@ function performStrike(
     * Math.max(0, passiveModifier(state, attacker, defender, 'modify_damage_multiplier', ['before_attack'], true) || 1);
   const armorTier = options.armorPiercing
     ? 0
-    : clamp(defenderSnapshot.armor.armorTier + defender.modifiers.armor, 0, 5);
-  const rawDamage = attackerSnapshot.weapon.baseDamage + Math.floor(attackerMartial * 0.10) + flatDamage + variance;
-  const damage = options.normalAttack ? calculateNormalAttackDamage({
+    : clamp(
+      defenderSnapshot.armor.armorTier
+        + defender.modifiers.armor
+        - Math.floor(Math.max(0, penetration) / 6),
+      0,
+      5,
+    );
+  const rawDamage = attackerSnapshot.weapon.baseDamage + Math.floor(attackerMartial * 0.12) + flatDamage + variance;
+  const baseDamage = options.normalAttack ? calculateNormalAttackDamage({
     weaponBaseDamage: attackerSnapshot.weapon.baseDamage,
     attackerMartial,
     flatDamage,
@@ -356,6 +381,9 @@ function performStrike(
     blocked,
     defenderWasDefending: defender.defending,
     armorTier,
+    maxDamage: attackerSnapshot.combatArchetype
+      ? SCOPED_NORMAL_ATTACK_DAMAGE_CAP[attackerSnapshot.combatArchetype]
+      : undefined,
   }) : calculateArtDamage({
     rawDamage,
     damageMultiplier: options.damageMultiplier * passiveMultiplier,
@@ -364,6 +392,16 @@ function performStrike(
     defending: defender.defending,
     armorTier,
   });
+  const playerPowerMultiplier = getEncounterDifficultyProfile(
+    'combat',
+    state.snapshot.combatDifficulty,
+  ).playerPowerMultiplier;
+  const difficultyMultiplier = attacker.side === 'player' && defender.side === 'enemy'
+    ? playerPowerMultiplier
+    : attacker.side === 'enemy' && defender.side === 'player'
+      ? 1 / playerPowerMultiplier
+      : 1;
+  const damage = Math.max(1, Math.round(baseDamage * difficultyMultiplier));
   const beforeHp = defender.hp;
   defender.hp = Math.max(0, defender.hp - damage);
   if (beforeHp > 0 && defender.hp === 0) markDowned(defender);
@@ -429,6 +467,37 @@ function applyExecutableEffects(target: CombatRuntimeCombatant, effects: readonl
       default: {
         const key = modifierKey(effect.operation);
         if (key) target.modifiers[key] += effect.value;
+      }
+    }
+  }
+}
+
+function applyRoundStartPassiveUniqueArts(
+  state: CombatEngineState,
+  actor: CombatRuntimeCombatant,
+): void {
+  const profiles = snapshotFor(state, actor.actorId).uniqueArtProfiles
+    .filter((profile) => profile.activation === 'passive' || profile.activation === 'hybrid');
+  let restoredHp = 0;
+  let restoredStamina = 0;
+  for (const profile of profiles) {
+    for (const effect of [...profile.effects].sort((left, right) => left.priority - right.priority)) {
+      if (effect.trigger !== 'round_start'
+        || (effect.operation !== 'restore_hp' && effect.operation !== 'restore_stamina')
+        || (effect.target !== 'self' && effect.target !== 'current_attacker')
+        || !effectConditionMatches(state, actor, actor, effect, false)) {
+        continue;
+      }
+      if (effect.operation === 'restore_hp') {
+        if (actor.hp <= 0 || restoredHp >= 25) continue;
+        const before = actor.hp;
+        applyExecutableEffects(actor, [{ ...effect, value: Math.min(effect.value, 25 - restoredHp) }]);
+        restoredHp += actor.hp - before;
+      } else {
+        if (restoredStamina >= 25) continue;
+        const before = actor.stamina;
+        applyExecutableEffects(actor, [{ ...effect, value: Math.min(effect.value, 25 - restoredStamina) }]);
+        restoredStamina += actor.stamina - before;
       }
     }
   }
@@ -513,6 +582,7 @@ export function executeCombatAction(input: CombatEngineState, action: CombatActi
     case 'unique_art': {
       const art = snapshotFor(state, actor.actorId).uniqueArtProfiles.find((candidate) => candidate.sourceId === action.artId);
       if (!art) throw new Error(`绝艺 ${action.artId} 没有可执行投影。`);
+      if (art.activation === 'passive') throw new Error(`被动绝艺 ${action.artId} 不能作为主动行动使用。`);
       const used = actor.artUsage[art.sourceId] ?? 0;
       if (used >= art.perEncounterLimit) throw new Error(`绝艺 ${art.sourceId} 已达到本场使用次数。`);
       const staminaCost = Math.max(0, Math.round(art.staminaCost + actor.modifiers.staminaCost));
@@ -587,14 +657,22 @@ export function executeCombatAction(input: CombatEngineState, action: CombatActi
       if (target.side !== actor.side || target.hp !== 0 || target.downCount === 0) throw new Error('救援目标不是己方倒地角色。');
       if (target.downCount >= 2) throw new Error('角色第二次倒地后本场不能再次救援。');
       if (target.revivedOnce) throw new Error('角色本场已经接受过一次救援。');
-      target.hp = 25;
-      target.stamina = 20;
+      if (!canStabilizeAlly(actor, target)) {
+        throw new Error(`救援者生命必须高于 ${COMBAT_STABILIZE_HP_COST} 点，才能承担援护代价。`);
+      }
+      actor.hp -= COMBAT_STABILIZE_HP_COST;
+      target.hp = COMBAT_STABILIZE_HP_RESTORE;
+      target.stamina = COMBAT_STABILIZE_STAMINA_RESTORE;
       target.revivedOnce = true;
       target.speed = Math.max(60, target.speed - 15);
       removeStatus(target, 'downed');
       addStatus(target, 'severely_wounded');
       targetIds = [target.actorId];
-      Object.assign(values, { hpRestored: 25, staminaRestored: 20 });
+      Object.assign(values, {
+        rescuerHpSpent: COMBAT_STABILIZE_HP_COST,
+        hpRestored: COMBAT_STABILIZE_HP_RESTORE,
+        staminaRestored: COMBAT_STABILIZE_STAMINA_RESTORE,
+      });
       summaryKey = 'combat.stabilize';
       break;
     }
@@ -701,21 +779,33 @@ function elapsedMinutes(actionCount: number): number {
 export function finalizeCombatResult(
   state: CombatEngineState,
   resolvedAt: string,
+  options: { playerActorId: string },
 ): SealedEncounterResult<UnsealedCombatResult> {
   if (state.phase !== 'resolved' || !state.outcome) throw new Error('战斗尚未形成可封存结果。');
   const victory = state.outcome === 'player_victory';
   const rewardEligible = victory && state.snapshot.intent.policy.lethality !== 'nonlethal';
-  const playerLeader = state.snapshot.combatants.find((combatant) => combatant.side === 'player');
-  const experienceAward = rewardEligible && playerLeader
-    ? playerLeader.level * THREAT_XP_MULTIPLIER[state.snapshot.threatTier]
-    : 0;
+  const playerCombatant = state.snapshot.combatants.find((combatant) => (
+    combatant.actorId === options.playerActorId && combatant.side === 'player'
+  ));
+  if (!playerCombatant) {
+    throw new Error(`Combat V2 结算找不到当前玩家 ${options.playerActorId} 的我方快照。`);
+  }
+  const experienceAward = experienceRewardFromPercent(
+    playerCombatant.level,
+    combatExperiencePercent(state),
+  );
   const deltas: UnsealedCombatResult['deltas'] = [];
   for (const initial of state.snapshot.combatants) {
+    if (!initial.persistent) continue;
     const current = runtimeFor(state, initial.actorId);
     for (const [field, beforeValue, afterValue] of [
       ['vitals.hp', initial.hp, current.hp],
       ['vitals.stamina', initial.stamina, current.stamina],
-      ['combatStatuses', [] as string[], [...current.statuses].sort()],
+      [
+        'combatStatuses',
+        normalizeCombatStatuses(initial.combatStatuses),
+        normalizeCombatStatuses(current.statuses),
+      ],
     ] as const) {
       if (JSON.stringify(beforeValue) === JSON.stringify(afterValue)) continue;
       deltas.push({
@@ -742,15 +832,15 @@ export function finalizeCombatResult(
       });
     }
   }
-  if (experienceAward > 0 && playerLeader) {
+  if (experienceAward > 0) {
     deltas.push({
-      idempotencyKey: `${state.snapshot.sessionId}:actor:${playerLeader.actorId}:xp`,
+      idempotencyKey: `${state.snapshot.sessionId}:actor:${playerCombatant.actorId}:xp`,
       targetKind: 'actor',
-      targetId: playerLeader.actorId,
+      targetId: playerCombatant.actorId,
       field: 'xp',
       operation: 'increment',
-      beforeValue: playerLeader.xp,
-      afterValue: playerLeader.xp + experienceAward,
+      beforeValue: playerCombatant.xp,
+      afterValue: playerCombatant.xp + experienceAward,
     });
   }
   const allowLoot = rewardEligible && state.snapshot.intent.policy.lootPolicy === 'actual_items_only';

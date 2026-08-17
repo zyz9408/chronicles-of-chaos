@@ -63,7 +63,7 @@ function runCombat(seed: string, input: {
     capturableEquipmentItemIds: [],
   });
   const state = simulateCombatWithLocalAi(createCombatEngineState(snapshot), { maxActions: 500 });
-  return finalizeCombatResult(state, '2026-07-20T08:00:00.000Z');
+  return finalizeCombatResult(state, '2026-07-20T08:00:00.000Z', { playerActorId: playerIds[0] });
 }
 
 function runWar(seed: string, advantaged: boolean) {
@@ -85,7 +85,10 @@ function runWar(seed: string, advantaged: boolean) {
     supplies: 60,
     fatigue: '低',
   } : {});
-  const intent = makeWarIntent([playerTroop.troopId], [enemyTroop.troopId]);
+  const intent = makeWarIntent([playerTroop.troopId], [enemyTroop.troopId], {
+    player: [playerTroop.size],
+    enemy: [enemyTroop.size],
+  });
   intent.encounterId = `encounter_war_${seed}`;
   intent.seed = seed;
   const snapshot = createWarEncounterSnapshot({

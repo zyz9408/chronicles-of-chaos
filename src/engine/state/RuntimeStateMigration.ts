@@ -1,9 +1,12 @@
 import type {
+  CharacterTrait,
+  CharacterUniqueArt,
   MapNode,
   Relationship,
   RelationshipTargetKind,
   RuntimeState,
   StatePatch,
+  TroopLedgerEntry,
   WorldBook,
 } from '../types';
 import {
@@ -19,9 +22,23 @@ import {
 import { recoverRejectedCurrentSceneNpcMemories } from './NpcMemoryWritebackRecovery';
 import { parseNarratorResponse } from '../turn/NarratorResponseParser';
 import { resolveNpcBackgroundActivityAgainstCurrentMatters } from './currentMatterLifecycle';
+import { normalizeLoadoutOwner } from '../character/loadoutIdentity';
+import {
+  advanceGameClock,
+  formatGameClock,
+  tryCreateGameClockFromDateLabel,
+} from '../time/gameClock';
+import { ensureStableUniqueArtProjections } from '../encounterV2/UniqueArtProjectionRuntime';
+import { ensureCompleteBirthDate } from '../time/npcAge';
+import { normalizeCharacterTraits } from '../character/CharacterTraitNormalization';
+import { mergeStableCharacterUniqueArts } from '../character/NpcUniqueArtPolicy';
+import {
+  repairCorrespondenceVisibleMemoryArtifacts,
+  repairRapidRepeatedNpcFollowups,
+} from '../correspondence';
 
 export const CURRENT_RUNTIME_STATE_VERSION = '0.1.0';
-export const CURRENT_RUNTIME_STATE_MIGRATION_VERSION = 8;
+export const CURRENT_RUNTIME_STATE_MIGRATION_VERSION = 20;
 const MAX_NESTED_MAP_HIERARCHY_DEPTH = 512;
 
 export interface RuntimeStateMigrationDiagnostic {
@@ -99,14 +116,32 @@ function normalizeRuntimeState(
   metrics?: RuntimeStateMigrationMetrics,
 ): RuntimeState {
   assertRuntimeStateVersionSupported(state.engineVersion);
-  const normalized = reconcilePlayerIdentityDependentFields(
-    recoverRejectedCurrentSceneNpcMemories(ensureLuanShiState(cloneRuntimeState(state))),
+  const normalizedBase = normalizeRuntimeCharacterBirthDates(
+    reconcilePlayerIdentityDependentFields(
+      recoverRejectedCurrentSceneNpcMemories(ensureLuanShiState(
+        repairLongzhongSeasonalClockReset(cloneRuntimeState(state)),
+      )),
+    ),
   );
+  const normalized = {
+    ...normalizedBase,
+    player: normalizePersistentCharacterProfile(normalizeLoadoutOwner(normalizedBase.player)),
+    knownActors: normalizedBase.knownActors.map((actor) => (
+      normalizePersistentCharacterProfile(normalizeLoadoutOwner(actor))
+    )),
+    npcs: normalizedBase.npcs?.map((npc) => (
+      normalizePersistentCharacterProfile(normalizeLoadoutOwner(npc))
+    )),
+  };
+  repairRapidRepeatedNpcFollowups(normalized);
+  repairCorrespondenceVisibleMemoryArtifacts(normalized);
   const holdingIdMap = buildHoldingIdMap(state, normalized);
   const locationMigration = buildLocationMigration(normalized, worldBook, diagnostics, metrics);
   const locationIdMap = locationMigration.idMap;
+  const preserveActiveLegacyWarCapacity = normalized.encounterV2?.active?.session.intent.kind === 'war'
+    && normalized.encounterV2.active.checkpoint.checkpointKind === 'pre_encounter';
 
-  return {
+  return ensureStableUniqueArtProjections({
     ...normalized,
     engineVersion: CURRENT_RUNTIME_STATE_VERSION,
     currentLocationId: remapLocationId(normalized.currentLocationId, locationIdMap),
@@ -166,7 +201,7 @@ function normalizeRuntimeState(
       locationId: remapOptionalLocationId(asset.locationId, locationIdMap),
     })),
     troops: normalized.troops?.map((troop) => ({
-      ...troop,
+      ...(preserveActiveLegacyWarCapacity ? troop : normalizePersistentTroopDeploymentCapacity(troop)),
       locationId: remapOptionalLocationId(troop.locationId, locationIdMap),
       lastKnownLocationId: remapOptionalLocationId(troop.lastKnownLocationId, locationIdMap),
       destinationLocationId: remapOptionalLocationId(troop.destinationLocationId, locationIdMap),
@@ -228,7 +263,84 @@ function normalizeRuntimeState(
           }
         : entry.displayMeta,
     })),
+  });
+}
+
+/**
+ * Migration v20: deployable strength is a subset of the surviving troop.
+ * Older results could reduce size without reducing deployableSize, leaving a
+ * value that made the following war snapshot larger than the actual unit.
+ */
+export function normalizePersistentTroopDeploymentCapacity<T extends TroopLedgerEntry>(troop: T): T {
+  if (troop.deployableSize === undefined) return troop;
+  const normalizedSize = Math.max(0, Math.round(troop.size));
+  const normalizedDeployable = Math.min(
+    normalizedSize,
+    Math.max(0, Math.round(troop.deployableSize)),
+  );
+  if (normalizedSize === troop.size && normalizedDeployable === troop.deployableSize) return troop;
+  return {
+    ...troop,
+    size: normalizedSize,
+    deployableSize: normalizedDeployable,
   };
+}
+
+function normalizePersistentCharacterProfile<
+  T extends { traits?: CharacterTrait[]; uniqueArts?: CharacterUniqueArt[] },
+>(character: T): T {
+  return {
+    ...character,
+    ...(character.traits ? { traits: normalizeCharacterTraits(character.traits) } : {}),
+    ...(character.uniqueArts
+      ? { uniqueArts: mergeStableCharacterUniqueArts(character.uniqueArts, []) }
+      : {}),
+  };
+}
+
+const LONGZHONG_BOOKMARK_ID = 'bookmark_207_longzhong_plan';
+const LONGZHONG_SEASONAL_START_DATE = '207年冬';
+const BUGGY_CLOCK_EPOCH = { year: 1, month: 1, day: 1, hour: 8, minute: 0 } as const;
+
+/**
+ * Runtime migration 12 repairs the narrow clock reset produced when the
+ * Longzhong bookmark's seasonal label could not be parsed. The old fallback
+ * began at 1-01-01 08:00, so its elapsed minutes can be preserved exactly.
+ */
+function repairLongzhongSeasonalClockReset(state: RuntimeState): RuntimeState {
+  if (
+    state.worldBookId !== 'threeKingdoms'
+    || state.startBookmarkId !== LONGZHONG_BOOKMARK_ID
+    || state.startDate.trim() !== LONGZHONG_SEASONAL_START_DATE
+  ) {
+    return state;
+  }
+
+  const currentClock = state.currentTime ?? tryCreateGameClockFromDateLabel(state.currentDate);
+  const openingClock = tryCreateGameClockFromDateLabel(LONGZHONG_SEASONAL_START_DATE);
+  if (!currentClock || !openingClock || currentClock.year >= 100) return state;
+
+  const elapsedMinutes = gameClockMinuteIndex(currentClock) - gameClockMinuteIndex(BUGGY_CLOCK_EPOCH);
+  if (elapsedMinutes < 0) return state;
+
+  const repairedCurrentClock = advanceGameClock(openingClock, { minutesAdvanced: elapsedMinutes });
+  return {
+    ...state,
+    startDate: formatGameClock(openingClock),
+    currentDate: formatGameClock(repairedCurrentClock),
+    currentTime: repairedCurrentClock,
+  };
+}
+
+function gameClockMinuteIndex(clock: {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+}): number {
+  const elapsedDays = ((clock.year - 1) * 12 + (clock.month - 1)) * 30 + (clock.day - 1);
+  return elapsedDays * 24 * 60 + clock.hour * 60 + clock.minute;
 }
 
 type PlayerIdentityDependentField = 'currentIdentityDescription' | 'identitySummary';
@@ -884,6 +996,41 @@ function mergeUniqueStrings(values: string[]): string[] {
 
 function cloneRuntimeState(state: RuntimeState): RuntimeState {
   return JSON.parse(JSON.stringify(state)) as RuntimeState;
+}
+
+/**
+ * Migration v15: complete birthdays become the persisted source of truth.
+ * Legacy age snapshots are used once to infer a deterministic month/day; no
+ * provider request or random number is involved.
+ */
+export function normalizeRuntimeCharacterBirthDates(state: RuntimeState): RuntimeState {
+  const normalizeActorBirthDate = <T extends RuntimeState['player']>(actor: T, stableId: string): T => {
+    const birthDate = ensureCompleteBirthDate({
+      age: actor.age,
+      birthDate: actor.birthDate,
+      currentDate: state.currentDate,
+      stableId,
+    });
+    return birthDate ? { ...actor, birthDate } : actor;
+  };
+
+  return {
+    ...state,
+    player: normalizeActorBirthDate(state.player, `player:${state.player.id}`),
+    knownActors: state.knownActors.map((actor) => normalizeActorBirthDate(actor, `actor:${actor.id}`)),
+    npcs: (state.npcs ?? []).map((npc) => {
+      const birthDate = ensureCompleteBirthDate({
+        age: npc.age,
+        birthDate: npc.birthDate,
+        ageKnownAtDate: npc.ageKnownAtDate,
+        currentDate: state.currentDate,
+        stableId: `npc:${npc.npcId}`,
+      });
+      if (!birthDate) return npc;
+      const { ageKnownAtDate: _legacyAgeAnchor, ...rest } = npc;
+      return { ...rest, birthDate };
+    }),
+  };
 }
 
 function normalizePersistentRelationship(relationship: Relationship): Relationship {

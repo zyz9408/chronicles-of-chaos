@@ -1,3 +1,9 @@
+@media (max-width: 1280px) {
+  .creation-page .bookmark-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 960px) {
   .creation-page {
     grid-template-columns: 1fr;
@@ -66,7 +72,7 @@
     grid-row: 4;
   }
 
-  .creation-page .bookmark-layout,
+  .creation-page .bookmark-list,
   .creation-page .worldbook-card-row.selected,
   .creation-page .mode-cards,
   .archive-grid,
@@ -78,6 +84,10 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .opening-demographics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .main-menu-focus {
     width: min(640px, calc(100% - 2.5rem));
   }
@@ -85,9 +95,11 @@
   .main-menu-title {
     font-size: clamp(4rem, 10vw, 5.8rem);
   }
+}
 
-  .bookmark-detail {
-    position: static;
+@media (max-width: 600px) {
+  .opening-demographics-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -107,10 +119,6 @@
   .settings-panel {
     height: auto;
     min-height: calc(100vh - 1.5rem);
-  }
-
-  .creation-page .bookmark-layout {
-    grid-template-columns: 1fr;
   }
 
   .start-shell.start-shell--menu-stage {
@@ -243,11 +251,7 @@
     font-size: 1rem;
   }
 
-  .bookmark-timeline-item {
-    grid-template-columns: 6.4rem minmax(0, 1fr);
-  }
-
-  .bookmark-detail-meta {
+  .creation-page .bookmark-card .bm-meta {
     grid-template-columns: 1fr;
   }
 

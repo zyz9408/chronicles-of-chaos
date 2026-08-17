@@ -135,11 +135,18 @@ describe('applyPatch with luanshiCommand', () => {
       reason: '登记玩家直辖庄园',
       payload: {
         action: 'upsertHoldingLedger',
+        operation: 'create',
         holdingId: 'holding_gushui_estate',
         name: '谷水庄园',
         type: 'estate',
         status: 'controlled',
         summary: '洛阳近郊一处可供整顿的庄园。',
+        controlEvidence: {
+          kind: 'formal_handover',
+          occurredAt: '公元189年09月01日 08:45（辰时）',
+          sourceRefId: 'turn_event_gushui_handover',
+          summary: '庄园册籍与管领权已正式移交给主角。',
+        },
         civilAdministrationScope: 'territorial',
         scaleLevel: 2,
         agriculture: 45,
@@ -171,6 +178,147 @@ describe('applyPatch with luanshiCommand', () => {
     });
   });
 
+  it('rejects a city-wall garrison writeback that lacks an actual control fact', () => {
+    const state = makeState();
+    const patch: StatePatch = {
+      type: 'luanshiCommand',
+      reason: '玩家奉命驻守北城墙',
+      payload: {
+        command: {
+          action: 'upsertHoldingLedger',
+          operation: 'create',
+          holdingId: 'holding_north_wall',
+          name: '北城墙防段',
+          type: 'fort',
+          status: 'controlled',
+          summary: '主角奉命在此段城墙驻守。',
+          civilAdministrationScope: 'none',
+          scaleLevel: 1,
+          agriculture: 0,
+          commerce: 0,
+          population: 0,
+          publicOrder: 0,
+          popularSupport: 0,
+          defense: 55,
+          recruitPotential: 0,
+          armory: 20,
+          horseSupply: 0,
+          updatedAt: '189-09-01 16:00',
+        },
+      },
+    };
+
+    const validation = validatePatch(patch, worldBook, [], state);
+    expect(validation.valid).toBe(false);
+    expect(validation.errors.join('\n')).toContain('controlEvidence');
+
+    const next = ensureLuanShiState(
+      applyPatch(state, patch, 1, '驻守北城墙', '主角登上城墙，与守卒一同值守。'),
+    );
+    expect(next.holdings).toEqual([]);
+  });
+
+  it('preserves stable control evidence on ordinary updates and requires fresh evidence for control transitions', () => {
+    const createPatch: StatePatch = {
+      type: 'luanshiCommand',
+      reason: '正式接掌谷水庄园',
+      payload: {
+        command: {
+          action: 'upsertHoldingLedger',
+          operation: 'create',
+          holdingId: 'holding_control_evidence',
+          name: '谷水庄园',
+          type: 'estate',
+          status: 'controlled',
+          summary: '庄园册籍与管领权已完成移交。',
+          civilAdministrationScope: 'territorial',
+          scaleLevel: 1,
+          agriculture: 40,
+          commerce: 20,
+          population: 25,
+          publicOrder: 45,
+          popularSupport: 40,
+          defense: 25,
+          recruitPotential: 20,
+          armory: 10,
+          horseSupply: 5,
+          corruption: 20,
+          actualController: 'player',
+          controlEvidence: {
+            kind: 'formal_handover',
+            occurredAt: '189-09-01 08:00',
+            sourceRefId: 'turn_event_initial_handover',
+            summary: '前任管事交出册籍、印信和庄园管领权。',
+          },
+          updatedAt: '189-09-01 08:00',
+        },
+      },
+    };
+    const created = ensureLuanShiState(
+      applyPatch(makeState(), createPatch, 1, '接掌庄园', '前任管事交出了庄园册籍与印信。'),
+    );
+
+    const ordinaryUpdate: StatePatch = {
+      type: 'luanshiCommand',
+      reason: '修缮庄园围墙',
+      payload: {
+        command: {
+          action: 'upsertHoldingLedger',
+          operation: 'update',
+          holdingId: 'holding_control_evidence',
+          defense: 30,
+          summary: '围墙修缮后防御有所提升。',
+          updatedAt: '189-09-02 08:00',
+        },
+      },
+    } as StatePatch;
+    expect(validatePatch(ordinaryUpdate, worldBook, [], created).valid).toBe(true);
+    const updated = ensureLuanShiState(
+      applyPatch(created, ordinaryUpdate, 2, '修缮围墙', '庄园围墙完成了第一轮修缮。'),
+    );
+    expect(updated.holdings[0].controlEvidence?.sourceRefId).toBe('turn_event_initial_handover');
+
+    const unsupportedTransition: StatePatch = {
+      type: 'luanshiCommand',
+      reason: '尝试无依据改变控制状态',
+      payload: {
+        command: {
+          action: 'upsertHoldingLedger',
+          operation: 'update',
+          holdingId: 'holding_control_evidence',
+          status: 'temporary',
+          actualController: 'faction_ally',
+          summary: '控制状态被改写。',
+          updatedAt: '189-09-03 08:00',
+        },
+      },
+    } as StatePatch;
+    const unsupportedValidation = validatePatch(unsupportedTransition, worldBook, [], updated);
+    expect(unsupportedValidation.valid).toBe(false);
+    expect(unsupportedValidation.errors.join('\n')).toContain('controlEvidence');
+
+    const supportedTransition = structuredClone(unsupportedTransition);
+    const supportedCommand = (supportedTransition.payload as { command: Record<string, unknown> }).command;
+    supportedCommand.controlEvidence = {
+      kind: 'temporary_administration',
+      occurredAt: '189-09-03 08:00',
+      sourceRefId: 'turn_event_temporary_transfer',
+      summary: '双方完成临时行政移交，并由盟军代管。',
+    };
+    expect(validatePatch(supportedTransition, worldBook, [], updated).valid).toBe(true);
+    const transitioned = ensureLuanShiState(
+      applyPatch(updated, supportedTransition, 3, '临时移交', '双方完成了临时行政移交。'),
+    );
+    expect(transitioned.holdings[0]).toMatchObject({
+      status: 'temporary',
+      actualController: 'faction_ally',
+      controlEvidence: {
+        kind: 'temporary_administration',
+        sourceRefId: 'turn_event_temporary_transfer',
+      },
+    });
+  });
+
   it('normalizes holding fields while stripping deprecated local treasury and granary writes', () => {
     const patch: StatePatch = {
       type: 'luanshiCommand',
@@ -178,11 +326,18 @@ describe('applyPatch with luanshiCommand', () => {
       payload: {
         command: {
           action: 'upsertHoldingLedger',
+          operation: 'create',
           holdingId: 'holding_runtime_estate',
           name: 'Runtime Estate',
           type: 'estate',
           status: 'controlled',
           summary: 'A player-controlled estate near the capital.',
+          controlEvidence: {
+            kind: 'grant',
+            occurredAt: '189-09-01 14:15',
+            sourceRefId: 'turn_event_runtime_estate_grant',
+            summary: 'The estate was formally granted to the player.',
+          },
           civilAdministrationScope: 'territorial',
           scaleLevel: 1,
           agriculture: 45,
@@ -197,8 +352,8 @@ describe('applyPatch with luanshiCommand', () => {
           corruption: 35,
           localTreasury: '30000钱',
           localGranary: '300石',
-          farmlandMu: '12,000亩',
-          registeredHouseholds: '1,800户',
+          farmlandMu: '2,400亩',
+          registeredHouseholds: '240户',
           eliteControlledShare: '65%',
           localEliteRelation: '-20',
           riskNotes: 'Bandit pressure remains high.',
@@ -216,8 +371,8 @@ describe('applyPatch with luanshiCommand', () => {
 
     expect(next.holdings[0]).toMatchObject({
       holdingId: 'holding_runtime_estate',
-      farmlandMu: 12000,
-      registeredHouseholds: 1800,
+      farmlandMu: 2400,
+      registeredHouseholds: 240,
       eliteControlledShare: 65,
       localEliteRelation: -20,
       riskNotes: ['Bandit pressure remains high.'],
@@ -420,7 +575,9 @@ describe('applyPatch with luanshiCommand', () => {
         payload: {
           command: {
             action: 'updateResourceLedger',
-            money: 1500,
+            previousMoneyGuan: 0,
+            moneyDeltaGuan: 1500,
+            moneyGuan: 1500,
             summary: '从阳翟县府库提取的一千五百贯军饷。',
           },
         },
@@ -440,6 +597,8 @@ describe('applyPatch with luanshiCommand', () => {
     });
     expect(next.resources.money).toBe(1500);
     expect(next.player.personalMoney).toBeUndefined();
+    expect(next.turnLog[next.turnLog.length - 1]?.statePatchSummary)
+      .toContain('updateResourceLedger[money=1500贯, delta=+1500贯]');
   });
 
   it('applies questAdded as a current matter with relationship and timing metadata', () => {
@@ -796,7 +955,52 @@ describe('applyPatch with luanshiCommand', () => {
 
     expect(next.factions).toContainEqual(expect.objectContaining({
       factionId: 'faction_market_patrol',
-      recentActions: ['封锁北门，盘查伤者去向。'],
+      recentActions: ['【听闻】封锁北门，盘查伤者去向。'],
+    }));
+  });
+
+  it('applies a same-turn structured recent action to an existing faction ledger entry', () => {
+    const factionPatch: StatePatch = {
+      type: 'luanshiCommand',
+      reason: '建立现有势力档案',
+      payload: {
+        command: {
+          action: 'upsertFactionLedger',
+          factionId: 'faction_market_patrol',
+          name: '市镇巡卒',
+          type: '地方武装',
+          summary: '市镇里维持秩序的小股巡卒。',
+          stanceToPlayer: '暂时观望主角。',
+          knownLevel: '听闻',
+          recentActions: ['封锁北门'],
+        },
+      },
+    };
+    const stateWithFaction = ensureLuanShiState(
+      applyPatch(makeState(), factionPatch, 1, '打听巡卒', '主角打听巡卒动向。'),
+    );
+    const actionPatch: StatePatch = {
+      type: 'recordFactionRecentAction',
+      reason: '正文通过传闻明确了已有势力的新行动',
+      payload: {
+        factionId: 'faction_market_patrol',
+        summary: '巡卒开始盘查出城商旅',
+        knownLevel: '听闻',
+        observedAt: '公元189年09月01日 12:00（午时）',
+        sourceNote: '商旅转述',
+      },
+    } as unknown as StatePatch;
+
+    expect(validatePatch(actionPatch, worldBook, [], stateWithFaction).valid).toBe(true);
+
+    const next = ensureLuanShiState(
+      applyPatch(stateWithFaction, actionPatch, 2, '继续打听', '商旅称巡卒已经开始盘查。'),
+    );
+    expect(next.factions).toContainEqual(expect.objectContaining({
+      factionId: 'faction_market_patrol',
+      knownLevel: '听闻',
+      sourceNote: '商旅转述',
+      recentActions: ['【听闻】封锁北门', '【听闻】巡卒开始盘查出城商旅'],
     }));
   });
 
@@ -1126,6 +1330,47 @@ describe('applyPatch with luanshiCommand', () => {
       xp: 10,
       growthPoints: 6,
     });
+  });
+
+  it('derives direct quest patch experience from structured severity', () => {
+    const state = {
+      ...makeState(),
+      player: {
+        ...makeState().player,
+        level: 2,
+        xp: 0,
+        growthPoints: 0,
+      },
+      activeQuests: [{
+        id: 'quest_critical_granary',
+        title: '保全郡仓',
+        description: '阻止郡仓被焚并恢复粮道。',
+        severity: 'critical' as const,
+        status: 'active' as const,
+        createdAt: 'day 1',
+        updatedAt: 'day 1',
+      }],
+    };
+    const completionPatch: StatePatch = {
+      type: 'questUpdated',
+      reason: '郡仓和粮道均已保全',
+      payload: {
+        questId: 'quest_critical_granary',
+        status: 'completed',
+        outcomeSummary: '郡仓无损，粮道恢复。',
+      },
+    };
+
+    expect(validatePatch(
+      completionPatch,
+      worldBook,
+      ['quest_critical_granary'],
+      state,
+    ).valid).toBe(true);
+    const completed = applyPatch(state, completionPatch, 2, '保全郡仓', '粮道重新畅通。');
+
+    expect(completed.activeQuests[0].completionExperienceAwarded).toBe(160);
+    expect(completed.player).toMatchObject({ level: 2, xp: 160, growthPoints: 0 });
   });
 
   it.each([
@@ -1461,9 +1706,15 @@ describe('applyPatch with luanshiCommand', () => {
           characterId: 'player',
           characterName: '主角',
           currentIdentity: '军中下级将校',
+          currentIdentityDescription: '统带北军一部的基层军官。',
           militaryTitle: '军侯',
           commonAddress: '刘军侯',
           identitySummary: '主角在洛阳乱局中被明确为北军军侯。',
+          personalEscortEntitlement: {
+            status: 'customary',
+            bases: ['military_command'],
+            updatedAt: '乱世元年2月',
+          },
         },
       },
     };
@@ -1660,6 +1911,8 @@ describe('applyPatch with luanshiCommand', () => {
       payload: {
         npcId: 'npc_chen_zhi',
         name: '陈祗',
+        persistenceReason: 'historical_figure',
+        persistenceEvidence: '蜀汉尚书令陈祗已在御前议事中持续承接朝政线。',
         sex: '男',
         age: 45,
         role: '尚书令',
@@ -1709,6 +1962,8 @@ describe('applyPatch with luanshiCommand', () => {
           action: 'upsertNpcProfile',
           npcId: 'npc_chenwu',
           name: '陈伍',
+          persistenceReason: 'opening_cast',
+          persistenceEvidence: '陈伍是开局已明确追随主角两年的固定副将。',
           sex: '男',
           age: 32,
           role: '副将/亲兵',
@@ -2117,6 +2372,8 @@ describe('applyPatch with luanshiCommand', () => {
             action: 'upsertNpcProfile',
             npcId: 'npc_adult_woman',
             name: '某氏',
+            persistenceReason: 'recurring_contact',
+            persistenceEvidence: '她已与主角约定后续联络并继续寻求庇护。',
             sex: '女',
             age: 33,
             role: '重要女性 NPC',
@@ -2271,44 +2528,46 @@ describe('applyPatch with canonical resourceChanged contracts', () => {
   });
 
   it('normalizes numeric strings and applies delta or absolute mode', () => {
-    const state = { ...makeState(), playerResources: { grain: 10 } };
+    const state = { ...makeState(), playerResources: { supplyCredit: 10 } };
     const next = applyPatches(state, [
       {
         type: 'resourceChanged',
         reason: 'legacy numeric string delta',
-        payload: { resource: 'grain', change: '2.5' },
+        payload: { resource: 'supplyCredit', change: '2.5' },
       },
       {
         type: 'resourceChanged',
         reason: 'explicit absolute value',
-        payload: { resource: 'grain', mode: 'absolute', newValue: '20' },
+        payload: { resource: 'supplyCredit', mode: 'absolute', newValue: '20' },
       },
       {
         type: 'resourceChanged',
         reason: 'explicit delta after absolute value',
-        payload: { resource: 'grain', mode: 'delta', change: -3 },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: -3 },
       },
     ], 1, 'update grain', 'The grain ledger changes.');
 
-    expect(next.playerResources.grain).toBe(17);
+    expect(next.playerResources.supplyCredit).toBe(17);
     expect(next.lastStatePatch?.payload).toMatchObject({
-      resource: 'grain',
+      resource: 'supplyCredit',
       mode: 'delta',
       change: -3,
     });
+    expect(next.turnLog[next.turnLog.length - 1]?.statePatchSummary)
+      .toContain('playerResources.supplyCredit-=3');
   });
 
   it('returns the original state when a finite delta overflows the resource result', () => {
-    const state = { ...makeState(), playerResources: { grain: Number.MAX_VALUE } };
+    const state = { ...makeState(), playerResources: { supplyCredit: Number.MAX_VALUE } };
 
     const next = applyPatches(state, [{
       type: 'resourceChanged',
       reason: 'overflow grain delta',
-      payload: { resource: 'grain', mode: 'delta', change: Number.MAX_VALUE },
+      payload: { resource: 'supplyCredit', mode: 'delta', change: Number.MAX_VALUE },
     }], 1, 'overflow update', 'No change applies.');
 
     expect(next).toBe(state);
-    expect(next.playerResources.grain).toBe(Number.MAX_VALUE);
+    expect(next.playerResources.supplyCredit).toBe(Number.MAX_VALUE);
     expect(next.turnLog).toEqual([]);
     expect(next.lastStatePatch).toBeUndefined();
   });
@@ -2316,7 +2575,7 @@ describe('applyPatch with canonical resourceChanged contracts', () => {
   it('rejects a mixed direct batch atomically when a later resource delta overflows', () => {
     const state = {
       ...makeState(),
-      playerResources: { grain: Number.MAX_VALUE },
+      playerResources: { supplyCredit: Number.MAX_VALUE },
       localSituationNotes: ['existing note'],
     };
 
@@ -2329,86 +2588,86 @@ describe('applyPatch with canonical resourceChanged contracts', () => {
       {
         type: 'resourceChanged',
         reason: 'overflow grain delta',
-        payload: { resource: 'grain', mode: 'delta', change: Number.MAX_VALUE },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: Number.MAX_VALUE },
       },
     ], 1, 'mixed overflow', 'No change applies.');
 
     expect(next).toBe(state);
     expect(next.localSituationNotes).toEqual(['existing note']);
-    expect(next.playerResources.grain).toBe(Number.MAX_VALUE);
+    expect(next.playerResources.supplyCredit).toBe(Number.MAX_VALUE);
     expect(next.turnLog).toEqual([]);
     expect(next.lastStatePatch).toBeUndefined();
   });
 
   it('checks each ordered delta result and rejects the batch when an intermediate draft overflows', () => {
     const halfMax = Number.MAX_VALUE / 2;
-    const state = { ...makeState(), playerResources: { grain: halfMax } };
+    const state = { ...makeState(), playerResources: { supplyCredit: halfMax } };
 
     const next = applyPatches(state, [
       {
         type: 'resourceChanged',
         reason: 'first finite grain delta',
-        payload: { resource: 'grain', mode: 'delta', change: halfMax },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: halfMax },
       },
       {
         type: 'resourceChanged',
         reason: 'second overflowing grain delta',
-        payload: { resource: 'grain', mode: 'delta', change: Number.MAX_VALUE },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: Number.MAX_VALUE },
       },
     ], 1, 'ordered overflow', 'No change applies.');
 
     expect(next).toBe(state);
-    expect(next.playerResources.grain).toBe(halfMax);
+    expect(next.playerResources.supplyCredit).toBe(halfMax);
     expect(next.turnLog).toEqual([]);
     expect(next.lastStatePatch).toBeUndefined();
   });
 
   it('keeps finite absolute values and applies multiple same-resource deltas in order', () => {
-    const state = { ...makeState(), playerResources: { grain: 1 } };
+    const state = { ...makeState(), playerResources: { supplyCredit: 1 } };
 
     const next = applyPatches(state, [
       {
         type: 'resourceChanged',
         reason: 'finite absolute maximum',
-        payload: { resource: 'grain', mode: 'absolute', newValue: Number.MAX_VALUE },
+        payload: { resource: 'supplyCredit', mode: 'absolute', newValue: Number.MAX_VALUE },
       },
       {
         type: 'resourceChanged',
         reason: 'subtract the finite maximum',
-        payload: { resource: 'grain', mode: 'delta', change: -Number.MAX_VALUE },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: -Number.MAX_VALUE },
       },
       {
         type: 'resourceChanged',
         reason: 'add a final finite unit',
-        payload: { resource: 'grain', mode: 'delta', change: 1 },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: 1 },
       },
     ], 1, 'finite ordered updates', 'The finite updates apply.');
 
-    expect(next.playerResources.grain).toBe(1);
+    expect(next.playerResources.supplyCredit).toBe(1);
     expect(next.turnLog).toHaveLength(1);
     expect(next.lastStatePatch?.reason).toBe('add a final finite unit');
   });
 
   it.each([
-    { resource: 'grain', mode: 'delta', change: Number.NaN },
-    { resource: 'grain', mode: 'absolute', newValue: Number.POSITIVE_INFINITY },
-    { resource: 'grain', change: 1, newValue: 2 },
-    { resource: 'grain', mode: 'delta', change: '1kg' },
+    { resource: 'supplyCredit', mode: 'delta', change: Number.NaN },
+    { resource: 'supplyCredit', mode: 'absolute', newValue: Number.POSITIVE_INFINITY },
+    { resource: 'supplyCredit', change: 1, newValue: 2 },
+    { resource: 'supplyCredit', mode: 'delta', change: '1kg' },
   ])('does not apply a resource payload rejected by the shared contract %#', (payload) => {
-    const state = { ...makeState(), playerResources: { grain: 10 } };
+    const state = { ...makeState(), playerResources: { supplyCredit: 10 } };
     const next = applyPatch(state, {
       type: 'resourceChanged',
       reason: 'invalid resource payload',
       payload,
     }, 1, 'invalid update', 'Nothing changes.');
 
-    expect(next.playerResources.grain).toBe(10);
+    expect(next.playerResources.supplyCredit).toBe(10);
     expect(next.lastStatePatch).toBeUndefined();
     expect(next.turnLog).toEqual([]);
   });
 
   it('does not record or mutate a direct resource patch with a null payload', () => {
-    const state = { ...makeState(), playerResources: { grain: 10 } };
+    const state = { ...makeState(), playerResources: { supplyCredit: 10 } };
     const patch = {
       type: 'resourceChanged',
       reason: 'null resource payload',
@@ -2423,22 +2682,22 @@ describe('applyPatch with canonical resourceChanged contracts', () => {
   });
 
   it('rejects an entire direct batch when one resource patch fails the shared contract', () => {
-    const state = { ...makeState(), playerResources: { grain: 10 } };
+    const state = { ...makeState(), playerResources: { supplyCredit: 10 } };
     const next = applyPatches(state, [
       {
         type: 'resourceChanged',
         reason: 'valid grain delta',
-        payload: { resource: 'grain', change: '2' },
+        payload: { resource: 'supplyCredit', change: '2' },
       },
       {
         type: 'resourceChanged',
         reason: 'invalid unit-bearing delta',
-        payload: { resource: 'grain', mode: 'delta', change: '1kg' },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: '1kg' },
       },
     ], 1, 'mixed update', 'No change applies.');
 
     expect(next).toBe(state);
-    expect(next.playerResources.grain).toBe(10);
+    expect(next.playerResources.supplyCredit).toBe(10);
     expect(next.turnLog).toEqual([]);
     expect(next.lastStatePatch).toBeUndefined();
   });
@@ -2521,6 +2780,45 @@ describe('applyPatches with normalized timeAdvance uniqueness', () => {
 });
 
 describe('applyPatch with canonical relationshipChange contracts', () => {
+  it('applies one narrow NPC relationship update and rejects duplicate updates for the same NPC atomically', () => {
+    const patch = {
+      type: 'luanshiCommand',
+      reason: '共同脱离伏击，往来加深',
+      payload: {
+        command: {
+          action: 'updateNpcRelationship',
+          npcId: 'npc_chen_heng',
+          contactDelta: 6,
+          relationToPlayer: '共同经历险境的可靠同伴。',
+          recentAttitude: '信任',
+          summary: '共同脱离伏击并交换了重要情报。',
+        },
+      },
+    } as StatePatch;
+
+    const next = applyPatches(makeState(), [patch], 1, '并肩突围', '两人共同脱离伏击。');
+    expect(next.npcs?.find((npc) => npc.npcId === 'npc_chen_heng')).toMatchObject({
+      contactLevel: 16,
+      relationToPlayer: '共同经历险境的可靠同伴。',
+      recentAttitude: '信任',
+    });
+
+    const duplicated = applyPatches(makeState(), [
+      patch,
+      {
+        ...patch,
+        reason: '重复写回同一次互动',
+        payload: {
+          command: {
+            ...(patch.payload.command as Record<string, unknown>),
+            contactDelta: 4,
+          },
+        },
+      },
+    ], 1, '并肩突围', '两人共同脱离伏击。');
+    expect(duplicated).toEqual(makeState());
+  });
+
   it('writes actor and faction targets with kind-aware identity', () => {
     const patches: StatePatch[] = [
       {

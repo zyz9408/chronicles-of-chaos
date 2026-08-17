@@ -59,13 +59,13 @@ describe('threeKingdomsStartBookmarks', () => {
   });
   it('provides a larger opening trait pool with stable preset rarity levels', () => {
     const traits = threeKingdomsCharacterOptions.traits ?? [];
-    const allowedRarities = new Set(['white', 'green', 'blue', 'red', 'gold']);
+    const allowedRarities = new Set(['white', 'green', 'blue', 'purple', 'orange', 'red']);
 
     expect(traits.length).toBeGreaterThanOrEqual(24);
     expect(new Set(traits.map((trait) => trait.id)).size).toBe(traits.length);
     expect(traits.every((trait) => allowedRarities.has(trait.rarity ?? ''))).toBe(true);
     expect([...new Set(traits.map((trait) => trait.rarity))]).toEqual(
-      expect.arrayContaining(['white', 'green', 'blue', 'red']),
+      expect.arrayContaining(['white', 'green', 'blue', 'orange']),
     );
   });
 });

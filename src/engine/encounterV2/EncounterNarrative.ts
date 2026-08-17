@@ -3,6 +3,8 @@ import type { LlmClient, LlmMessage, LlmTokenUsage } from '../llm/LlmClient';
 import type { ApiConfigArchive } from '../settings/ApiConfigManager';
 import { compileCreativePromptMessages } from '../prompts/CreativePromptCompiler';
 import type { TavernManagementSettings } from '../prompts/TavernPresetStore';
+import type { NarrativePerspective } from '../types';
+import { formatNarrativePerspectiveForPrompt } from '../settings/NarrativePerspective';
 import { parseNarratorResponse } from '../turn/NarratorResponseParser';
 import type {
   SealedEncounterResult,
@@ -15,6 +17,9 @@ export interface CombatNarrativePromptInput {
   encounterReason: string;
   locationLabel: string;
   participantNames: Record<string, string>;
+  playerName?: string;
+  playerSex?: '男' | '女' | '其他';
+  narrativePerspective?: NarrativePerspective;
   recentNarratives: string[];
   persistentPromptGuide?: string;
   tavernSettings?: TavernManagementSettings;
@@ -43,6 +48,9 @@ export interface WarNarrativePromptInput {
   locationLabel: string;
   forceNames: Record<string, string>;
   commanderNames: Record<string, string>;
+  playerName?: string;
+  playerSex?: '男' | '女' | '其他';
+  narrativePerspective?: NarrativePerspective;
   recentNarratives: string[];
   persistentPromptGuide?: string;
   tavernSettings?: TavernManagementSettings;
@@ -70,13 +78,19 @@ function describeActionLog(input: CombatNarrativePromptInput): Array<Record<stri
 }
 
 export function buildCombatNarrativeMessages(input: CombatNarrativePromptInput): LlmMessage[] {
+  const narrativePerspectiveGuidance = formatNarrativePerspectiveForPrompt(
+    input.narrativePerspective,
+    { playerName: input.playerName ?? '主角', playerSex: input.playerSex },
+  );
   const systemPrompt = [
         '你是乱世风云录 V2 的战后叙事员。',
         '本地 Combat Engine 给出的封存战果是本回合战斗唯一事实源。',
         '你只负责把行动日志写成连贯、生动、符合人物身份的中文正文。',
         '不得修改胜负、生命、体力、倒地、死亡、俘虏、撤退、战利品、行动顺序或耗时。',
         '不得重新掷骰、重新判定，也不得输出 statePatches、writeback、upsertCombatRecord 或工程说明。',
-        '正文使用【旁白】与【角色名】分段；不要把每个数值机械复述给玩家。',
+        'actorId 含 :scoped:player_guard_ 的人物是本场临时随身护卫，只按封存战果表现其参战；不得给其补姓名、建人物志、写记忆、发放长期装备或战利品。其倒地只表示本场失去战斗能力，不得擅自写成永久死亡或长期伤残。',
+         '正文使用【旁白】与【角色名】分段；不要把每个数值机械复述给玩家。',
+         narrativePerspectiveGuidance,
         '只返回 JSON：{"narrativeText":"...","suggestedActions":[{"label":"...","description":"...","actionType":"..."}]}。',
       ].join('\n');
   const runtimeUserMessage = [
@@ -87,7 +101,8 @@ export function buildCombatNarrativeMessages(input: CombatNarrativePromptInput):
         JSON.stringify(input.participantNames, null, 2),
         '最近正文（仅用于承接语气，不得覆盖战果）：',
         input.recentNarratives.slice(-3).join('\n\n') || '无',
-        input.persistentPromptGuide?.trim() || '',
+         input.persistentPromptGuide?.trim() || '',
+         narrativePerspectiveGuidance,
         '封存战果：',
         JSON.stringify({
           outcome: input.result.outcome,
@@ -150,13 +165,18 @@ function describeWarActionLog(input: WarNarrativePromptInput): Array<Record<stri
 }
 
 export function buildWarNarrativeMessages(input: WarNarrativePromptInput): LlmMessage[] {
+  const narrativePerspectiveGuidance = formatNarrativePerspectiveForPrompt(
+    input.narrativePerspective,
+    { playerName: input.playerName ?? '主角', playerSex: input.playerSex },
+  );
   const systemPrompt = [
         '你是乱世风云录 V2 的战后叙事员。',
         '本地 War Engine 给出的封存战果是本回合战争唯一事实源。',
         '你只负责把逐轮行动日志写成连贯、生动、符合主将与部队身份的中文正文。',
         '不得修改胜负、目标是否达成、伤亡、俘虏、士气、补给、疲劳、溃散、投降、撤退、追击、领地结果、行动顺序或耗时。',
         '不得重新掷骰、重新判定，也不得输出 statePatches、writeback、upsertConflictRecord 或工程说明。',
-        '正文使用【旁白】与【角色名】分段；表现战场变化，但不要逐项机械复述数值。',
+         '正文使用【旁白】与【角色名】分段；表现战场变化，但不要逐项机械复述数值。',
+         narrativePerspectiveGuidance,
         '只返回 JSON：{"narrativeText":"...","suggestedActions":[{"label":"...","description":"...","actionType":"..."}]}。',
       ].join('\n');
   const runtimeUserMessage = [
@@ -171,7 +191,8 @@ export function buildWarNarrativeMessages(input: WarNarrativePromptInput): LlmMe
         JSON.stringify(input.commanderNames, null, 2),
         '最近正文（仅用于承接语气，不得覆盖战果）：',
         input.recentNarratives.slice(-3).join('\n\n') || '无',
-        input.persistentPromptGuide?.trim() || '',
+         input.persistentPromptGuide?.trim() || '',
+         narrativePerspectiveGuidance,
         '封存战果：',
         JSON.stringify({
           outcome: input.result.outcome,
@@ -181,9 +202,10 @@ export function buildWarNarrativeMessages(input: WarNarrativePromptInput): LlmMe
           exitReason: input.result.exitReason,
           roundsCompleted: input.result.roundsCompleted,
           forces: input.result.forces,
-          pursuit: input.result.pursuit,
-          commanders: input.result.commanders,
-          actionLog: describeWarActionLog(input),
+           pursuit: input.result.pursuit,
+           commanders: input.result.commanders,
+           experienceAward: input.result.experienceAward,
+           actionLog: describeWarActionLog(input),
         }, null, 2),
       ].join('\n');
   return compileCreativePromptMessages({

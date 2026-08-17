@@ -254,7 +254,7 @@ describe('PregnancyLifecycle', () => {
       name: '刘安',
       sex: '男',
       age: 0,
-      birthDate: state.currentDate,
+      birthDate: '公元189年09月01日',
       parentLinks: { motherNpcId: 'npc_lady_he', fatherCharacterId: 'player' },
     });
     expect(next.bondThreads).toContainEqual(expect.objectContaining({

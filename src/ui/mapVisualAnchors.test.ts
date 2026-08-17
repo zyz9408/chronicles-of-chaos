@@ -143,4 +143,31 @@ describe('mapVisualAnchors', () => {
     expect((jiangling?.y ?? 0) - (xiangyang?.y ?? 0)).toBeGreaterThanOrEqual(3);
     expect(Math.abs((xinye?.x ?? 0) - (xiangyang?.x ?? 0))).toBeLessThanOrEqual(0.6);
   });
+
+  it('keeps Luoyang approaches and Changshe on stable historical sides of the capital', () => {
+    const anchorById = new Map(listMapVisualAnchors().map((anchor) => [anchor.id, anchor]));
+    const luoyang = anchorById.get('place_sili_luoyang');
+    const hulao = anchorById.get('place_sili_hulao_pass');
+    const hangu = anchorById.get('place_sili_hangu_pass');
+    const mengjin = anchorById.get('place_sili_mengjin');
+    const yique = anchorById.get('place_sili_yique_pass');
+    const huanyuan = anchorById.get('place_sili_huanyuan_pass');
+    const changshe = anchorById.get('place_yingchuan_changshe');
+    const xuxian = anchorById.get('place_yingchuan_xuxian');
+
+    for (const anchor of [luoyang, hulao, hangu, mengjin, yique, huanyuan, changshe, xuxian]) {
+      expect(anchor).toBeDefined();
+    }
+
+    expect(hulao?.x).toBeGreaterThan(luoyang?.x ?? 0);
+    expect(hangu?.x).toBeLessThan(luoyang?.x ?? 0);
+    expect(mengjin?.y).toBeLessThan(luoyang?.y ?? 0);
+    expect(yique?.y).toBeGreaterThan(luoyang?.y ?? 0);
+    expect(huanyuan?.x).toBeGreaterThan(luoyang?.x ?? 0);
+    expect(huanyuan?.y).toBeGreaterThan(luoyang?.y ?? 0);
+    expect(changshe?.x).toBeGreaterThan(luoyang?.x ?? 0);
+    expect(changshe?.y).toBeGreaterThan(luoyang?.y ?? 0);
+    expect(Math.abs((changshe?.x ?? 0) - (xuxian?.x ?? 0))).toBeLessThan(0.5);
+    expect(Math.abs((changshe?.y ?? 0) - (xuxian?.y ?? 0))).toBeLessThan(0.7);
+  });
 });

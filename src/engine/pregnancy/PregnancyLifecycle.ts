@@ -7,7 +7,7 @@ import type {
   LuanShiPregnancyState,
   RuntimeState,
 } from '../types';
-import { deriveNpcCurrentAge, isAdultFemaleNpcAt } from '../time/npcAge';
+import { deriveNpcCurrentAge, isAdultFemaleNpcAt, normalizeCompleteBirthDate } from '../time/npcAge';
 import {
   createGameClockFromDateLabel,
   formatGameClock,
@@ -298,8 +298,7 @@ function resolvePregnancyMutable(
       name: childName,
       sex: childSex,
       age: 0,
-      birthDate: state.currentDate,
-      ageKnownAtDate: state.currentDate,
+      birthDate: normalizeCompleteBirthDate(state.currentDate),
       role: '婴儿',
       factionId: mother.factionId,
       factionName: mother.factionName,

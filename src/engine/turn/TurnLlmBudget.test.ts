@@ -55,4 +55,22 @@ describe('TurnLlmBudget', () => {
     now = 480_001;
     expect(() => postBudget.getChildRequestBudget()).toThrow(TurnBudgetExceededError);
   });
+
+  it('can allocate a single post-narrative attempt without reserving a retry window', () => {
+    let now = 0;
+    const budget = createTurnLlmBudget(undefined, undefined, () => now);
+    const postBudget = budget.startPostNarrativeBudget();
+
+    const requestBudget = postBudget.getChildRequestBudget({ allowRetry: false });
+    expect(requestBudget.timeoutMs).toBe(120_000);
+    expect(requestBudget.retryCount).toBe(0);
+    expect(requestBudget.retryDelayMs).toBe(0);
+
+    now = 400_000;
+    const constrainedBudget = postBudget.getChildRequestBudget({ allowRetry: false });
+    const timeoutError = constrainedBudget.timeoutErrorFactory(constrainedBudget.timeoutMs);
+    expect(constrainedBudget.timeoutMs).toBe(80_000);
+    expect(constrainedBudget.retryCount).toBe(0);
+    expect((timeoutError as TurnBudgetExceededError).scope).toBe('postNarrative');
+  });
 });

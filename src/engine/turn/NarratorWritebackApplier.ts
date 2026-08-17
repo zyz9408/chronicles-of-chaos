@@ -19,8 +19,10 @@ import {
   applyPlayerExperience,
   isValidQuestCompletionExperienceReward,
   MAX_QUEST_COMPLETION_EXPERIENCE_REWARD,
+  questCompletionExperienceReward,
 } from '../character/progression';
-import { deriveNpcCurrentAge } from '../time/npcAge';
+import { deriveNpcCurrentAge, ensureCompleteBirthDate } from '../time/npcAge';
+import { mergeStableNpcUniqueArts } from '../character/NpcUniqueArtPolicy';
 import type { LuanShiCommand } from '../state/luanshiCommands';
 import { normalizeTurnEventVisibility, validateLuanShiCommand } from '../state/luanshiCommands';
 import { applyLuanShiCommand } from '../state/luanshiReducers';
@@ -55,6 +57,7 @@ import {
   evaluateWorldChronicleEligibility,
   resolveWorldChronicleStatus,
 } from '../state/worldChroniclePolicy';
+import { applyCorrespondenceWriteback } from '../correspondence';
 
 const recentTurnMemoryLimit = 12;
 
@@ -68,6 +71,8 @@ export interface NarratorWritebackApplication {
 export interface NarratorWritebackApplyOptions {
   allowProtagonistProfileOverwrite?: boolean;
   preparedLocationWriteback?: NarratorLocationWritebackPreparation;
+  /** 状态补丁应用前的基线，只用于核对到期承诺是否真的写入了资源/部队/物品。 */
+  previousState?: RuntimeState;
 }
 
 export interface NarratorLocationWritebackPreparation {
@@ -79,12 +84,25 @@ export interface NarratorLocationWritebackPreparation {
   errors: string[];
   routeErrors: string[];
   diagnostics: RuntimeLocationWriteDiagnostic[];
+  repairDiagnostics: NarratorMapWritebackRepairDiagnostic[];
+}
+
+export interface NarratorMapWritebackRepairDiagnostic {
+  kind: 'location' | 'route';
+  suggestionIndex: number;
+  stableId?: string;
+  errors: string[];
+}
+
+export interface NarratorLocationWritebackPrepareOptions {
+  statePatches?: StatePatch[];
 }
 
 export function prepareNarratorLocationWriteback(
   state: RuntimeState,
   writeback: NarratorWritebackProtocol | undefined,
   worldBook: WorldBook | undefined,
+  options: NarratorLocationWritebackPrepareOptions = {},
 ): NarratorLocationWritebackPreparation {
   if (!writeback || !worldBook) {
     return {
@@ -96,13 +114,17 @@ export function prepareNarratorLocationWriteback(
       errors: [],
       routeErrors: [],
       diagnostics: [],
+      repairDiagnostics: [],
     };
   }
+
+  const visitedLocationIds = collectVisitedLocationIds(options.statePatches ?? []);
 
   const batch = applyLocationWriteSuggestionsSequentially(
     worldBook,
     state,
     writeback.locationWriteSuggestions ?? [],
+    visitedLocationIds,
   );
   const canonicalWriteback = remapNarratorWritebackLocationReferences(
     { ...writeback, locationWriteSuggestions: batch.suggestions },
@@ -111,15 +133,42 @@ export function prepareNarratorLocationWriteback(
   let preparedState = batch.state;
   let appliedRouteCount = 0;
   const routeErrors: string[] = [];
+  const routeRepairDiagnostics: NarratorMapWritebackRepairDiagnostic[] = [];
+  const silentlySkippedLocationIds = new Set(
+    canonicalWriteback.locationWriteSuggestions
+      .filter((suggestion) => (
+        suggestion.permanence !== 'permanent'
+        && !visitedLocationIds.has(suggestion.locationId?.trim() ?? '')
+      ))
+      .map((suggestion) => suggestion.locationId?.trim() ?? '')
+      .filter(Boolean),
+  );
   for (let index = 0; index < canonicalWriteback.routeWriteSuggestions.length; index += 1) {
+    const suggestion = canonicalWriteback.routeWriteSuggestions[index];
+    if (
+      silentlySkippedLocationIds.has(suggestion.fromPlaceId)
+      || silentlySkippedLocationIds.has(suggestion.toPlaceId)
+    ) {
+      continue;
+    }
     const result = applyRouteWriteSuggestion(
       worldBook,
       preparedState,
-      canonicalWriteback.routeWriteSuggestions[index],
+      suggestion,
     );
     preparedState = result.state;
     if (result.applied) appliedRouteCount += 1;
-    else routeErrors.push(...result.errors.map((error) => `路线 #${index + 1} ${error}`));
+    else {
+      routeErrors.push(...result.errors.map((error) => `路线 #${index + 1} ${error}`));
+      if (result.errors.length > 0) {
+        routeRepairDiagnostics.push({
+          kind: 'route',
+          suggestionIndex: index,
+          stableId: suggestion.routeId?.trim() || undefined,
+          errors: [...result.errors],
+        });
+      }
+    }
   }
 
   return {
@@ -131,7 +180,29 @@ export function prepareNarratorLocationWriteback(
     errors: batch.errors,
     routeErrors,
     diagnostics: batch.diagnostics,
+    repairDiagnostics: [
+      ...batch.rejections.map((rejection) => ({
+        kind: 'location' as const,
+        suggestionIndex: rejection.suggestionIndex,
+        stableId: rejection.stableId,
+        errors: [...rejection.errors],
+      })),
+      ...routeRepairDiagnostics,
+    ],
   };
+}
+
+function collectVisitedLocationIds(patches: StatePatch[]): Set<string> {
+  const ids = new Set<string>();
+  for (const sourcePatch of patches) {
+    const patch = normalizeLuanShiCommandPatch(sourcePatch);
+    if (patch.type !== 'locationChange') continue;
+    for (const field of ['toLocationId', 'toSceneId'] as const) {
+      const value = patch.payload?.[field];
+      if (typeof value === 'string' && value.trim()) ids.add(value.trim());
+    }
+  }
+  return ids;
 }
 
 export function ensureGeneratedStoryLocationReturnRoute(
@@ -201,6 +272,38 @@ export function ensureGeneratedStoryLocationReturnRoute(
       ],
     },
     appliedRouteCount: preparation.appliedRouteCount + 1,
+  };
+}
+
+export function dropRejectedLocationDependencies(
+  writeback: NarratorWritebackProtocol | undefined,
+  rejectedLocationIds: ReadonlySet<string>,
+): NarratorWritebackProtocol | undefined {
+  if (!writeback || rejectedLocationIds.size === 0) return writeback;
+  const rejected = new Set(
+    [...rejectedLocationIds].map((id) => id.trim()).filter(Boolean),
+  );
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const suggestion of writeback.locationWriteSuggestions ?? []) {
+      const id = suggestion.locationId?.trim() ?? '';
+      const parentId = suggestion.parentId?.trim() ?? '';
+      if (id && parentId && rejected.has(parentId) && !rejected.has(id)) {
+        rejected.add(id);
+        changed = true;
+      }
+    }
+  }
+  return {
+    ...writeback,
+    locationWriteSuggestions: (writeback.locationWriteSuggestions ?? [])
+      .filter((suggestion) => !rejected.has(suggestion.locationId?.trim() ?? '')),
+    routeWriteSuggestions: (writeback.routeWriteSuggestions ?? [])
+      .filter((suggestion) => (
+        !rejected.has(suggestion.fromPlaceId.trim())
+        && !rejected.has(suggestion.toPlaceId.trim())
+      )),
   };
 }
 
@@ -323,6 +426,43 @@ export function applyNarratorWriteback(
 
   const dynamicApplied = applyDynamicWriteback(nextState, writeback, ignoredSummaries);
   appliedSummaries.push(...dynamicApplied);
+
+  const correspondenceApplication = applyCorrespondenceWriteback(
+    nextState,
+    options.previousState ?? state,
+    writeback.turnSummary,
+  );
+  nextState = correspondenceApplication.state;
+  appliedSummaries.push(...correspondenceApplication.appliedSummaries);
+  ignoredSummaries.push(...correspondenceApplication.ignoredSummaries);
+
+  let appliedFactionRecentActions = 0;
+  for (const suggestion of writeback.factionRecentActionSuggestions ?? []) {
+    const summary = suggestion.summary.trim();
+    const factionId = suggestion.factionId.trim();
+    const formattedAction = `【${suggestion.knownLevel}】${summary}`;
+    const faction = nextState.factions?.find((entry) => entry.factionId === factionId);
+    if (faction?.recentActions.includes(formattedAction)) continue;
+
+    const command: LuanShiCommand = {
+      action: 'recordFactionRecentAction',
+      factionId,
+      summary,
+      knownLevel: suggestion.knownLevel,
+      observedAt: suggestion.observedAt,
+      sourceNote: suggestion.sourceNote,
+    };
+    const result = applyValidatedCommand(nextState, command);
+    nextState = result.state;
+    if (result.applied) {
+      appliedFactionRecentActions += 1;
+    } else {
+      ignoredSummaries.push(...result.errors.map((error) => `势力近期动作：${error}`));
+    }
+  }
+  if (appliedFactionRecentActions > 0) {
+    appliedSummaries.push(`势力近期动作x${appliedFactionRecentActions}`);
+  }
 
   const worldEvent = writeback.worldEventSummary;
   if (worldEvent?.summary?.trim()) {
@@ -782,16 +922,22 @@ function applyQuestChanges(
     applyQuestUpdateFields(existing, change, state.currentDate);
     if (change.action === 'complete') {
       existing.status = 'completed';
+      const experienceReward = change.experienceReward === undefined
+        ? questCompletionExperienceReward(state.player.level ?? 1, existing.severity)
+        : change.experienceReward;
       if (
         !experienceRewardError
         && previousStatus !== 'completed'
         && previousStatus !== 'archived'
         && existing.completionExperienceAwarded === undefined
-        && isValidQuestCompletionExperienceReward(change.experienceReward)
+        && (
+          change.experienceReward === undefined
+          || isValidQuestCompletionExperienceReward(experienceReward)
+        )
       ) {
-        const experienceResult = applyPlayerExperience(state.player, change.experienceReward, existing.title);
+        const experienceResult = applyPlayerExperience(state.player, experienceReward, existing.title);
         state.player = experienceResult.player;
-        existing.completionExperienceAwarded = change.experienceReward;
+        existing.completionExperienceAwarded = experienceReward;
         experienceSummaries.push(experienceResult.summary);
       }
     }
@@ -1581,6 +1727,7 @@ interface NpcProfileBatchApplication {
   aliasMap: Map<string, NpcIdentityAlias>;
   appliedNpcProfiles: number;
   appliedFemaleProfiles: number;
+  acceptedNpcProfiles: NarratorNpcProfileSuggestion[];
 }
 
 export function applyAcceptedNpcProfilesForCompliance(
@@ -1591,21 +1738,33 @@ export function applyAcceptedNpcProfilesForCompliance(
     initialState,
     profiles.map(withoutFemaleProfile),
     [],
+    new Map(),
+    true,
   ).state;
 }
 
 export function tryApplyNpcProfileForCompliance(
   initialState: RuntimeState,
   profile: NarratorNpcProfileSuggestion,
-): { state: RuntimeState; accepted: boolean } {
+): {
+  state: RuntimeState;
+  accepted: boolean;
+  acceptedProfile?: NarratorNpcProfileSuggestion;
+  diagnostics: string[];
+} {
+  const diagnostics: string[] = [];
   const result = applyNpcProfileSuggestionsSequentially(
     initialState,
     [withoutFemaleProfile(profile)],
-    [],
+    diagnostics,
+    new Map(),
+    true,
   );
   return {
     state: result.state,
     accepted: result.appliedNpcProfiles === 1,
+    acceptedProfile: result.acceptedNpcProfiles[0],
+    diagnostics,
   };
 }
 
@@ -1619,11 +1778,13 @@ function applyNpcProfileSuggestionsSequentially(
   profiles: NarratorNpcProfileSuggestion[],
   ignoredSummaries: string[],
   trustedPresenceLocations: Map<string, string> = new Map(),
+  allowOptionalFallback = false,
 ): NpcProfileBatchApplication {
   let state = initialState;
   const aliasMap = new Map<string, NpcIdentityAlias>();
   let appliedNpcProfiles = 0;
   let appliedFemaleProfiles = 0;
+  const acceptedNpcProfiles: NarratorNpcProfileSuggestion[] = [];
   const pendingFemaleProfiles: Array<{
     npcId: string;
     npcName: string;
@@ -1648,11 +1809,32 @@ function applyNpcProfileSuggestionsSequentially(
       trustedPresenceLocations.get(incomingId)
         ?? trustedPresenceLocations.get(resolvedIncomingId)
         ?? (canonicalNpc ? trustedPresenceLocations.get(canonicalNpc.npcId) : undefined),
+      state.currentDate,
       getCurrentLocationIds(state),
     );
     const { femaleProfile, ...npcSuggestion } = canonicalSuggestion;
-    const command: LuanShiCommand = { action: 'upsertNpcProfile', ...npcSuggestion };
-    const result = applyValidatedCommand(state, command);
+    let profileApplication: NpcProfileOptionalFallbackApplication;
+    if (allowOptionalFallback) {
+      profileApplication = applyNpcProfileWithOptionalFallbacks(state, npcSuggestion);
+    } else {
+      const strictResult = applyValidatedCommand(state, {
+        action: 'upsertNpcProfile',
+        ...npcSuggestion,
+      });
+      profileApplication = (
+        !strictResult.applied
+        && npcSuggestion.uniqueArts !== undefined
+        && strictResult.errors.length > 0
+        && strictResult.errors.every((error) => error.startsWith('upsertNpcProfile.uniqueArts'))
+      )
+        ? applyNpcProfileWithOptionalFallbacks(state, npcSuggestion)
+        : {
+            result: strictResult,
+            acceptedProfile: npcSuggestion,
+            removedSections: [],
+          };
+    }
+    const { result, acceptedProfile, removedSections } = profileApplication;
     state = result.state;
 
     if (!result.applied) {
@@ -1660,7 +1842,14 @@ function applyNpcProfileSuggestionsSequentially(
       continue;
     }
 
+    if (removedSections.length > 0) {
+      ignoredSummaries.push(
+        `NPC档案：${canonicalSuggestion.name} 的${removedSections.join('、')}未通过合同，已保留人物基础档案；可选扩展可在后续回合补全。`,
+      );
+    }
+
     appliedNpcProfiles += 1;
+    acceptedNpcProfiles.push(acceptedProfile);
     const acceptedNpc = state.npcs?.find((npc) => npc.npcId === canonicalSuggestion.npcId);
     const trustedNames = acceptedNpc ? buildTrustedNpcNameSet(acceptedNpc) : new Set<string>();
     for (const alias of aliasMap.values()) {
@@ -1704,7 +1893,104 @@ function applyNpcProfileSuggestionsSequentially(
     }
   }
 
-  return { state, aliasMap, appliedNpcProfiles, appliedFemaleProfiles };
+  return {
+    state,
+    aliasMap,
+    appliedNpcProfiles,
+    appliedFemaleProfiles,
+    acceptedNpcProfiles,
+  };
+}
+
+interface NpcProfileOptionalFallbackApplication {
+  result: ReturnType<typeof applyValidatedCommand>;
+  acceptedProfile: NarratorNpcProfileSuggestion;
+  removedSections: string[];
+}
+
+/**
+ * 长期人物准入不能被行装、绝艺等可选扩展的单点格式错误整体拖垮。
+ * 这里只按严格校验返回的字段路径移除对应可选子结构，不修改姓名、身份、
+ * 六维、特质等人物核心事实，也不从正文猜测缺失数据。
+ */
+function applyNpcProfileWithOptionalFallbacks(
+  state: RuntimeState,
+  profile: NarratorNpcProfileSuggestion,
+): NpcProfileOptionalFallbackApplication {
+  let acceptedProfile = profile;
+  let result = applyValidatedCommand(state, {
+    action: 'upsertNpcProfile',
+    ...acceptedProfile,
+  });
+  if (result.applied || result.errors.length === 0) {
+    return { result, acceptedProfile, removedSections: [] };
+  }
+
+  const removedSections: string[] = [];
+  const invalid = (prefix: string) => result.errors.some((error) => error.startsWith(prefix));
+  let changed = false;
+  const fallbackProfile: NarratorNpcProfileSuggestion = { ...acceptedProfile };
+
+  if (invalid('upsertNpcProfile.uniqueArts') && fallbackProfile.uniqueArts !== undefined) {
+    delete fallbackProfile.uniqueArts;
+    removedSections.push('绝艺子结构');
+    changed = true;
+  }
+  if (invalid('upsertNpcProfile.effects') && fallbackProfile.effects !== undefined) {
+    delete fallbackProfile.effects;
+    removedSections.push('状态子结构');
+    changed = true;
+  }
+  if (
+    (invalid('upsertNpcProfile.equipment') || invalid('upsertNpcProfile.inventory'))
+    && (fallbackProfile.equipment !== undefined || fallbackProfile.inventory !== undefined)
+  ) {
+    delete fallbackProfile.equipment;
+    delete fallbackProfile.inventory;
+    removedSections.push('行装子结构');
+    changed = true;
+  }
+  if (invalid('upsertNpcProfile.vitals') && fallbackProfile.vitals !== undefined) {
+    delete fallbackProfile.vitals;
+    removedSections.push('生命体力子结构');
+    changed = true;
+  }
+  if (
+    (invalid('upsertNpcProfile.birthDate') || invalid('upsertNpcProfile.ageKnownAtDate'))
+    && (fallbackProfile.birthDate !== undefined || fallbackProfile.ageKnownAtDate !== undefined)
+  ) {
+    delete fallbackProfile.birthDate;
+    delete fallbackProfile.ageKnownAtDate;
+    removedSections.push('可选出生日期扩展');
+    changed = true;
+  }
+  if (
+    result.errors.some((error) => /^upsertNpcProfile\.traits\[\d+\]\.checkHooks/.test(error))
+    && Array.isArray(fallbackProfile.traits)
+  ) {
+    fallbackProfile.traits = fallbackProfile.traits.map((trait) => {
+      const { checkHooks: _invalidCheckHooks, ...baseTrait } = trait;
+      return baseTrait;
+    });
+    removedSections.push('特质判定钩子');
+    changed = true;
+  }
+
+  if (!changed) {
+    return { result, acceptedProfile, removedSections: [] };
+  }
+
+  const fallbackResult = applyValidatedCommand(state, {
+    action: 'upsertNpcProfile',
+    ...fallbackProfile,
+  });
+  if (!fallbackResult.applied) {
+    return { result: fallbackResult, acceptedProfile, removedSections: [] };
+  }
+
+  acceptedProfile = fallbackProfile;
+  result = fallbackResult;
+  return { result, acceptedProfile, removedSections };
 }
 
 function buildCanonicalNpcNameReferenceMap(state: RuntimeState): Map<string, string> {
@@ -1756,12 +2042,21 @@ function canonicalizeNpcProfileSuggestion(
   canonicalNpc: LuanShiNpc | undefined,
   canonicalId: string,
   trustedPresenceLocation?: string,
+  currentDate = '',
   currentLocationIds: Set<string> = new Set(),
 ): NarratorNpcProfileSuggestion & { isFocused: boolean } {
   if (!canonicalNpc) {
+    const birthDate = ensureCompleteBirthDate({
+      age: profile.age,
+      birthDate: profile.birthDate,
+      ageKnownAtDate: profile.ageKnownAtDate,
+      currentDate,
+      stableId: `npc:${canonicalId}`,
+    });
     return {
       ...profile,
       npcId: canonicalId,
+      birthDate,
       isFocused: profile.isFocused ?? profile.isPresent,
     };
   }
@@ -1790,6 +2085,13 @@ function canonicalizeNpcProfileSuggestion(
   }
 
   const profileLocationId = profile.locationId?.trim();
+  const birthDate = ensureCompleteBirthDate({
+    age: canonicalNpc.age,
+    birthDate: canonicalNpc.birthDate ?? profile.birthDate,
+    ageKnownAtDate: canonicalNpc.ageKnownAtDate ?? profile.ageKnownAtDate,
+    currentDate,
+    stableId: `npc:${canonicalNpc.npcId}`,
+  });
   const claimsUntrustedCurrentScenePresence = !trustedPresenceLocation
     && profile.isPresent === true
     && Boolean(profileLocationId && currentLocationIds.has(profileLocationId));
@@ -1801,6 +2103,7 @@ function canonicalizeNpcProfileSuggestion(
     courtesyName,
     artName,
     commonAddress: profile.commonAddress ?? canonicalNpc.commonAddress,
+    birthDate,
     aliases: aliases.length > 0 ? aliases : undefined,
     locationId: trustedPresenceLocation
       ?? (claimsUntrustedCurrentScenePresence ? canonicalNpc.locationId : profile.locationId)
@@ -1827,7 +2130,7 @@ function canonicalizeNpcProfileSuggestion(
       : canonicalNpc.abilityScores ?? profile.abilityScores,
     vitals: profile.vitals ?? canonicalNpc.vitals,
     traits: profile.traits.length > 0 ? profile.traits : canonicalNpc.traits ?? [],
-    uniqueArts: profile.uniqueArts && profile.uniqueArts.length > 0 ? profile.uniqueArts : canonicalNpc.uniqueArts,
+    uniqueArts: mergeStableNpcUniqueArts(canonicalNpc.uniqueArts, profile.uniqueArts),
     effects: profile.effects && profile.effects.length > 0 ? profile.effects : canonicalNpc.effects,
     equipment: profile.equipment === undefined || (Array.isArray(profile.equipment) && profile.equipment.length === 0)
       ? canonicalNpc.equipment

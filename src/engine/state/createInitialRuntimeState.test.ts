@@ -33,6 +33,15 @@ describe('ensureLuanShiState', () => {
   it('为旧运行时状态补齐乱世账本默认值', () => {
     const state = ensureLuanShiState(makeLegacyState());
 
+    expect(state.gameDifficulty).toBe('standard');
+    expect(state.combatDifficulty).toBe('standard');
+    expect(state.warDifficulty).toBe('standard');
+    expect(state.player.vitals).toEqual({
+      hp: 100,
+      maxHp: 100,
+      stamina: 100,
+      maxStamina: 100,
+    });
     expect(state.npcs).toEqual([]);
     expect(state.turnEvents).toEqual([]);
     expect(state.locations).toEqual([]);
@@ -80,6 +89,102 @@ describe('ensureLuanShiState', () => {
         preferDedicatedMemorySummaryApi: true,
       },
     });
+  });
+
+  it('把旧势力动作迁移为逐条记录且不伪造早期动作时间', () => {
+    const state = ensureLuanShiState({
+      ...makeLegacyState(),
+      factions: [{
+        factionId: 'faction_legacy_history',
+        name: '旧军府',
+        type: '军府',
+        summary: '旧存档中的势力。',
+        stanceToPlayer: '中立',
+        knownLevel: '听闻',
+        sourceNote: '斥候军报',
+        lastKnownAt: '公元189年09月02日 08:00（辰时）',
+        recentActions: ['整顿营防', '【亲历】接收军粮'],
+      }],
+    });
+
+    expect(state.factions[0].recentActionRecords).toEqual([
+      { summary: '整顿营防', knownLevel: '听闻' },
+      {
+        summary: '接收军粮',
+        knownLevel: '亲历',
+        observedAt: '公元189年09月02日 08:00（辰时）',
+        sourceNote: '斥候军报',
+      },
+    ]);
+  });
+
+  it('把旧档误写的府库标准资源 shadow 合并回唯一账本并移除别名', () => {
+    const state = ensureLuanShiState({
+      ...makeLegacyState(),
+      resources: {
+        money: 20,
+        grain: 89,
+        horses: 1,
+        arms: 2,
+        recruits: 3,
+        weapons: [],
+        documents: [],
+        tokens: [],
+        importantSupplies: [],
+      },
+      playerResources: {
+        粮草: 289,
+        grain: 200,
+        马匹: 4,
+        粮饷: 36,
+        钱财: 999,
+      },
+    });
+
+    expect(state.resources).toMatchObject({
+      money: 20,
+      grain: 289,
+      horses: 4,
+    });
+    expect(state.playerResources).toEqual({ 粮饷: 36 });
+  });
+
+  it('保留旧档已有伤势与疲劳并补齐不完整生命体力字段', () => {
+    const state = ensureLuanShiState({
+      ...makeLegacyState(),
+      player: {
+        ...makeLegacyState().player,
+        vitals: {
+          hp: 27,
+          maxHp: 120,
+          stamina: Number.NaN,
+          maxStamina: 80,
+        },
+      },
+    });
+
+    expect(state.player.vitals).toEqual({
+      hp: 27,
+      maxHp: 120,
+      stamina: 80,
+      maxStamina: 80,
+    });
+  });
+
+  it('保留合法本局难度并把未知难度兼容归一为标准', () => {
+    expect(ensureLuanShiState({ ...makeLegacyState(), gameDifficulty: 'brutal' }).gameDifficulty)
+      .toBe('brutal');
+    expect(ensureLuanShiState({
+      ...makeLegacyState(),
+      gameDifficulty: 'legacy' as RuntimeState['gameDifficulty'],
+    }).gameDifficulty).toBe('standard');
+    const encounterDifficulties = ensureLuanShiState({
+      ...makeLegacyState(),
+      combatDifficulty: 'easy',
+      warDifficulty: 'legacy' as RuntimeState['warDifficulty'],
+    });
+    expect(encounterDifficulties.combatDifficulty).toBe('easy');
+    expect(encounterDifficulties.warDifficulty).toBe('standard');
   });
 
   it('合并同名同类型势力并把运行时引用重定向到最早稳定 ID', () => {
@@ -134,7 +239,7 @@ describe('ensureLuanShiState', () => {
       name: '荆州牧府',
       knownLevel: '亲历',
       relatedTroopIds: ['troop_hanshui_relief'],
-      recentActions: ['整顿州郡', '调集水军'],
+      recentActions: ['【亲历】整顿州郡', '【亲历】调集水军'],
     });
     expect(state.troops[0].factionId).toBe('faction_liu_biao');
     expect(state.worldTrends[0].affectedFactionIds).toEqual(['faction_liu_biao']);
@@ -205,7 +310,7 @@ describe('ensureLuanShiState', () => {
     ]);
   });
 
-  it('为旧部队账本补齐缺失的运行字段但不覆盖已有值', () => {
+  it('为旧部队账本补齐精确疲劳并修复旧档档位与精确值不一致', () => {
     const state = ensureLuanShiState({
       ...makeLegacyState(),
       troops: [
@@ -232,6 +337,7 @@ describe('ensureLuanShiState', () => {
           quality: '精锐',
           readiness: '高',
           fatigue: '中',
+          warFatiguePercent: 85,
           lifecycleStatus: 'active',
           knownLevel: '亲历',
           certainty: 'confirmed',
@@ -243,6 +349,7 @@ describe('ensureLuanShiState', () => {
       quality: '中',
       readiness: '中',
       fatigue: '低',
+      warFatiguePercent: 15,
       lifecycleStatus: 'active',
       knownLevel: '亲历',
       certainty: 'confirmed',
@@ -251,6 +358,7 @@ describe('ensureLuanShiState', () => {
       quality: '精锐',
       readiness: '高',
       fatigue: '中',
+      warFatiguePercent: 35,
     }));
   });
 
@@ -701,5 +809,29 @@ describe('ensureLuanShiState', () => {
       lastKnownLocationId: 'place_older_sighting',
       lastKnownAt: '公元189年08月30日 12:00（午时）',
     }));
+  });
+
+  it('兼容没有绝艺成长账本与领地治理项目字段的旧存档', () => {
+    const legacy = makeLegacyState();
+    legacy.player.uniqueArts = [{
+      id: 'art_legacy_strategy',
+      name: '旧策',
+      rarity: 'blue',
+      domain: 'strategy',
+      level: 2,
+      description: '旧存档中的既有绝艺。',
+      effectSummary: '用于谋略。',
+      source: 'legacy-save',
+    }];
+    delete (legacy as Partial<RuntimeState>).holdingGovernanceProjects;
+
+    const state = ensureLuanShiState(legacy);
+
+    expect(state.player.uniqueArts?.[0]).toMatchObject({
+      id: 'art_legacy_strategy',
+      level: 2,
+    });
+    expect(state.player.uniqueArts?.[0].progressHistory).toBeUndefined();
+    expect(state.holdingGovernanceProjects).toEqual([]);
   });
 });

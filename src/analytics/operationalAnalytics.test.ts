@@ -9,7 +9,7 @@ import {
 
 describe('operationalAnalytics', () => {
   it('uses the public release version by default', () => {
-    expect(DEFAULT_PUBLIC_APP_VERSION).toBe('1.0.0');
+      expect(DEFAULT_PUBLIC_APP_VERSION).toBe('1.7.24');
   });
 
   it('uses stable coarse device classes', () => {

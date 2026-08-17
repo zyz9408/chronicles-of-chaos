@@ -30,6 +30,12 @@ export interface MapNode {
   tensionHint: string;       // 紧张程度提示
   subLocations?: MapNode[];  // 子地点
   parentId?: string;
+  /** 运行时亲历地点的本局留存语义；世界书静态节点无需填写。 */
+  runtimePersistence?: 'permanent' | 'visited-temporary';
+  /** 首次由结构化移动确认的游戏内时间。 */
+  discoveredAt?: string;
+  /** 亲历地点即使后来关闭或废弃也保留节点，只改变可用状态。 */
+  availability?: 'active' | 'closed' | 'destroyed' | 'abandoned';
 }
 
 /** Map V1 路线边 - 只允许连接具体地点层，不连接区域或场景 */

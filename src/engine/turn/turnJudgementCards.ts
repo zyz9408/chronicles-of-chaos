@@ -7,7 +7,10 @@ import type {
   TurnOrdinaryCheck,
 } from '../types';
 
-export function buildOrdinaryJudgementCards(checks: TurnOrdinaryCheck[] = []): TurnJudgementCard[] {
+export function buildOrdinaryJudgementCards(
+  checks: TurnOrdinaryCheck[] = [],
+  experienceAwards: Readonly<Record<string, number>> = {},
+): TurnJudgementCard[] {
   return checks
     .filter((check) => check.checkId.trim() && check.label.trim() && check.result.trim())
     .map((check) => ({
@@ -21,6 +24,7 @@ export function buildOrdinaryJudgementCards(checks: TurnOrdinaryCheck[] = []): T
       difficulty: normalizeNumber(check.difficulty),
       total: normalizeNumber(check.total),
       margin: calculateMargin(check.total, check.difficulty),
+      experienceAward: normalizeNumber(experienceAwards[check.checkId.trim()]),
       details: normalizeDetails(check.details),
       tags: stringList(check.tags),
     }));

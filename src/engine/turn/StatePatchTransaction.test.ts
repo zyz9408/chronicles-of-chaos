@@ -117,12 +117,20 @@ function privateAssetPatch(): StatePatch {
     payload: {
       command: {
         action: 'upsertPrivateAsset',
+        operation: 'create',
         privateAssetId: 'asset_workshop',
         name: 'Market Workshop',
         type: 'workshop',
         ownerScope: 'personal',
         status: 'active',
         summary: 'A small workshop beside the market.',
+        acquisition: {
+          kind: 'purchase',
+          occurredAt: 'day 10',
+          sourceRefId: 'turn:workshop-purchase',
+          summary: 'The player purchases the workshop.',
+          costMoney: 30,
+        },
         updatedAt: 'day 10',
       },
     },
@@ -158,6 +166,8 @@ function npcProfilePatch(npcId = 'npc_batch_lady', name = '沈兰'): StatePatch 
         action: 'upsertNpcProfile',
         npcId,
         name,
+        persistenceReason: 'player_committed_relationship',
+        persistenceEvidence: '本回合确认沈兰与主角建立了需要持续承接的正式同盟关系。',
         sex: '女',
         age: 28,
         role: 'Local notable',
@@ -217,6 +227,23 @@ function bondThreadPatch(npcId: string, targetName = 'Non-canonical Name'): Stat
         bondType: 'ally',
         status: 'active',
         summary: 'The two sides agree to mutual aid.',
+      },
+    },
+  };
+}
+
+function npcRelationshipPatch(npcId: string, contactDelta: number): StatePatch {
+  return {
+    type: 'luanshiCommand',
+    reason: 'Record one factual relationship advance.',
+    payload: {
+      command: {
+        action: 'updateNpcRelationship',
+        npcId,
+        contactDelta,
+        relationToPlayer: 'A tested and increasingly trusted ally.',
+        recentAttitude: 'More trusting',
+        summary: 'They face the same danger and exchange material aid.',
       },
     },
   };
@@ -417,7 +444,7 @@ describe('StatePatch ordered transaction', () => {
   it('quarantines an ambiguous resourceChanged patch without rolling back valid time', async () => {
     const initialState = {
       ...makeState(),
-      playerResources: { grain: 10 },
+      playerResources: { supplyCredit: 10 },
     };
     const result = await executeWithPatches(
       initialState,
@@ -427,7 +454,7 @@ describe('StatePatch ordered transaction', () => {
           type: 'resourceChanged',
           reason: 'The model supplied both delta and absolute values.',
           payload: {
-            resource: 'grain',
+            resource: 'supplyCredit',
             mode: 'delta',
             change: -2,
             newValue: 8,
@@ -440,7 +467,7 @@ describe('StatePatch ordered transaction', () => {
     expect(result.patchValidation).toMatchObject({ valid: true, errors: [] });
     expect(result.patchValidation?.warnings.join('\n')).toContain('附属补丁被隔离');
     expect(result.statePatches).toEqual([timeAdvancePatch]);
-    expect(result.newRuntimeState.playerResources).toEqual({ grain: 10 });
+    expect(result.newRuntimeState.playerResources).toEqual({ supplyCredit: 10 });
     expect(result.newRuntimeState.currentDate).not.toBe(initialState.currentDate);
   });
 
@@ -533,6 +560,38 @@ describe('StatePatch ordered transaction', () => {
       targetNpcIds: ['npc_batch_lady'],
       targetNames: ['沈兰'],
     }));
+  });
+
+  it('applies one same-batch NPC relationship increment and rolls back duplicate increments for that NPC', async () => {
+    const accepted = await executeWithPatches(
+      makeState(),
+      '沈兰与主角共同应对危局，交换了实际援助。',
+      [npcProfilePatch(), npcRelationshipPatch('npc_batch_lady', 5), timeAdvancePatch],
+    );
+
+    expect(accepted.patchValidation).toMatchObject({ valid: true, errors: [] });
+    expect(accepted.newRuntimeState.npcs?.find((npc) => npc.npcId === 'npc_batch_lady')).toMatchObject({
+      contactLevel: 17,
+      relationToPlayer: 'A tested and increasingly trusted ally.',
+      recentAttitude: 'More trusting',
+    });
+
+    const initialState = makeState();
+    const duplicated = await executeWithPatches(
+      initialState,
+      '同一次共同经历不应被重复累计。',
+      [
+        npcProfilePatch(),
+        npcRelationshipPatch('npc_batch_lady', 5),
+        npcRelationshipPatch('npc_batch_lady', 3),
+        timeAdvancePatch,
+      ],
+    );
+
+    expect(duplicated.patchValidation?.valid).toBe(false);
+    expect(duplicated.patchValidation?.errors.join('\n')).toContain('updateNpcRelationship');
+    expect(duplicated.newRuntimeState.npcs).toEqual(initialState.npcs);
+    expect(duplicated.newRuntimeState.currentDate).toBe(initialState.currentDate);
   });
 
   it('rejects and rolls back a same-batch relationship with an unknown NPC id', async () => {
@@ -908,7 +967,7 @@ describe('StatePatch ordered transaction', () => {
     expect(result.newRuntimeState.currentDate).toBe(initialState.currentDate);
   });
 
-  it('rolls back the whole batch on a hard failure while retaining narrative and complete diagnostics', async () => {
+  it('isolates a malformed private-asset domain while retaining narrative and valid time', async () => {
     const initialState = makeState();
     const narrativeText = 'The deed is discussed, but the expansion order is malformed.';
     const patches = [
@@ -919,44 +978,40 @@ describe('StatePatch ordered transaction', () => {
 
     const result = await executeWithPatches(initialState, narrativeText, patches);
 
-    expect(result.patchValidation?.valid).toBe(false);
-    expect(result.patchValidation?.errors).toEqual(expect.arrayContaining([
-      'upsertPrivateAssetProject.type is invalid: unsupported_project',
-      'upsertPrivateAssetProject.status is invalid: impossible',
-    ]));
-    expect(result.patchValidation?.errors.join('\n')).not.toContain('does not reference an existing private asset');
-    expect(result.statePatches).toHaveLength(3);
+    expect(result.patchValidation?.valid).toBe(true);
+    expect(result.patchValidation?.errors).toEqual([]);
+    expect(result.patchValidation?.warnings.join('\n')).toContain('附属补丁被隔离');
+    expect(result.patchValidation?.warnings.join('\n')).toContain('unsupported_project');
+    expect(result.patchValidation?.warnings.join('\n')).toContain('impossible');
+    expect(result.statePatches).toEqual([timeAdvancePatch]);
 
     expect(initialState.privateAssets).toEqual([]);
     expect(initialState.privateAssetProjects).toEqual([]);
     expect(result.newRuntimeState.privateAssets).toEqual([]);
     expect(result.newRuntimeState.privateAssetProjects).toEqual([]);
-    expect(result.newRuntimeState.currentDate).toBe(initialState.currentDate);
-    expect(result.newRuntimeState.lastStatePatch).toBe(initialState.lastStatePatch);
+    expect(result.newRuntimeState.currentDate).not.toBe(initialState.currentDate);
 
     expect(result.narrativeText).toBe(narrativeText);
     expect(result.newRuntimeState.turnLog).toHaveLength(1);
     expect(result.newRuntimeState.turnLog[0].fullNarrativeText).toBe(narrativeText);
-    expect(result.newRuntimeState.turnLog[0].statePatchSummary).toContain('状态变更校验失败');
-    expect(result.newRuntimeState.turnLog[0].statePatchSummary).toContain('unsupported_project');
-    expect(result.newRuntimeState.turnLog[0].statePatchSummary).toContain('impossible');
+    expect(result.newRuntimeState.turnLog[0].statePatchSummary).toContain('附属补丁已按域隔离');
   });
 
   it('keeps resource patches atomic when one contract payload is invalid', async () => {
     const initialState = {
       ...makeState(),
-      playerResources: { grain: 10 },
+      playerResources: { supplyCredit: 10 },
     };
     const patches: StatePatch[] = [
       {
         type: 'resourceChanged',
         reason: 'valid grain delta',
-        payload: { resource: 'grain', mode: 'delta', change: 5 },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: 5 },
       },
       {
         type: 'resourceChanged',
         reason: 'invalid grain delta',
-        payload: { resource: 'grain', mode: 'delta', change: '1kg' },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: '1kg' },
       },
       timeAdvancePatch,
     ];
@@ -965,7 +1020,7 @@ describe('StatePatch ordered transaction', () => {
 
     expect(result.patchValidation?.valid).toBe(false);
     expect(result.patchValidation?.errors.join('\n')).toContain('finite number');
-    expect(result.newRuntimeState.playerResources.grain).toBe(10);
+    expect(result.newRuntimeState.playerResources.supplyCredit).toBe(10);
     expect(result.newRuntimeState.currentDate).toBe(initialState.currentDate);
     expect(result.newRuntimeState.lastStatePatch).toBe(initialState.lastStatePatch);
     expect(result.newRuntimeState.turnLog).toHaveLength(1);
@@ -975,20 +1030,20 @@ describe('StatePatch ordered transaction', () => {
   it('treats a finite resource delta overflow as a hard transaction failure', async () => {
     const initialState = {
       ...makeState(),
-      playerResources: { grain: Number.MAX_VALUE },
+      playerResources: { supplyCredit: Number.MAX_VALUE },
     };
     const result = await executeWithPatches(initialState, 'The overflow is rejected.', [
       timeAdvancePatch,
       {
         type: 'resourceChanged',
         reason: 'overflow grain delta',
-        payload: { resource: 'grain', mode: 'delta', change: Number.MAX_VALUE },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: Number.MAX_VALUE },
       },
     ]);
 
     expect(result.patchValidation?.valid).toBe(false);
     expect(result.patchValidation?.errors.join('\n')).toContain('finite');
-    expect(result.newRuntimeState.playerResources.grain).toBe(Number.MAX_VALUE);
+    expect(result.newRuntimeState.playerResources.supplyCredit).toBe(Number.MAX_VALUE);
     expect(result.newRuntimeState.currentDate).toBe(initialState.currentDate);
     expect(result.newRuntimeState.lastStatePatch).toBe(initialState.lastStatePatch);
     expect(result.newRuntimeState.turnLog).toHaveLength(1);
@@ -999,39 +1054,39 @@ describe('StatePatch ordered transaction', () => {
     const halfMax = Number.MAX_VALUE / 2;
     const initialState = {
       ...makeState(),
-      playerResources: { grain: halfMax },
+      playerResources: { supplyCredit: halfMax },
     };
     const result = await executeWithPatches(initialState, 'The ordered overflow is rejected.', [
       {
         type: 'resourceChanged',
         reason: 'first finite grain delta',
-        payload: { resource: 'grain', mode: 'delta', change: halfMax },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: halfMax },
       },
       {
         type: 'resourceChanged',
         reason: 'second overflowing grain delta',
-        payload: { resource: 'grain', mode: 'delta', change: Number.MAX_VALUE },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: Number.MAX_VALUE },
       },
       timeAdvancePatch,
     ]);
 
     expect(result.patchValidation?.valid).toBe(false);
     expect(result.patchValidation?.errors.join('\n')).toContain('finite');
-    expect(result.newRuntimeState.playerResources.grain).toBe(halfMax);
+    expect(result.newRuntimeState.playerResources.supplyCredit).toBe(halfMax);
     expect(result.newRuntimeState.currentDate).toBe(initialState.currentDate);
   });
 
   it('accepts a finite repair for an overflowing delta without changing resource identity or mode', async () => {
     const initialState = {
       ...makeState(),
-      playerResources: { grain: Number.MAX_VALUE },
+      playerResources: { supplyCredit: Number.MAX_VALUE },
     };
     const originalPatches: StatePatch[] = [
       timeAdvancePatch,
       {
         type: 'resourceChanged',
         reason: 'adjust the grain by a finite delta',
-        payload: { resource: 'grain', mode: 'delta', change: Number.MAX_VALUE },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: Number.MAX_VALUE },
       },
     ];
     const repairedPatches: StatePatch[] = [
@@ -1039,7 +1094,7 @@ describe('StatePatch ordered transaction', () => {
       {
         type: 'resourceChanged',
         reason: 'adjust the grain by a finite delta',
-        payload: { resource: 'grain', mode: 'delta', change: -Number.MAX_VALUE },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: -Number.MAX_VALUE },
       },
     ];
 
@@ -1047,9 +1102,9 @@ describe('StatePatch ordered transaction', () => {
 
     expect(result.stateWritebackLlmClient.generate).toHaveBeenCalledOnce();
     expect(result.patchValidation).toMatchObject({ valid: true, errors: [] });
-    expect(result.newRuntimeState.playerResources.grain).toBe(0);
+    expect(result.newRuntimeState.playerResources.supplyCredit).toBe(0);
     expect(result.statePatches?.[1].payload).toEqual({
-      resource: 'grain',
+      resource: 'supplyCredit',
       mode: 'delta',
       change: -Number.MAX_VALUE,
     });
@@ -1058,14 +1113,14 @@ describe('StatePatch ordered transaction', () => {
   it('validates forbidden raw resource fields before canonicalization and sends diagnostics to repair', async () => {
     const initialState = {
       ...makeState(),
-      playerResources: { grain: 10 },
+      playerResources: { supplyCredit: 10 },
     };
     const originalPatches: StatePatch[] = [
       {
         type: 'resourceChanged',
         reason: 'Store one grain without granting office or world authority.',
         payload: {
-          resource: 'grain',
+          resource: 'supplyCredit',
           mode: 'delta',
           change: 1,
           officeTitle: 'field marshal',
@@ -1113,7 +1168,7 @@ describe('StatePatch ordered transaction', () => {
     expect(repairPrompt).toContain('不允许通过 patch 直接修改 wholeWorldState');
     expect(repairPrompt).toContain('officeTitle');
     expect(result.patchValidation?.valid).toBe(false);
-    expect(result.newRuntimeState.playerResources.grain).toBe(10);
+    expect(result.newRuntimeState.playerResources.supplyCredit).toBe(10);
     expect(result.newRuntimeState.currentDate).toBe(initialState.currentDate);
     expect(result.newRuntimeState.lastStatePatch).toBe(initialState.lastStatePatch);
     expect(result.newRuntimeState.turnLog[result.newRuntimeState.turnLog.length - 1]?.statePatchSummary)
@@ -1284,9 +1339,9 @@ describe('StatePatch ordered transaction', () => {
 
     expect(stateWritebackLlmClient.generate).toHaveBeenCalledOnce();
     expect(result.patchValidation?.valid).toBe(false);
-    expect(result.patchValidation?.errors.join('\n')).toContain('unsupported_project');
+    expect(result.patchValidation?.errors.join('\n')).not.toContain('unsupported_project');
     expect(result.patchValidation?.errors.join('\n')).toContain('unsupportedLegacyEvent');
-    expect(result.statePatches).toHaveLength(4);
+    expect(result.statePatches).toHaveLength(2);
     expect(result.newRuntimeState.privateAssets).toEqual([]);
     expect(result.newRuntimeState.privateAssetProjects).toEqual([]);
     expect(result.newRuntimeState.turnLog[0].fullNarrativeText).toBe(narrativeText);
@@ -1296,7 +1351,7 @@ describe('StatePatch ordered transaction', () => {
     const patchesBeforeRepair: StatePatch[] = [
       { type: 'localSituationChanged', payload: { notes: ['before time'] }, reason: 'First slot.' },
       timeAdvancePatch,
-      { type: 'resourceChanged', payload: { resource: 'grain', mode: 'delta', change: 2 }, reason: 'Third slot.' },
+      { type: 'resourceChanged', payload: { resource: 'supplyCredit', mode: 'delta', change: 2 }, reason: 'Third slot.' },
     ];
     const llmClient = {
       generate: vi.fn(async () => ({
@@ -1342,7 +1397,7 @@ describe('StatePatch ordered transaction', () => {
     const originalPatches: StatePatch[] = [
       { type: 'localSituationChanged', payload: { notes: ['before time'] }, reason: 'First slot.' },
       timeAdvancePatch,
-      { type: 'resourceChanged', payload: { resource: 'grain', mode: 'delta', change: 2 }, reason: 'Third slot.' },
+      { type: 'resourceChanged', payload: { resource: 'supplyCredit', mode: 'delta', change: 2 }, reason: 'Third slot.' },
     ];
     const llmClient = {
       generate: vi.fn(async () => ({
@@ -1389,7 +1444,7 @@ describe('StatePatch ordered transaction', () => {
     const originalPatches: StatePatch[] = [
       { type: 'localSituationChanged', payload: { notes: ['before time'] }, reason: 'First slot.' },
       timeAdvancePatch,
-      { type: 'resourceChanged', payload: { resource: 'grain', mode: 'delta', change: 2 }, reason: 'Third slot.' },
+      { type: 'resourceChanged', payload: { resource: 'supplyCredit', mode: 'delta', change: 2 }, reason: 'Third slot.' },
     ];
     const repairedPatches: StatePatch[] = [
       { type: 'timeAdvance', payload: { minutesAdvanced: 5 }, reason: 'First slot.' },
@@ -1408,7 +1463,7 @@ describe('StatePatch ordered transaction', () => {
     const originalPatches: StatePatch[] = [
       { type: 'localSituationChanged', payload: { notes: ['before time'] }, reason: 'First slot.' },
       timeAdvancePatch,
-      { type: 'resourceChanged', payload: { resource: 'grain', mode: 'delta', change: 2 }, reason: 'Third slot.' },
+      { type: 'resourceChanged', payload: { resource: 'supplyCredit', mode: 'delta', change: 2 }, reason: 'Third slot.' },
     ];
     const repairedPatches: StatePatch[] = [
       originalPatches[0],
@@ -1426,7 +1481,7 @@ describe('StatePatch ordered transaction', () => {
     const originalPatches: StatePatch[] = [
       { type: 'localSituationChanged', payload: { notes: ['before time'] }, reason: 'First slot.' },
       timeAdvancePatch,
-      { type: 'resourceChanged', payload: { resource: 'grain', mode: 'delta', change: 2 }, reason: 'Third slot.' },
+      { type: 'resourceChanged', payload: { resource: 'supplyCredit', mode: 'delta', change: 2 }, reason: 'Third slot.' },
     ];
 
     const result = await executeWithRepair(originalPatches, [...originalPatches, timeAdvancePatch]);
@@ -1438,26 +1493,26 @@ describe('StatePatch ordered transaction', () => {
   it('preserves the complete normalized raw prefix when a no-diagnostics repair omits a legal business patch', async () => {
     const originalPatches: StatePatch[] = [
       timeAdvancePatch,
-      { type: 'resourceChanged', payload: { resource: 'grain', mode: 'delta', change: 7 }, reason: 'Store seven grain.' },
+      { type: 'resourceChanged', payload: { resource: 'supplyCredit', mode: 'delta', change: 7 }, reason: 'Store seven grain.' },
     ];
 
     const result = await executeWithRepair(originalPatches, [timeAdvancePatch]);
 
     expect(result.patchValidation?.valid).toBe(true);
     expect(result.statePatches).toEqual(originalPatches);
-    expect(result.newRuntimeState.playerResources.grain).toBe(7);
+    expect(result.newRuntimeState.playerResources.supplyCredit).toBe(7);
   });
 
   it('treats legacy and canonical resource payloads as the same raw slot during repair', async () => {
     const originalPatches: StatePatch[] = [
       timeAdvancePatch,
-      { type: 'resourceChanged', payload: { resource: 'grain', change: '7' }, reason: 'Store seven grain.' },
+      { type: 'resourceChanged', payload: { resource: 'supplyCredit', change: '7' }, reason: 'Store seven grain.' },
     ];
     const repairedPatches: StatePatch[] = [
       timeAdvancePatch,
       {
         type: 'resourceChanged',
-        payload: { resource: 'grain', mode: 'delta', change: 7 },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: 7 },
         reason: 'Store seven grain.',
       },
       {
@@ -1472,11 +1527,11 @@ describe('StatePatch ordered transaction', () => {
     expect(result.patchValidation?.valid).toBe(true);
     expect(result.statePatches).toHaveLength(3);
     expect(result.statePatches?.[1].payload).toEqual({
-      resource: 'grain',
+      resource: 'supplyCredit',
       mode: 'delta',
       change: 7,
     });
-    expect(result.newRuntimeState.playerResources.grain).toBe(7);
+    expect(result.newRuntimeState.playerResources.supplyCredit).toBe(7);
     expect(result.newRuntimeState.localSituationNotes).toContain('The repaired response adds a unique legal note.');
   });
 
@@ -1495,7 +1550,7 @@ describe('StatePatch ordered transaction', () => {
       },
       {
         type: 'resourceChanged',
-        payload: { resource: 'grain', mode: 'delta', change: 4 },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: 4 },
         reason: 'Store four grain after the meeting.',
       },
     ];
@@ -1538,7 +1593,7 @@ describe('StatePatch ordered transaction', () => {
       targetType: 'faction',
       value: 25,
     }));
-    expect(result.newRuntimeState.playerResources.grain).toBe(4);
+    expect(result.newRuntimeState.playerResources.supplyCredit).toBe(4);
     expect(result.statePatches?.[0]).toEqual(timeAdvancePatch);
     expect(result.statePatches?.[2]).toEqual(originalPatches[2]);
   });
@@ -1584,7 +1639,7 @@ describe('StatePatch ordered transaction', () => {
       timeAdvancePatch,
       {
         type: 'resourceChanged',
-        payload: { resource: 'grain', change: '1kg' },
+        payload: { resource: 'supplyCredit', change: '1kg' },
         reason: 'Store one grain.',
       },
     ];
@@ -1592,7 +1647,7 @@ describe('StatePatch ordered transaction', () => {
       timeAdvancePatch,
       {
         type: 'resourceChanged',
-        payload: { resource: 'grain', mode: 'delta', change: 1 },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: 1 },
         reason: 'Store one grain.',
       },
     ];
@@ -1600,10 +1655,10 @@ describe('StatePatch ordered transaction', () => {
     const result = await executeWithRepair(originalPatches, repairedPatches);
 
     expect(result.patchValidation?.valid).toBe(true);
-    expect(result.newRuntimeState.playerResources.grain).toBe(1);
+    expect(result.newRuntimeState.playerResources.supplyCredit).toBe(1);
     expect(result.statePatches?.[0]).toEqual(timeAdvancePatch);
     expect(result.statePatches?.[1].payload).toEqual({
-      resource: 'grain',
+      resource: 'supplyCredit',
       mode: 'delta',
       change: 1,
     });
@@ -1637,7 +1692,7 @@ describe('StatePatch ordered transaction', () => {
       label: 'resource name',
       originalPatch: {
         type: 'resourceChanged',
-        payload: { resource: 'grain', mode: 'delta', change: '1kg' },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: '1kg' },
         reason: 'Adjust the resource.',
       } as StatePatch,
       repairedPatch: {
@@ -1650,12 +1705,12 @@ describe('StatePatch ordered transaction', () => {
       label: 'resource mode',
       originalPatch: {
         type: 'resourceChanged',
-        payload: { resource: 'grain', mode: 'delta', change: '1kg' },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: '1kg' },
         reason: 'Adjust the resource.',
       } as StatePatch,
       repairedPatch: {
         type: 'resourceChanged',
-        payload: { resource: 'grain', mode: 'absolute', newValue: 1 },
+        payload: { resource: 'supplyCredit', mode: 'absolute', newValue: 1 },
         reason: 'Adjust the resource.',
       } as StatePatch,
     },
@@ -1682,7 +1737,7 @@ describe('StatePatch ordered transaction', () => {
       } as StatePatch,
       repairedPatch: {
         type: 'resourceChanged',
-        payload: { resource: 'grain', mode: 'delta', change: 1 },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: 1 },
         reason: 'Repair the resource.',
       } as StatePatch,
     },
@@ -1690,12 +1745,12 @@ describe('StatePatch ordered transaction', () => {
       label: 'ambiguous resource mode',
       originalPatch: {
         type: 'resourceChanged',
-        payload: { resource: 'grain', change: '1kg', newValue: '2kg' },
+        payload: { resource: 'supplyCredit', change: '1kg', newValue: '2kg' },
         reason: 'Repair the resource.',
       } as StatePatch,
       repairedPatch: {
         type: 'resourceChanged',
-        payload: { resource: 'grain', mode: 'delta', change: 1 },
+        payload: { resource: 'supplyCredit', mode: 'delta', change: 1 },
         reason: 'Repair the resource.',
       } as StatePatch,
     },
@@ -1739,7 +1794,7 @@ describe('StatePatch ordered transaction', () => {
   it('does not merge repaired quest or signal writeback when the patch candidate is rejected', async () => {
     const originalPatches: StatePatch[] = [
       timeAdvancePatch,
-      { type: 'resourceChanged', payload: { resource: 'grain', mode: 'delta', change: 7 }, reason: 'Store seven grain.' },
+      { type: 'resourceChanged', payload: { resource: 'supplyCredit', mode: 'delta', change: 7 }, reason: 'Store seven grain.' },
     ];
     const llmClient = {
       generate: vi.fn(async () => ({
@@ -1788,7 +1843,7 @@ describe('StatePatch ordered transaction', () => {
     });
 
     expect(result.statePatches).toEqual(originalPatches);
-    expect(result.newRuntimeState.playerResources.grain).toBe(7);
+    expect(result.newRuntimeState.playerResources.supplyCredit).toBe(7);
     expect(result.newRuntimeState.activeQuests.some((quest) => quest.id === 'quest_rejected_repair')).toBe(false);
     expect(result.newRuntimeState.knownRumors.some((rumor) => rumor.id === 'signal_rejected_repair')).toBe(false);
   });
@@ -1861,7 +1916,7 @@ describe('StatePatch ordered transaction', () => {
   it('rejects a no-diagnostics tail patch that duplicates an original prefix patch', async () => {
     const resourcePatch: StatePatch = {
       type: 'resourceChanged',
-      payload: { resource: 'grain', mode: 'delta', change: 7 },
+      payload: { resource: 'supplyCredit', mode: 'delta', change: 7 },
       reason: 'Store seven grain.',
     };
     const originalPatches = [timeAdvancePatch, resourcePatch];
@@ -1869,13 +1924,13 @@ describe('StatePatch ordered transaction', () => {
     const result = await executeWithRepair(originalPatches, [...originalPatches, resourcePatch]);
 
     expect(result.statePatches).toEqual(originalPatches);
-    expect(result.newRuntimeState.playerResources.grain).toBe(7);
+    expect(result.newRuntimeState.playerResources.supplyCredit).toBe(7);
   });
 
   it('rejects duplicate patches within a no-diagnostics appended tail', async () => {
     const resourcePatch: StatePatch = {
       type: 'resourceChanged',
-      payload: { resource: 'grain', mode: 'delta', change: 3 },
+      payload: { resource: 'supplyCredit', mode: 'delta', change: 3 },
       reason: 'Store three grain.',
     };
     const originalPatches = [timeAdvancePatch];
@@ -1883,12 +1938,12 @@ describe('StatePatch ordered transaction', () => {
     const result = await executeWithRepair(originalPatches, [timeAdvancePatch, resourcePatch, resourcePatch]);
 
     expect(result.statePatches).toEqual(originalPatches);
-    expect(result.newRuntimeState.playerResources.grain).toBeUndefined();
+    expect(result.newRuntimeState.playerResources.supplyCredit).toBeUndefined();
   });
 
   it('rejects two appended timeAdvance patches when the original batch has no time advance', async () => {
     const originalPatches: StatePatch[] = [
-      { type: 'resourceChanged', payload: { resource: 'grain', mode: 'delta', change: 4 }, reason: 'Store four grain.' },
+      { type: 'resourceChanged', payload: { resource: 'supplyCredit', mode: 'delta', change: 4 }, reason: 'Store four grain.' },
     ];
     const llmClient = {
       generate: vi.fn(async () => ({
@@ -1942,7 +1997,7 @@ describe('StatePatch ordered transaction', () => {
     expect(stateWritebackLlmClient.generate).toHaveBeenCalledTimes(2);
     expect(result.patchValidation?.valid).toBe(true);
     expect(result.statePatches?.map((patch) => patch.type)).toEqual(['resourceChanged', 'timeAdvance']);
-    expect(result.newRuntimeState.playerResources.grain).toBe(4);
+    expect(result.newRuntimeState.playerResources.supplyCredit).toBe(4);
   });
 
   it('recognizes a misnested timeAdvance before focused repair and does not apply time twice', async () => {
@@ -2132,7 +2187,7 @@ describe('StatePatch ordered transaction', () => {
     });
 
     expect(result.patchValidation?.valid).toBe(false);
-    expect(result.patchValidation?.errors.join('\n')).toContain('unsupported_project');
+    expect(result.patchValidation?.errors.join('\n')).not.toContain('unsupported_project');
     expect(result.patchValidation?.errors.join('\n')).toContain('unsupportedLegacyEvent');
     expect(result.newRuntimeState.privateAssets).toEqual([]);
     expect(result.newRuntimeState.privateAssetProjects).toEqual([]);
@@ -2155,7 +2210,7 @@ describe('StatePatch ordered transaction', () => {
       timeAdvancePatch,
     ];
     const repairedPatches: StatePatch[] = [
-      { type: 'resourceChanged', reason: sharedReason, payload: { resource: 'grain', mode: 'delta', change: 3 } },
+      { type: 'resourceChanged', reason: sharedReason, payload: { resource: 'supplyCredit', mode: 'delta', change: 3 } },
       { type: 'localSituationChanged', reason: sharedReason, payload: { notes: ['Workshop record repaired.'] } },
       timeAdvancePatch,
     ];
@@ -2181,6 +2236,13 @@ describe('StatePatch ordered transaction', () => {
           characterId: 'player',
           characterType: 'player',
           currentIdentity: 'Workshop owner',
+          currentIdentityDescription: 'The player legally owns and manages the market workshop.',
+          identitySummary: 'The player is now the registered workshop owner.',
+          personalEscortEntitlement: {
+            status: 'none',
+            bases: [],
+            updatedAt: 'day 10',
+          },
         },
       },
     };
@@ -2272,7 +2334,7 @@ describe('StatePatch ordered transaction', () => {
     expect(result.newRuntimeState.localSituationNotes).toEqual([]);
   });
 
-  it('rolls back when a complete repair response still contains an illegal replacement', async () => {
+  it('isolates the private-asset domain when repair still returns an illegal replacement', async () => {
     const narrativeText = 'The repair keeps an invalid project status.';
     const originalPatches = [
       privateAssetPatch(),
@@ -2310,16 +2372,389 @@ describe('StatePatch ordered transaction', () => {
       stateWritebackLlmClient,
     });
 
-    expect(result.patchValidation?.valid).toBe(false);
-    expect(result.patchValidation?.errors.join('\n')).toContain('status is invalid: impossible');
-    expect(result.patchValidation?.errors.join('\n')).not.toContain('still_impossible');
+    expect(result.patchValidation?.valid).toBe(true);
+    expect(result.patchValidation?.errors).toEqual([]);
+    expect(result.patchValidation?.warnings.join('\n')).toContain('附属补丁被隔离');
+    expect(result.patchValidation?.warnings.join('\n')).toContain('status is invalid: impossible');
     expect(result.newRuntimeState.privateAssets).toEqual([]);
     expect(result.newRuntimeState.privateAssetProjects).toEqual([]);
+    expect(result.newRuntimeState.currentDate).not.toBe(makeState().currentDate);
     expect(result.newRuntimeState.turnLog[0].fullNarrativeText).toBe(narrativeText);
   });
 });
 
 describe('continuity domain isolation', () => {
+  it('materializes structured identity and private-asset facts while isolating a malformed holding', async () => {
+    const narrativeText = 'The appointment and property transfer are complete, while an unrelated holding draft is malformed.';
+    const llmClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify({
+          protocolVersion: 'lsfy.turn.v1',
+          narrativeText,
+          suggestedActions: [],
+          statePatches: [
+            {
+              type: 'luanshiCommand',
+              reason: 'The private-asset patch omitted technical acquisition fields.',
+              payload: {
+                command: {
+                  action: 'upsertPrivateAsset',
+                  operation: 'create',
+                  privateAssetId: 'asset_transferred_manor',
+                  name: 'Transferred Manor',
+                  type: 'estate',
+                  ownerScope: 'personal',
+                  status: 'active',
+                  summary: 'A modest manor transferred by a completed deed.',
+                  locationId: 'place_market',
+                  mu: 40,
+                  households: 8,
+                  acquisition: {
+                    kind: 'transfer',
+                    occurredAt: '',
+                    sourceRefId: '',
+                    summary: 'The deed transfer was completed.',
+                  },
+                  updatedAt: '',
+                },
+              },
+            },
+            {
+              type: 'luanshiCommand',
+              reason: 'An unrelated holding draft lacks control evidence.',
+              payload: {
+                command: {
+                  action: 'upsertHoldingLedger',
+                  operation: 'create',
+                  holdingId: 'holding_invalid_wall',
+                  name: 'Temporary Wall Post',
+                  type: 'fort',
+                  status: 'controlled',
+                  summary: 'This malformed record must not block other domains.',
+                  civilAdministrationScope: 'none',
+                  scaleLevel: 1,
+                  agriculture: 0,
+                  commerce: 0,
+                  population: 0,
+                  publicOrder: 0,
+                  popularSupport: 0,
+                  defense: 150,
+                  recruitPotential: 0,
+                  armory: 0,
+                  horseSupply: 0,
+                  updatedAt: '',
+                },
+              },
+            },
+            timeAdvancePatch,
+          ],
+          statePatch: null,
+          writeback: {
+            turnSummary: {
+              brief: 'Appointment and property transfer completed.',
+              playerActionSummary: 'Accepted the appointment and deed.',
+              visibleConsequence: 'The player now holds an office and a manor.',
+              memoryImportance: 'high',
+              identityChanges: [{
+                sourceRefId: 'identity_turn_10_gate_captain',
+                characterType: 'player',
+                characterId: 'player',
+                currentIdentity: 'Market Gate Captain',
+                currentIdentityDescription: 'Formally appointed to command the market gate watch.',
+                identitySummary: 'The player has taken office as market gate captain.',
+                militaryTitle: 'Gate Captain',
+                personalEscortEntitlement: {
+                  status: 'customary',
+                  bases: ['military_command'],
+                },
+                summary: 'The appointment order was read and accepted this turn.',
+              }],
+              privateAssetAcquisitions: [{
+                sourceRefId: 'asset_transfer_turn_10_manor',
+                privateAssetId: 'asset_transferred_manor',
+                assetName: 'Transferred Manor',
+                kind: 'transfer',
+                type: 'estate',
+                ownerScope: 'personal',
+                status: 'active',
+                locationId: 'place_market',
+                mu: 40,
+                households: 8,
+                summary: 'The deed transfer was completed this turn.',
+              }],
+            },
+          },
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      })),
+    };
+
+    const result = await executeTurn(worldBook, makeState(), 'Accept the appointment and deed.', {
+      apiConfig,
+      llmClient,
+    });
+
+    expect(result.patchValidation?.valid).toBe(true);
+    expect(result.patchValidation?.warnings.join('\n')).toContain('upsertHoldingLedger');
+    expect(result.newRuntimeState.player).toMatchObject({
+      currentIdentity: 'Market Gate Captain',
+      militaryTitle: 'Gate Captain',
+      personalEscortEntitlement: {
+        status: 'customary',
+        bases: ['military_command'],
+        updatedAt: 'day 10',
+      },
+    });
+    expect(result.newRuntimeState.privateAssets).toContainEqual(expect.objectContaining({
+      privateAssetId: 'asset_transferred_manor',
+      name: 'Transferred Manor',
+      acquisition: expect.objectContaining({
+        kind: 'transfer',
+        occurredAt: 'day 10',
+        sourceRefId: 'asset_transfer_turn_10_manor',
+      }),
+    }));
+    expect(result.newRuntimeState.holdings?.some((holding) => holding.holdingId === 'holding_invalid_wall')).toBe(false);
+    expect(result.newRuntimeState.currentDate).not.toBe(makeState().currentDate);
+  });
+
+  it('rejects an unaffordable heavy-cavalry project without discarding time or unrelated facts', async () => {
+    const state = makeState();
+    state.holdings = [{
+      holdingId: 'holding_camp',
+      name: '北岸大营',
+      type: 'camp',
+      status: 'controlled',
+      summary: '临时军营。',
+      locationId: 'place_market',
+      civilAdministrationScope: 'none',
+      scaleLevel: 1,
+      agriculture: 0,
+      commerce: 0,
+      population: 0,
+      publicOrder: 0,
+      popularSupport: 0,
+      defense: 40,
+      recruitPotential: 20,
+      armory: 40,
+      horseSupply: 40,
+      updatedAt: state.currentDate,
+    }];
+    state.resources = {
+      money: 0,
+      grain: 0,
+      horses: 0,
+      arms: 0,
+      recruits: 0,
+      weapons: [],
+      documents: [],
+      tokens: [],
+      importantSupplies: [],
+    };
+    const result = await executeWithPatches(
+      state,
+      'The attempted formation lacks horses and armor, while the watch still advances.',
+      [
+        {
+          type: 'luanshiCommand',
+          reason: 'The attempted project lacks all required resources.',
+          payload: { command: {
+            action: 'startHeavyCavalryFormation',
+            projectId: 'project_unaffordable_heavy',
+            troopId: 'troop_unaffordable_heavy',
+            troopName: '新编甲骑',
+            holdingId: 'holding_camp',
+            requestedSize: 20,
+            supportLevel: 'limited',
+            relationToPlayer: '你直接统领',
+            upkeepSource: 'player_resources',
+          } },
+        } as any,
+        {
+          type: 'localSituationChanged',
+          reason: 'Keep an unrelated local fact.',
+          payload: { notes: ['营门更换了值守班次。'] },
+        },
+        timeAdvancePatch,
+      ],
+    );
+
+    expect(result.patchValidation?.valid).toBe(true);
+    expect(result.patchValidation?.warnings.join('\n')).toContain('startHeavyCavalryFormation');
+    expect(result.newRuntimeState.heavyCavalryFormationProjects).toHaveLength(0);
+    expect(result.newRuntimeState.resources?.horses).toBe(0);
+    expect(result.newRuntimeState.localSituationNotes).toEqual(['营门更换了值守班次。']);
+    expect(result.newRuntimeState.currentDate).not.toBe(state.currentDate);
+  });
+
+  it('accepts a factual heavy-cavalry grant after its source event earlier in the same transaction', async () => {
+    const result = await executeWithPatches(
+      makeState(),
+      'The superior formally grants an existing armored cavalry detachment.',
+      [
+        {
+          type: 'luanshiCommand',
+          reason: 'Record the completed superior grant first.',
+          payload: { command: {
+            action: 'recordTurnEvent',
+            eventId: 'evt_same_turn_heavy_grant',
+            locationId: 'place_market',
+            summary: '上级正式将现成二十名甲骑拨入主角麾下。',
+            presentNpcIds: [],
+            involvedNpcIds: [],
+            visibility: '公开',
+          } },
+        } as any,
+        {
+          type: 'luanshiCommand',
+          reason: 'Register the already transferred detachment.',
+          payload: { command: {
+            action: 'upsertTroopLedger',
+            troopId: 'troop_same_turn_heavy_grant',
+            name: '军府拨给甲骑',
+            size: 20,
+            troopType: '重骑兵',
+            logisticsClass: 'heavy_cavalry',
+            acquisitionEvidence: {
+              kind: 'superior_grant',
+              occurredAt: 'day 10',
+              sourceRefId: 'evt_same_turn_heavy_grant',
+              summary: '依据本回合已完成的上级正式调拨登记。',
+            },
+            quality: '高',
+            morale: 60,
+            training: 60,
+            supplies: 100,
+            task: '听候军令',
+            relationToPlayer: '你直接统领',
+          } },
+        } as any,
+        timeAdvancePatch,
+      ],
+    );
+
+    expect(result.patchValidation?.valid).toBe(true);
+    expect(result.newRuntimeState.turnEvents?.some((event) => event.eventId === 'evt_same_turn_heavy_grant')).toBe(true);
+    expect(result.newRuntimeState.troops?.find((troop) => troop.troopId === 'troop_same_turn_heavy_grant'))
+      .toMatchObject({ logisticsClass: 'heavy_cavalry', size: 20 });
+  });
+
+  it('allows an operational detachment to attach to an intelligence-level main force created earlier in the same transaction', async () => {
+    const result = await executeWithPatches(
+      makeState(),
+      '皇甫嵩大军已经抵达，主角所领百人队编入其左翼。',
+      [
+        {
+          type: 'luanshiCommand',
+          reason: '先登记已经确认存在、但尚未完成点验的朝廷主力。',
+          payload: { command: {
+            action: 'upsertTroopLedger',
+            troopId: 'troop_imperial_main_force',
+            name: '皇甫嵩所部主力',
+            detailLevel: 'intelligence',
+            relationToPlayer: '友军',
+            lifecycleStatus: 'unknown',
+            knownLevel: '亲历',
+            certainty: 'reported',
+            strengthEstimate: {
+              min: 20_000,
+              max: 35_000,
+              asOf: 'day 10',
+              basis: '营垒规模与军报足以确认主力存在，尚未逐营点验。',
+            },
+          } },
+        } as any,
+        {
+          type: 'luanshiCommand',
+          reason: '再把主角已完成交接的百人队挂接到主力作战序列。',
+          payload: { command: {
+            action: 'upsertTroopLedger',
+            troopId: 'troop_player_hundred',
+            name: '主角所领百人队',
+            detailLevel: 'operational',
+            size: 100,
+            morale: 62,
+            training: 58,
+            supplies: 74,
+            task: '担任左翼警戒',
+            quality: '中',
+            readiness: '中',
+            fatigue: '低',
+            lifecycleStatus: 'active',
+            knownLevel: '亲历',
+            certainty: 'confirmed',
+            relationToPlayer: '你直接统领',
+            leaderNpcId: 'player',
+            operationalParentForceId: 'troop_imperial_main_force',
+          } },
+        } as any,
+        timeAdvancePatch,
+      ],
+    );
+
+    expect(result.patchValidation?.valid).toBe(true);
+    expect(result.newRuntimeState.troops?.find((troop) => troop.troopId === 'troop_player_hundred'))
+      .toMatchObject({
+        detailLevel: 'operational',
+        size: 100,
+        operationalParentForceId: 'troop_imperial_main_force',
+      });
+  });
+
+  it('isolates a rejected private-asset growth patch without discarding time or unrelated facts', async () => {
+    const state = makeState();
+    state.privateAssets = [{
+      privateAssetId: 'asset_lin_estate',
+      name: '林氏坞堡',
+      type: 'estate',
+      ownerScope: 'clan',
+      status: 'active',
+      summary: '阳翟林氏旁支的私产。',
+      locationId: 'place_market',
+      mu: 120,
+      households: 18,
+      updatedAt: 'day 10',
+    }];
+    const result = await executeWithPatches(
+      state,
+      'The estate remains unchanged while the watch advances.',
+      [
+        {
+          type: 'luanshiCommand',
+          reason: 'An invalid direct estate expansion is proposed.',
+          payload: {
+            command: {
+              action: 'upsertPrivateAsset',
+              operation: 'update',
+              privateAssetId: 'asset_lin_estate',
+              name: '林氏坞堡',
+              type: 'estate',
+              ownerScope: 'clan',
+              status: 'active',
+              summary: 'The same estate is incorrectly enlarged without a project.',
+              locationId: 'place_market',
+              mu: 900,
+              households: 18,
+            },
+          },
+        } as any,
+        {
+          type: 'localSituationChanged',
+          reason: 'Keep an unrelated local fact.',
+          payload: { notes: ['The watch changed normally.'] },
+        },
+        timeAdvancePatch,
+      ],
+    );
+
+    expect(result.patchValidation?.valid).toBe(true);
+    expect(result.patchValidation?.warnings.join('\n')).toContain('附属补丁被隔离');
+    expect(result.newRuntimeState.privateAssets?.[0].mu).toBe(120);
+    expect(result.newRuntimeState.currentDate).not.toBe(state.currentDate);
+    expect(result.newRuntimeState.localSituationNotes).toEqual(['The watch changed normally.']);
+  });
+
   it('keeps time and unrelated facts when an invalid resource command survives repair', async () => {
     const result = await executeWithPatches(
       makeState(),
@@ -2351,6 +2786,57 @@ describe('continuity domain isolation', () => {
     expect(result.newRuntimeState.localSituationNotes).toEqual(['The watch changed normally.']);
     expect(result.newRuntimeState.turnLog[result.newRuntimeState.turnLog.length - 1]?.statePatchSummary)
       .toContain('附属补丁已按域隔离');
+  });
+
+  it('fills mechanical unique-art evidence fields and preserves valid growth when an unrelated batch fails', async () => {
+    const state = makeState();
+    state.player.uniqueArts = [{
+      id: 'art_player_drill',
+      name: '整军操练',
+      rarity: 'blue',
+      domain: 'warfare',
+      level: 2,
+      progress: 0,
+      description: '整顿队列并反复演练军令。',
+      effectSummary: '提高操练与整军能力。',
+      source: 'opening',
+    }];
+    const result = await executeWithPatches(
+      state,
+      'The player completes a real drill while an unrelated project patch is malformed.',
+      [
+        {
+          type: 'luanshiCommand',
+          reason: 'A completed drill grows the established art.',
+          payload: {
+            command: {
+              action: 'recordCharacterUniqueArtProgress',
+              characterType: 'player',
+              artId: 'art_player_drill',
+              source: 'actual_use',
+              intensity: 'normal',
+              summary: '主角完成了一次真实整军操练。',
+            },
+          },
+        } as any,
+        privateAssetPatch(),
+        privateAssetProjectPatch({ status: 'impossible' }),
+        timeAdvancePatch,
+      ],
+    );
+
+    expect(result.patchValidation?.valid).toBe(true);
+    const art = result.newRuntimeState.player.uniqueArts?.find((candidate) => candidate.id === 'art_player_drill');
+    expect(art?.progress).toBe(7);
+    expect(art?.progressHistory?.[0]).toMatchObject({
+      eventId: 'turn:1:unique-art-progress:player:art_player_drill:actual_use',
+      occurredAt: 'day 10',
+      sourceRefId: 'turn:1:unique-art:player:art_player_drill:actual_use',
+      awardedProgress: 7,
+    });
+    expect(result.newRuntimeState.privateAssets).toEqual([]);
+    expect(result.newRuntimeState.turnLog[0]?.statePatchSummary).toContain('附属补丁已按域隔离');
+    expect(result.stateWritebackWarnings.join('\n')).toContain('按域原子隔离');
   });
 
   it('isolates an invented auxiliary command without stalling the valid time patch', async () => {
@@ -2727,16 +3213,16 @@ describe('battle writeback continuity', () => {
   it('repairs diagnosed source slots before appending a missing judgement record', async () => {
     const initialState = {
       ...makeState(),
-      playerResources: { grain: Number.MAX_VALUE },
+      playerResources: { supplyCredit: Number.MAX_VALUE },
     };
     const overflowingResourcePatch: StatePatch = {
       type: 'resourceChanged',
       reason: 'adjust the grain after the pursuit',
-      payload: { resource: 'grain', mode: 'delta', change: Number.MAX_VALUE },
+      payload: { resource: 'supplyCredit', mode: 'delta', change: Number.MAX_VALUE },
     };
     const repairedResourcePatch: StatePatch = {
       ...overflowingResourcePatch,
-      payload: { resource: 'grain', mode: 'delta', change: -Number.MAX_VALUE },
+      payload: { resource: 'supplyCredit', mode: 'delta', change: -Number.MAX_VALUE },
     };
     const combatPatch: StatePatch = {
       type: 'luanshiCommand',
@@ -2792,7 +3278,7 @@ describe('battle writeback continuity', () => {
     expect(llmClient.generate).toHaveBeenCalledTimes(2);
     expect(result.patchValidation?.valid).toBe(true);
     expect(result.statePatches).toHaveLength(3);
-    expect(result.newRuntimeState.playerResources.grain).toBe(0);
+    expect(result.newRuntimeState.playerResources.supplyCredit).toBe(0);
     expect(result.newRuntimeState.combatRecords).toContainEqual(expect.objectContaining({
       combatId: 'combat_luomagu_combined_repair',
     }));

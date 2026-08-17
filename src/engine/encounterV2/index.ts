@@ -15,3 +15,5 @@ export * from './WarAi';
 export * from './EncounterRuntimeIntegration';
 export * from './WarRuntimeIntegration';
 export * from './EncounterNarrative';
+export * from './EncounterScopedCombatants';
+export * from './UniqueArtProjectionRuntime';

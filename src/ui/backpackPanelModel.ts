@@ -1,9 +1,20 @@
 import { formatCurrency } from '../engine/character/currency';
-import type { Actor, CharacterEquipmentItem, EquipmentSlot, InventoryItem } from '../engine/types';
+import {
+  previewPlayerRestorativeItemUse,
+} from '../engine/character/PlayerRestorativeItemRuntime';
+import type {
+  Actor,
+  CharacterEquipmentItem,
+  EquipmentSlot,
+  InventoryItem,
+  RuntimeState,
+} from '../engine/types';
+import { projectEquippedItems } from '../engine/character/loadoutIdentity';
 import { formatEquipmentQualityLabel } from './gameTooltipText';
+import { normalizeEquipmentQualityTier } from '../engine/equipment/EquipmentQuality';
 
 export type BackpackCategoryKey = 'all' | 'equipment' | 'document' | 'supply' | 'misc';
-export type BackpackQualityTone = 'white' | 'green' | 'blue' | 'red' | 'gold';
+export type BackpackQualityTone = 'white' | 'green' | 'blue' | 'purple' | 'orange' | 'red';
 
 export interface BackpackCategory {
   key: BackpackCategoryKey;
@@ -39,6 +50,10 @@ export interface BackpackItemModel {
   equipSlot?: EquipmentSlot;
   isEquipped: boolean;
   equippedSlotLabel?: string;
+  hasRestorativeUse: boolean;
+  canUse: boolean;
+  useEffectText?: string;
+  useDisabledReason?: string;
 }
 
 export interface BackpackPanelModel {
@@ -66,14 +81,31 @@ const slotLabels: Record<EquipmentSlot, string> = {
   treasure: '宝物',
 };
 
-export function buildBackpackPanelModel(player: Actor): BackpackPanelModel {
-  const equipmentSlots = buildBackpackEquipmentSlots(player.equipment ?? []);
-  const equippedById = new Map((player.equipment ?? []).map((item) => [item.id, item]));
-  const inventoryIds = new Set((player.inventory ?? []).map((item) => item.id));
-  const inventoryItems = (player.inventory ?? []).map((item) => buildBackpackItemModel(item, equippedById.get(item.id)));
-  const equippedOnlyItems = (player.equipment ?? [])
-    .filter((item) => !inventoryIds.has(item.id))
-    .map((item) => buildBackpackItemModel(equipmentItemToInventoryItem(item), item));
+const internalQualityTiers = new Set<BackpackQualityTone>([
+  'white',
+  'green',
+  'blue',
+  'purple',
+  'orange',
+  'red',
+]);
+
+export function buildBackpackPanelModel(
+  player: Actor,
+  runtimeState?: RuntimeState,
+): BackpackPanelModel {
+  const projectedEquipment = projectEquippedItems(player.equipment ?? []);
+  const equipmentSlots = buildBackpackEquipmentSlots(projectedEquipment);
+  const inventory = player.inventory ?? [];
+  const equipmentMatches = matchEquipmentToInventory(projectedEquipment, inventory);
+  const inventoryItems = inventory.map((item, index) => buildBackpackItemModel(
+    item,
+    equipmentMatches.byInventoryIndex.get(index),
+    runtimeState,
+  ));
+  const equippedOnlyItems = projectedEquipment
+    .filter((_item, index) => !equipmentMatches.matchedEquipmentIndexes.has(index))
+    .map((item) => buildBackpackItemModel(equipmentItemToInventoryItem(item), item, runtimeState));
   const items = [...inventoryItems, ...equippedOnlyItems];
   const categories = (Object.keys(categoryLabels) as BackpackCategoryKey[]).map((key) => ({
     key,
@@ -113,9 +145,18 @@ function buildBackpackEquipmentSlots(equipment: CharacterEquipmentItem[]): Backp
   ];
 }
 
-function buildBackpackItemModel(item: InventoryItem, equippedItem?: CharacterEquipmentItem): BackpackItemModel {
+function buildBackpackItemModel(
+  item: InventoryItem,
+  equippedItem?: CharacterEquipmentItem,
+  runtimeState?: RuntimeState,
+): BackpackItemModel {
   const categoryKey = resolveCategoryKey(item);
   const categoryLabel = categoryLabels[categoryKey];
+  const usePreview = runtimeState
+    ? previewPlayerRestorativeItemUse(runtimeState, item.id)
+    : undefined;
+  const structuredQualityTier = resolveStructuredQualityTier(runtimeState, item.id);
+  const displayQuality = structuredQualityTier ?? item.quality;
   const equippedSlotLabel = equippedItem
     ? equippedItem.slot === 'treasure'
       ? '宝物'
@@ -130,14 +171,51 @@ function buildBackpackItemModel(item: InventoryItem, equippedItem?: CharacterEqu
     detailTitle: buildDetailTitle(item, categoryLabel),
     categoryKey,
     categoryLabel,
-    qualityLabel: formatEquipmentQualityLabel(item.quality) || undefined,
-    qualityTone: resolveQualityTone(item.quality),
+    qualityLabel: formatEquipmentQualityLabel(displayQuality) || undefined,
+    qualityTone: resolveQualityTone(displayQuality),
     isKeyItem: Boolean(item.keyItem),
     canEquip: Boolean(item.equipSlot),
     equipSlot: item.equipSlot,
     isEquipped: Boolean(equippedItem),
     equippedSlotLabel,
+    hasRestorativeUse: Boolean(usePreview?.hasRestorativeUse),
+    canUse: Boolean(usePreview?.canUse),
+    useEffectText: usePreview?.effectText,
+    useDisabledReason: usePreview?.blockMessage,
   };
+}
+
+function matchEquipmentToInventory(
+  equipment: CharacterEquipmentItem[],
+  inventory: InventoryItem[],
+): {
+  byInventoryIndex: Map<number, CharacterEquipmentItem>;
+  matchedEquipmentIndexes: Set<number>;
+} {
+  const byInventoryIndex = new Map<number, CharacterEquipmentItem>();
+  const matchedEquipmentIndexes = new Set<number>();
+  const usedInventoryIndexes = new Set<number>();
+
+  equipment.forEach((equippedItem, equipmentIndex) => {
+    const candidates = inventory
+      .map((item, index) => ({ item, index }))
+      .filter(({ item, index }) => item.id === equippedItem.id && !usedInventoryIndexes.has(index));
+    const exact = candidates.find(({ item }) => (
+      item.name.trim() === equippedItem.name.trim()
+      && (!item.equipSlot || item.equipSlot === equippedItem.slot)
+    ));
+    const fallback = candidates.length === 1
+      && (!candidates[0].item.equipSlot || candidates[0].item.equipSlot === equippedItem.slot)
+      ? candidates[0]
+      : undefined;
+    const matched = exact ?? fallback;
+    if (!matched) return;
+    usedInventoryIndexes.add(matched.index);
+    matchedEquipmentIndexes.add(equipmentIndex);
+    byInventoryIndex.set(matched.index, equippedItem);
+  });
+
+  return { byInventoryIndex, matchedEquipmentIndexes };
 }
 
 function equipmentItemToInventoryItem(item: CharacterEquipmentItem): InventoryItem {
@@ -187,15 +265,19 @@ function buildDetailTitle(item: InventoryItem, categoryLabel: string): string {
 }
 
 function resolveQualityTone(quality?: string): BackpackQualityTone {
-  if (!quality) return 'white';
-  const normalized = quality.trim().toLocaleLowerCase();
-  if (normalized === 'white' || normalized === 'green' || normalized === 'blue' || normalized === 'red' || normalized === 'gold') {
-    return normalized;
-  }
-  if (/传奇|传说|无双|御赐|国宝|神器|神兵/.test(quality)) return 'gold';
-  if (/名品|绝品|稀世|珍品|军府|信物|家传|宝/.test(quality)) return 'red';
-  if (/精良|精造|上品|百炼|名匠/.test(quality)) return 'blue';
-  if (/良|制式|普通/.test(quality)) return 'green';
-  if (/破|劣|残/.test(quality)) return 'white';
-  return 'white';
+  return normalizeEquipmentQualityTier(quality) ?? 'white';
+}
+
+function resolveStructuredQualityTier(
+  runtimeState: RuntimeState | undefined,
+  itemId: string,
+): BackpackQualityTone | undefined {
+  const profile = runtimeState?.encounterV2?.semanticProjections?.find((candidate) => (
+    (candidate.profileKind === 'item' || candidate.profileKind === 'equipment')
+    && candidate.sourceId === itemId
+  ));
+  if (!profile || (profile.profileKind !== 'item' && profile.profileKind !== 'equipment')) return undefined;
+  return internalQualityTiers.has(profile.qualityTier)
+    ? profile.qualityTier
+    : undefined;
 }

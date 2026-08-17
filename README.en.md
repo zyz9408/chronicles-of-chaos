@@ -6,7 +6,7 @@
 
 An LLM-driven interactive narrative RPG where characters and the Three Kingdoms world persist and evolve through validated local state.
 
-[简体中文](README.md) · **v1.0.0** · Simplified Chinese launch release
+[简体中文](README.md) · **v1.7.24** · [Play online](https://cocsg.pages.dev/)
 
 </div>
 
@@ -28,7 +28,16 @@ The project does not lock play into a fixed quest tree. The LLM interprets actio
 - **A Three Kingdoms world pack with 1,500 StoryPack entries** — Cross-role, cross-period, and cross-region narrative material is selected against historical knowledge and current facts without forcing history to repeat mechanically.
 - **Local-first long-save architecture** — IndexedDB stores manual and automatic saves, turn history, and larger state payloads. ZIP import/export, story export, rerolls, and turn rollback are supported.
 - **Independent model routes** — Main narrative, state writeback, memory summarisation, embeddings, NPC simulation, profile completion, world evolution, and image-prompt generation may use separate API profiles and models.
-- **Desktop and mobile layouts** — Situation, map, character, bond, romance, inventory, art, faction, holding, troop, conflict, combat, and memory panels reflow for the device.
+- **Cross-device cloud saves** — Sign in with Discord to upload or download saves between desktop and mobile. Synchronising API settings is always an explicit player choice.
+- **Correspondence and off-screen lives** — Write and receive letters, keep conversation histories, and follow important characters as their circumstances and historical trajectories continue with game time.
+- **Desktop, mobile, and dual themes** — Situation, map, character, bond, romance, inventory, art, faction, holding, troop, conflict, combat, and memory panels reflow for the device, with dark and light themes.
+
+## Highlights in v1.7.24
+
+- Expanded personal combat, warfare, unit match-ups, command impact, and projected unique-art effects, with outcomes resolved by local rules and persisted into the save.
+- Expanded holdings, private estates, troops, correspondence, relationship-character evolution, character memory, cloud saves, and variable management.
+- Added separate narrative, personal-combat, and warfare difficulty controls, alongside opening, map, archive, inventory, and mobile-interface improvements.
+- Added presets for GLM Coding Plan and MiniMax domestic/international endpoints while preserving OpenAI, DeepSeek, Gemini, Claude, Qwen, and generic compatible routes.
 
 ## Game interface
 
@@ -56,14 +65,13 @@ Vite will print the local URL. On first launch:
 3. choose the Three Kingdoms world pack, date, opening mode, and character;
 4. begin a new save or import an existing local ZIP archive.
 
-The settings UI includes OpenAI, DeepSeek, Gemini, Anthropic Claude, Qwen, GLM, Moonshot/Kimi, Doubao, xAI, Groq, Mistral, Ollama, LM Studio, OpenAI-compatible, and custom endpoint options. Model availability, billing, content policy, and data handling are governed by the third-party service selected by the player.
+The settings UI includes OpenAI, DeepSeek, Gemini, Anthropic Claude, Qwen, GLM (including Coding Plan), MiniMax, Moonshot/Kimi, Doubao, xAI, Groq, Mistral, Ollama, LM Studio, OpenAI-compatible, and custom endpoint options. Model availability, billing, content policy, and data handling are governed by the third-party service selected by the player.
 
 ### Build and verify
 
 ```powershell
 npm run lint
 npm test
-npm run test:e2e
 npm run build
 ```
 
@@ -73,6 +81,7 @@ The default test suite does not call paid real-world APIs.
 
 - API profiles, keys, saves, generated story, and runtime state stay in the player's browser or device by default.
 - Model requests go directly from the browser to the third-party service chosen by the player. The developer does not operate an AI proxy for those requests.
+- If the player explicitly enables cloud saves, compressed save archives are stored in the project's Cloudflare R2 bucket and identity/index records are stored in D1. Generated images are not uploaded automatically, and API settings are synchronised only when the player explicitly opts in.
 - Exported API settings may contain plaintext keys. Treat them as private migration or backup files; never commit them to Git or share them publicly.
 - Optional Cloudflare Pages Functions + D1 analytics collect only limited anonymous operational metrics such as online presence, sessions, language, device class, version, and coarse IP-derived region.
 - Analytics do not store raw IP addresses and do not collect player input, story text, saves, relationships, API configuration, keys, prompts, model names, or model request/response bodies.

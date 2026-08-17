@@ -1,12 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { RuntimeState } from '../engine/types';
+import type { GameDifficultyLevel, NarrativePerspective, RuntimeState } from '../engine/types';
 import {
+  API_MAX_OUTPUT_TOKEN_PRESETS,
   API_PROVIDER_OPTIONS,
   API_TASKS,
   createApiConfigDraft,
   deleteApiConfigAsync,
   exportApiSettings,
   getApiConfigModels,
+  getApiMaxOutputTokenGuidance,
+  getApiMaxOutputTokenPresetId,
   getProviderLabel,
   maskApiKey,
   prepareApiConfigForSave,
@@ -22,20 +25,22 @@ import {
   type ApiTaskRoutes,
 } from '../engine/settings/ApiConfigManager';
 import {
-  loadAdultIntimacyStyleFromStorage,
+  loadColorThemeFromStorage,
   loadMotionPreferenceFromStorage,
   loadNarrativeFontSizeFromStorage,
   loadNarrativeLineHeightFromStorage,
   loadNarrativeLengthFromStorage,
+  loadNarrativeLengthRetryEnabledFromStorage,
   loadRenderDepthFromStorage,
   loadNpcPresenceHintsEnabledFromStorage,
   loadPregnancyModeFromStorage,
   loadSnapshotDepthFromStorage,
-  saveAdultIntimacyStyleToStorage,
+  saveColorThemeToStorage,
   saveMotionPreferenceToStorage,
   saveNarrativeFontSizeToStorage,
   saveNarrativeLineHeightToStorage,
   saveNarrativeLengthToStorage,
+  saveNarrativeLengthRetryEnabledToStorage,
   saveNpcPresenceHintsEnabledToStorage,
   savePregnancyModeToStorage,
   saveRenderDepthToStorage,
@@ -56,6 +61,26 @@ import { MemorySettingsPanel } from './MemorySettingsPanel';
 import { NpcSimulationSettingsPanel } from './NpcSimulationSettingsPanel';
 import { SaveSettingsPanel } from './SaveSettingsPanel';
 import { DataManagementPanel } from './DataManagementPanel';
+import { RuntimeVariableManagerPanel } from './RuntimeVariableManagerPanel';
+import { saveCurrentState } from '../engine/save/SaveManager';
+import {
+  applyCombatDifficultyToRuntimeState,
+  applyGameDifficultyToRuntimeState,
+  applyWarDifficultyToRuntimeState,
+  getEncounterDifficultyProfile,
+  getGameDifficultyProfile,
+  normalizeEncounterDifficulty,
+  normalizeGameDifficulty,
+  type EncounterDifficultyKind,
+} from '../engine/settings/GameDifficulty';
+import { GameDifficultyDialog } from './GameDifficultyDialog';
+import {
+  applyNarrativePerspectiveToRuntimeState,
+  getNarrativePerspectiveProfile,
+  normalizeNarrativePerspective,
+} from '../engine/settings/NarrativePerspective';
+import { NarrativePerspectiveDialog } from './NarrativePerspectiveDialog';
+import { NarrativeRegexSettingsPanel } from './NarrativeRegexSettingsPanel';
 
 const PromptRegistryPanel = React.lazy(async () => {
   const module = await import('./PromptRegistryPanel');
@@ -67,6 +92,60 @@ const PromptTokenEstimatePanel = React.lazy(async () => {
   return { default: module.PromptTokenEstimatePanel };
 });
 
+export async function persistCurrentGameDifficulty(
+  runtimeState: RuntimeState,
+  saveId: string | null | undefined,
+  nextDifficulty: GameDifficultyLevel,
+  persistState: (
+    targetSaveId: string,
+    nextState: RuntimeState,
+  ) => Promise<unknown | null> = saveCurrentState,
+): Promise<RuntimeState> {
+  const nextState = applyGameDifficultyToRuntimeState(runtimeState, nextDifficulty);
+  if (saveId) {
+    const saved = await persistState(saveId, nextState);
+    if (!saved) throw new Error('当前存档不存在或已被移除');
+  }
+  return nextState;
+}
+
+export async function persistCurrentEncounterDifficulty(
+  runtimeState: RuntimeState,
+  saveId: string | null | undefined,
+  kind: EncounterDifficultyKind,
+  nextDifficulty: GameDifficultyLevel,
+  persistState: (
+    targetSaveId: string,
+    nextState: RuntimeState,
+  ) => Promise<unknown | null> = saveCurrentState,
+): Promise<RuntimeState> {
+  const nextState = kind === 'combat'
+    ? applyCombatDifficultyToRuntimeState(runtimeState, nextDifficulty)
+    : applyWarDifficultyToRuntimeState(runtimeState, nextDifficulty);
+  if (saveId) {
+    const saved = await persistState(saveId, nextState);
+    if (!saved) throw new Error('当前存档不存在或已被移除');
+  }
+  return nextState;
+}
+
+export async function persistCurrentNarrativePerspective(
+  runtimeState: RuntimeState,
+  saveId: string | null | undefined,
+  nextPerspective: NarrativePerspective,
+  persistState: (
+    targetSaveId: string,
+    nextState: RuntimeState,
+  ) => Promise<unknown | null> = saveCurrentState,
+): Promise<RuntimeState> {
+  const nextState = applyNarrativePerspectiveToRuntimeState(runtimeState, nextPerspective);
+  if (saveId) {
+    const saved = await persistState(saveId, nextState);
+    if (!saved) throw new Error('当前存档不存在或已被移除');
+  }
+  return nextState;
+}
+
 const TavernManagementPanel = React.lazy(async () => {
   const module = await import('./TavernManagementPanel');
   return { default: module.TavernManagementPanel };
@@ -77,6 +156,27 @@ const cloneConfig = (config: ApiConfigArchive): ApiConfigArchive => ({
   models: [...getApiConfigModels(config)],
 });
 const emptyRoutes = (): ApiTaskRoutes => Object.fromEntries(API_TASKS.map((task) => [task.id, null])) as ApiTaskRoutes;
+
+export function pickApiEditorConfig(
+  configs: ApiConfigArchive[],
+  routes: ApiTaskRoutes,
+  activeTab: SettingsTab,
+  editingId?: string,
+): ApiConfigArchive {
+  const routedTaskIds = activeTab === 'api'
+    ? getApiConfigRouteTaskIds()
+    : getFunctionConfigPanel(activeTab)?.routeTaskIds ?? [];
+  const candidateIds = [
+    editingId,
+    ...routedTaskIds.map((taskId) => routes[taskId]?.configId),
+    routes.mainNarrative?.configId,
+  ].filter((configId): configId is string => Boolean(configId));
+  const selected = candidateIds
+    .map((configId) => configs.find((config) => config.id === configId))
+    .find((config): config is ApiConfigArchive => Boolean(config));
+
+  return cloneConfig(selected ?? configs[0] ?? createApiConfigDraft());
+}
 
 export function parseApiModelNames(value: string): string[] {
   return Array.from(new Set(
@@ -171,12 +271,17 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
   const [renderDepth, setRenderDepth] = useState(loadRenderDepthFromStorage);
   const [snapshotDepth, setSnapshotDepth] = useState(loadSnapshotDepthFromStorage);
   const [narrativeLength, setNarrativeLength] = useState(loadNarrativeLengthFromStorage);
-  const [adultIntimacyStyle, setAdultIntimacyStyle] = useState(loadAdultIntimacyStyleFromStorage);
+  const [narrativeLengthRetryEnabled, setNarrativeLengthRetryEnabled] = useState(
+    loadNarrativeLengthRetryEnabledFromStorage,
+  );
   const [pregnancyMode, setPregnancyMode] = useState(loadPregnancyModeFromStorage);
   const [npcPresenceHintsEnabled, setNpcPresenceHintsEnabled] = useState(loadNpcPresenceHintsEnabledFromStorage);
   const [narrativeFontSize, setNarrativeFontSize] = useState(loadNarrativeFontSizeFromStorage);
   const [narrativeLineHeight, setNarrativeLineHeight] = useState(loadNarrativeLineHeightFromStorage);
   const [motionPreference, setMotionPreference] = useState(loadMotionPreferenceFromStorage);
+  const [colorTheme, setColorTheme] = useState(loadColorThemeFromStorage);
+  const [difficultyDialogKind, setDifficultyDialogKind] = useState<'ordinary' | EncounterDifficultyKind | null>(null);
+  const [isNarrativePerspectiveDialogOpen, setIsNarrativePerspectiveDialogOpen] = useState(false);
 
   const configOptions = useMemo(
     () => configs.map((config) => ({
@@ -190,11 +295,74 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
   const selectedNarrativeLengthOption = narrativeLengthControl?.id === 'narrativeLength'
     ? narrativeLengthControl.options.find((option) => option.value === narrativeLength)
     : undefined;
-  const adultIntimacyStyleControl = gameSettingsControls.find((control) => control.id === 'adultIntimacyStyle');
+  const narrativeLengthRetryControl = gameSettingsControls.find(
+    (control) => control.id === 'narrativeLengthRetry',
+  );
   const pregnancyModeControl = gameSettingsControls.find((control) => control.id === 'pregnancyMode');
   const npcPresenceHintsControl = gameSettingsControls.find((control) => control.id === 'npcPresenceHints');
   const taskById = useMemo(() => new Map(API_TASKS.map((task) => [task.id, task])), []);
   const remoteHttpWarning = getRemoteHttpBaseUrlWarning(editing.baseUrl);
+  const maxOutputTokenPresetId = getApiMaxOutputTokenPresetId(editing.maxOutputTokens);
+  const maxOutputTokenGuidance = getApiMaxOutputTokenGuidance(editing.maxOutputTokens);
+  const gameDifficultyProfile = getGameDifficultyProfile(runtimeState?.gameDifficulty);
+  const combatDifficultyProfile = getEncounterDifficultyProfile('combat', runtimeState?.combatDifficulty);
+  const warDifficultyProfile = getEncounterDifficultyProfile('war', runtimeState?.warDifficulty);
+  const narrativePerspectiveProfile = getNarrativePerspectiveProfile(runtimeState?.narrativePerspective);
+
+  const handleGameDifficultyChange = async (nextDifficulty: GameDifficultyLevel) => {
+    if (!runtimeState) return;
+    try {
+      const nextState = await persistCurrentGameDifficulty(runtimeState, saveId, nextDifficulty);
+      onRuntimeStateChange?.(nextState);
+      setFeatureNotice(
+        saveId
+          ? `当前存档难度已改为“${getGameDifficultyProfile(nextDifficulty).label}”。`
+          : `当前运行状态难度已改为“${getGameDifficultyProfile(nextDifficulty).label}”。`,
+      );
+      setDifficultyDialogKind(null);
+    } catch (error) {
+      setFeatureNotice(`当前存档难度保存失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  };
+
+  const handleEncounterDifficultyChange = async (
+    kind: EncounterDifficultyKind,
+    nextDifficulty: GameDifficultyLevel,
+  ) => {
+    if (!runtimeState) return;
+    const subject = kind === 'combat' ? '个人战斗' : '战争';
+    try {
+      const nextState = await persistCurrentEncounterDifficulty(
+        runtimeState,
+        saveId,
+        kind,
+        nextDifficulty,
+      );
+      onRuntimeStateChange?.(nextState);
+      setFeatureNotice(
+        `当前${saveId ? '存档' : '运行状态'}${subject}难度已改为“${getEncounterDifficultyProfile(kind, nextDifficulty).label}”。`,
+      );
+      setDifficultyDialogKind(null);
+    } catch (error) {
+      setFeatureNotice(`当前存档${subject}难度保存失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  };
+
+  const handleNarrativePerspectiveChange = async (nextPerspective: NarrativePerspective) => {
+    if (!runtimeState) return;
+    try {
+      const nextState = await persistCurrentNarrativePerspective(runtimeState, saveId, nextPerspective);
+      onRuntimeStateChange?.(nextState);
+      setFeatureNotice(
+        saveId
+          ? `当前存档叙事人称已改为“${getNarrativePerspectiveProfile(nextPerspective).label}”。`
+          : `当前运行状态叙事人称已改为“${getNarrativePerspectiveProfile(nextPerspective).label}”。`,
+      );
+      setIsNarrativePerspectiveDialogOpen(false);
+    } catch (error) {
+      setFeatureNotice(`当前存档叙事人称保存失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  };
 
   const selectEditingConfig = (config: ApiConfigArchive) => {
     const next = cloneConfig(config);
@@ -204,14 +372,16 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
 
   const refresh = async (nextEditing?: ApiConfigArchive) => {
     const nextConfigs = await listApiConfigsAsync();
+    const nextRoutes = await getApiTaskRoutesAsync();
     setConfigs(nextConfigs);
-    setRoutes(await getApiTaskRoutesAsync());
+    setRoutes(nextRoutes);
     if (nextEditing) {
-      selectEditingConfig(nextEditing);
+      selectEditingConfig(
+        nextConfigs.find((config) => config.id === nextEditing.id) ?? nextEditing,
+      );
       return;
     }
-    const stillExists = nextConfigs.find((config) => config.id === editing.id);
-    selectEditingConfig(stillExists ?? createApiConfigDraft());
+    selectEditingConfig(pickApiEditorConfig(nextConfigs, nextRoutes, activeTab, editing.id));
   };
 
   useEffect(() => {
@@ -266,6 +436,13 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
     }
     setInlineApiEditorFor(null);
     setModelStatus('');
+  };
+
+  const openFunctionConfig = () => {
+    setFunctionConfigOpen(true);
+    if (!isFunctionConfigTab(activeTab)) {
+      switchTab('memory');
+    }
   };
 
   const handleInlineNew = (tab: SettingsFunctionTab) => {
@@ -389,7 +566,14 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
                   void handleRouteChange(task.id, config ? { configId: config.id, model } : null);
                 }}
               >
-                <option value="">{task.id === 'npcSimulation' ? '未启用' : '自动回退'}</option>
+                <option value="">
+                  {task.id === 'npcSimulation'
+                    || task.id === 'stateWritebackFallback'
+                    || task.id === 'npcCompletionFallback'
+                    || task.id === 'letterPolish'
+                    ? '未配置'
+                    : '自动回退'}
+                </option>
                 {configOptions.map((config) => (
                   <option key={config.id} value={config.id}>{config.label}</option>
                 ))}
@@ -463,16 +647,40 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
       {modelStatus && <p className="settings-status">{modelStatus}</p>}
 
       <div className="form-grid two">
-        <label>
-          最大输出 Token
+        <div className="max-output-token-field">
+          <span className="max-output-token-label">最大输出 Token</span>
+          <div
+            className="max-output-token-presets"
+            role="group"
+            aria-label="最大输出 Token 快捷档位"
+          >
+            {API_MAX_OUTPUT_TOKEN_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                className={`max-output-token-preset${maxOutputTokenPresetId === preset.id ? ' active' : ''}`}
+                aria-pressed={maxOutputTokenPresetId === preset.id}
+                onClick={() => setEditing({ ...editing, maxOutputTokens: preset.value })}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          <label className="max-output-token-custom">
+            自定义最大输出 Token
           <input
             type="number"
             min={1}
+            step={1}
             value={editing.maxOutputTokens ?? ''}
             onChange={(event) => setEditing({ ...editing, maxOutputTokens: event.target.value === '' ? undefined : Number(event.target.value) })}
-            placeholder="留空则默认"
+            placeholder="留空则由接口决定"
           />
-        </label>
+          </label>
+          <p className={`max-output-token-guidance ${maxOutputTokenGuidance.tone}`}>
+            {maxOutputTokenGuidance.message}
+          </p>
+        </div>
         <label>
           模型温度（可选）
           <input
@@ -528,6 +736,12 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
               存档管理
             </button>
             <button
+              className={`settings-nav-item ${activeTab === 'variables' ? 'active' : ''}`}
+              onClick={() => switchTab('variables')}
+            >
+              变量管理
+            </button>
+            <button
               className={`settings-nav-item ${activeTab === 'data' ? 'active' : ''}`}
               onClick={() => switchTab('data')}
             >
@@ -543,7 +757,7 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
             </button>
             <button
               className={`settings-nav-item settings-nav-group-toggle ${functionConfigOpen || isFunctionConfigTab(activeTab) ? 'active' : ''}`}
-              onClick={() => setFunctionConfigOpen((open) => !open)}
+              onClick={openFunctionConfig}
               aria-expanded={functionConfigOpen || isFunctionConfigTab(activeTab)}
             >
               功能配置
@@ -585,13 +799,125 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
         </aside>
 
         <section className="settings-content">
+          {activeFunctionPanel && (
+            <div className="settings-mobile-function-tabs" role="tablist" aria-label="功能配置分类">
+              {FUNCTION_CONFIG_PANELS.map((panel) => (
+                <button
+                  key={panel.tab}
+                  type="button"
+                  className={`settings-mobile-function-tab ${activeTab === panel.tab ? 'active' : ''}`}
+                  role="tab"
+                  aria-selected={activeTab === panel.tab}
+                  onClick={() => switchTab(panel.tab)}
+                >
+                  {panel.label}
+                </button>
+              ))}
+            </div>
+          )}
+
           {activeTab === 'game' && (
             <div className="game-settings-section">
               <div className="game-settings-heading">
                 <h2>游戏设定</h2>
-                <p className="game-settings-subtitle">调整游戏显示和交互偏好，不影响世界状态和 AI 行为。</p>
+                <p className="game-settings-subtitle">调整当前存档的玩法规则，以及本机交互偏好。</p>
               </div>
               <div className="gs-divider-thick" />
+              {featureNotice && <p className="settings-status feature-notice">{featureNotice}</p>}
+
+              <div className="gs-setting-row gs-game-difficulty-row">
+                <div className="gs-setting-left">
+                  <span className="gs-setting-label">当前游戏难度</span>
+                  <strong className="gs-game-difficulty-value">
+                    {runtimeState
+                      ? `${gameDifficultyProfile.label}（普通判定难度 Y${gameDifficultyProfile.difficultyOffset >= 0 ? '+' : ''}${gameDifficultyProfile.difficultyOffset}）`
+                      : '请先进入一个存档'}
+                  </strong>
+                </div>
+                <div className="gs-game-difficulty-copy">
+                  <p className="gs-setting-desc">
+                    只保存到当前游戏，作用于之后新发生的玩家普通判定；不改动个人战、战争、其他存档、旧结果或远场世界演化。
+                  </p>
+                  <button
+                    type="button"
+                    className="nav-btn"
+                    disabled={!runtimeState}
+                    onClick={() => setDifficultyDialogKind('ordinary')}
+                  >
+                    调整本局难度
+                  </button>
+                </div>
+              </div>
+
+              <div className="gs-divider-thin" />
+
+              <div className="gs-setting-row gs-game-difficulty-row">
+                <div className="gs-setting-left">
+                  <span className="gs-setting-label">个人战斗难度</span>
+                  <strong className="gs-game-difficulty-value">
+                    {runtimeState
+                      ? `${combatDifficultyProfile.label}（我方修正 ×${combatDifficultyProfile.playerPowerMultiplier.toFixed(2)}）`
+                      : '请先进入一个存档'}
+                  </strong>
+                </div>
+                <div className="gs-game-difficulty-copy">
+                  <p className="gs-setting-desc">
+                    只保存到当前游戏，并冻结到之后新开始的个人战；不改写能力、装备、绝艺、其他存档或已有战果。
+                  </p>
+                  <button type="button" className="nav-btn" disabled={!runtimeState} onClick={() => setDifficultyDialogKind('combat')}>
+                    调整个人战难度
+                  </button>
+                </div>
+              </div>
+
+              <div className="gs-divider-thin" />
+
+              <div className="gs-setting-row gs-game-difficulty-row">
+                <div className="gs-setting-left">
+                  <span className="gs-setting-label">战争难度</span>
+                  <strong className="gs-game-difficulty-value">
+                    {runtimeState
+                      ? `${warDifficultyProfile.label}（我方有效战力 ×${warDifficultyProfile.playerPowerMultiplier.toFixed(2)}）`
+                      : '请先进入一个存档'}
+                  </strong>
+                </div>
+                <div className="gs-game-difficulty-copy">
+                  <p className="gs-setting-desc">
+                    只保存到当前游戏，并冻结到之后新开始的战争；兵种、地形、士气、统率与后勤仍按真实规则结算。
+                  </p>
+                  <button type="button" className="nav-btn" disabled={!runtimeState} onClick={() => setDifficultyDialogKind('war')}>
+                    调整战争难度
+                  </button>
+                </div>
+              </div>
+
+              <div className="gs-divider-thin" />
+
+              <div className="gs-setting-row gs-game-difficulty-row">
+                <div className="gs-setting-left">
+                  <span className="gs-setting-label">本局叙事人称</span>
+                  <strong className="gs-game-difficulty-value">
+                    {runtimeState
+                      ? `${narrativePerspectiveProfile.label}（${narrativePerspectiveProfile.marker}）`
+                      : '请先进入一个存档'}
+                  </strong>
+                </div>
+                <div className="gs-game-difficulty-copy">
+                  <p className="gs-setting-desc">
+                    只保存到当前游戏，影响之后新生成的【旁白】；不改写历史正文、角色对白、状态写回或其他存档。
+                  </p>
+                  <button
+                    type="button"
+                    className="nav-btn"
+                    disabled={!runtimeState}
+                    onClick={() => setIsNarrativePerspectiveDialogOpen(true)}
+                  >
+                    调整叙事人称
+                  </button>
+                </div>
+              </div>
+
+              <div className="gs-divider-thin" />
 
               <div className="gs-setting-row">
                 <div className="gs-setting-left">
@@ -666,36 +992,29 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
                   </div>
 
                   <div className="gs-divider-thin" />
-                </>
-              )}
 
-              {adultIntimacyStyleControl?.id === 'adultIntimacyStyle' && (
-                <>
                   <div className="gs-setting-row">
                     <div className="gs-setting-left">
-                      <label className="gs-setting-label" htmlFor="adult-intimacy-style-setting">
-                        {adultIntimacyStyleControl.label}
+                      <label className="gs-checkbox-control">
+                        <input
+                          aria-label={narrativeLengthRetryControl?.label ?? '字数不足时自动重写'}
+                          type="checkbox"
+                          checked={narrativeLengthRetryEnabled}
+                          onChange={(event) => {
+                            const nextValue = saveNarrativeLengthRetryEnabledToStorage(
+                              event.target.checked,
+                            );
+                            setNarrativeLengthRetryEnabled(nextValue);
+                          }}
+                        />
+                        <span className="gs-setting-label">
+                          {narrativeLengthRetryControl?.label ?? '字数不足时自动重写'}
+                        </span>
                       </label>
-                      <select
-                        id="adult-intimacy-style-setting"
-                        aria-label={adultIntimacyStyleControl.label}
-                        value={adultIntimacyStyle}
-                        onChange={(event) => {
-                          const nextValue = saveAdultIntimacyStyleToStorage(event.target.value);
-                          setAdultIntimacyStyle(nextValue);
-                        }}
-                      >
-                        {adultIntimacyStyleControl.options.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
                     </div>
                     <p className="gs-setting-desc">
-                      {adultIntimacyStyleControl.description}
-                      {' '}
-                      {adultIntimacyStyleControl.options.find((option) => option.value === adultIntimacyStyle)?.description}
+                      {narrativeLengthRetryControl?.description
+                        ?? '关闭后仍保留目标字数要求，但不会因字数不足重写本回合。'}
                     </p>
                   </div>
 
@@ -834,6 +1153,51 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
               </div>
               <div className="gs-divider-thick" />
 
+              <div className="gs-theme-setting">
+                <div className="gs-theme-setting-copy">
+                  <h3>界面主题</h3>
+                  <p>只切换本机界面色板；地图、人物与战斗插画保持原图，不做颜色反转。</p>
+                </div>
+                <div className="gs-theme-options" role="group" aria-label="界面主题">
+                  <button
+                    type="button"
+                    className={`gs-theme-option ${colorTheme === 'dark' ? 'active' : ''}`}
+                    aria-pressed={colorTheme === 'dark'}
+                    onClick={() => {
+                      const nextValue = saveColorThemeToStorage('dark');
+                      setColorTheme(nextValue);
+                    }}
+                  >
+                    <span className="gs-theme-swatch gs-theme-swatch--dark" aria-hidden="true">
+                      <i /><i /><i />
+                    </span>
+                    <span className="gs-theme-option-copy">
+                      <strong>夜幕玄金</strong>
+                      <small>暗色 · 默认</small>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`gs-theme-option ${colorTheme === 'light' ? 'active' : ''}`}
+                    aria-pressed={colorTheme === 'light'}
+                    onClick={() => {
+                      const nextValue = saveColorThemeToStorage('light');
+                      setColorTheme(nextValue);
+                    }}
+                  >
+                    <span className="gs-theme-swatch gs-theme-swatch--light" aria-hidden="true">
+                      <i /><i /><i />
+                    </span>
+                    <span className="gs-theme-option-copy">
+                      <strong>宣纸明卷</strong>
+                      <small>亮色 · 暖纸墨色</small>
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="gs-divider-thin" />
+
               <div className="gs-setting-row">
                 <div className="gs-setting-left">
                   <label className="gs-setting-label" htmlFor="narrative-font-size-setting">正文字号</label>
@@ -907,6 +1271,10 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
                   风从江面掠过营旗，远处战鼓只响了一声。斥候勒马停在帐前，低声报出刚刚探明的军情。
                 </p>
               </div>
+
+              <div className="gs-divider-thick" />
+
+              <NarrativeRegexSettingsPanel />
             </div>
           )}
 
@@ -927,6 +1295,14 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
                 await refresh();
                 setFeatureNotice('本地数据已按所选范围处理。');
               }}
+            />
+          )}
+
+          {activeTab === 'variables' && (
+            <RuntimeVariableManagerPanel
+              runtimeState={runtimeState}
+              saveId={saveId}
+              onRuntimeStateChange={onRuntimeStateChange}
             />
           )}
 
@@ -988,6 +1364,31 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
           )}
         </section>
       </div>
+      {difficultyDialogKind && runtimeState && (
+        <GameDifficultyDialog
+          difficultyKind={difficultyDialogKind}
+          currentDifficulty={difficultyDialogKind === 'ordinary'
+            ? normalizeGameDifficulty(runtimeState.gameDifficulty)
+            : normalizeEncounterDifficulty(
+              difficultyDialogKind,
+              difficultyDialogKind === 'combat' ? runtimeState.combatDifficulty : runtimeState.warDifficulty,
+            )}
+          onSelect={(difficulty) => {
+            if (difficultyDialogKind === 'ordinary') void handleGameDifficultyChange(difficulty);
+            else void handleEncounterDifficultyChange(difficultyDialogKind, difficulty);
+          }}
+          onClose={() => setDifficultyDialogKind(null)}
+        />
+      )}
+      {isNarrativePerspectiveDialogOpen && runtimeState && (
+        <NarrativePerspectiveDialog
+          currentPerspective={normalizeNarrativePerspective(runtimeState.narrativePerspective)}
+          onSelect={(perspective) => {
+            void handleNarrativePerspectiveChange(perspective);
+          }}
+          onClose={() => setIsNarrativePerspectiveDialogOpen(false)}
+        />
+      )}
     </div>
   );
 };

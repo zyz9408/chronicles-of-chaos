@@ -26,6 +26,10 @@ import {
   isAnnualSettlementPrivateAsset,
   isUpkeepTroop,
 } from './HoldingAnnualSettlement';
+import {
+  applyHeavyCavalryShortageDegradation,
+  clearHeavyCavalryShortageMarker,
+} from '../troops/HeavyCavalryFormation';
 
 export interface HoldingAnnualSettlementPromptPreview {
   reportId: string;
@@ -204,7 +208,8 @@ export function applyHoldingAnnualSettlementRuntime(
     ? applyHoldingAnnualSettlementPreview(crossedResult.state, finalStatePreview)
     : { state: crossedResult.state };
   const meta = finalStateResult.meta ?? crossedResult.meta ?? previewResult.meta;
-  return meta ? { state: finalStateResult.state, meta } : { state: finalStateResult.state };
+  const completedState = applyDuePrivateAssetProjectCompletions(finalStateResult.state);
+  return meta ? { state: completedState, meta } : { state: completedState };
 }
 
 function normalizeHoldingAnnualSettlementReports(state: RuntimeState): RuntimeState {
@@ -383,12 +388,39 @@ export function applyHoldingSettlementTimelineRuntime(
     }
   }
 
+  nextState = applyDuePrivateAssetProjectCompletions(nextState);
   if (monthlyMeta) appendMonthlyUpkeepTurnLogSummary(nextState, monthlyMeta);
   return {
     state: nextState,
     ...(annualMeta ? { annualMeta } : {}),
     ...(monthlyMeta ? { monthlyMeta } : {}),
   };
+}
+
+function applyDuePrivateAssetProjectCompletions(state: RuntimeState): RuntimeState {
+  const completion = completeDuePrivateAssetProjects({
+    currentDate: state.currentDate,
+    privateAssets: state.privateAssets ?? [],
+    projects: state.privateAssetProjects ?? [],
+  });
+  if (completion.completedProjects.length === 0) return state;
+
+  const nextState: RuntimeState = {
+    ...state,
+    privateAssets: completion.nextPrivateAssets,
+    privateAssetProjects: completion.nextProjects,
+    turnLog: state.turnLog.map((entry) => ({ ...entry })),
+  };
+  const latestLog = nextState.turnLog[nextState.turnLog.length - 1];
+  if (latestLog) {
+    const summary = `私产工程到期：${completion.completedProjects
+      .map((project) => `${project.title}[${project.projectId}]`)
+      .join('、')}`;
+    latestLog.statePatchSummary = latestLog.statePatchSummary
+      ? `${latestLog.statePatchSummary}；${summary}`
+      : summary;
+  }
+  return nextState;
 }
 
 function applyHoldingAnnualSettlementBoundary(
@@ -446,7 +478,9 @@ function applyHoldingMonthlyUpkeepForMonths(
 
   if (crossedMonths.length === 0) return { state: compatibleState };
 
-  const requiredMonthlyExpenses = calculateTroopsMonthlyUpkeep(compatibleState.troops ?? []);
+  const requiredMonthlyExpenses = calculateTroopsMonthlyUpkeep(
+    (compatibleState.troops ?? []).filter((troop) => isPlayerMonthlyUpkeepTroop(troop, compatibleState)),
+  );
   if (isZeroDelta(requiredMonthlyExpenses)) return { state: compatibleState };
 
   const nextState = cloneRuntimeState(compatibleState);
@@ -781,6 +815,7 @@ export function calculateHoldingMonthlyUpkeepPreview(
   for (let index = 0; index < nextTroops.length; index += 1) {
     const troop = nextTroops[index];
     if (!isUpkeepTroop(troop)) continue;
+    if (!isPlayerMonthlyUpkeepTroop(troop, state)) continue;
 
     const required = calculateTroopMonthlyUpkeep(troop);
     if (isZeroDelta(required)) continue;
@@ -840,6 +875,9 @@ export function calculateHoldingMonthlyUpkeepPreview(
   for (const [index, troopShortage] of troopShortageByIndex.entries()) {
     nextTroops[index] = applyTroopSupplyShortage(nextTroops[index], troopShortage);
   }
+  for (let index = 0; index < nextTroops.length; index += 1) {
+    if (!troopShortageByIndex.has(index)) nextTroops[index] = clearHeavyCavalryShortageMarker(nextTroops[index]);
+  }
 
   const expenses = addDelta(provisionExpenses, playerActualExpenses);
   const netChange = subtractDelta(provisionSurplus, playerActualExpenses);
@@ -862,27 +900,68 @@ function resolveTroopUpkeepSource(
   troop: TroopLedgerEntry,
   state: RuntimeState,
 ): HoldingMonthlyUpkeepSource {
+  if (!isPlayerMonthlyUpkeepTroop(troop, state)) return 'superior_provision';
   if (troop.upkeepSource && troop.upkeepSource !== 'unknown') return troop.upkeepSource;
-  if (troop.factionId === 'faction_player') return 'player_resources';
+  if (isPlayerOwnedFactionTroop(troop, state)) return 'player_resources';
 
   const hasManagedBase = (state.holdings ?? []).some(
     (holding) => holding.status === 'controlled' || holding.status === 'temporary',
   );
-  if (!hasManagedBase && isPlayerRelatedTroop(troop)) return 'superior_provision';
+  if (!hasManagedBase && isPlayerCommandedTroop(troop, state)) return 'superior_provision';
   return 'player_resources';
 }
 
-function isPlayerRelatedTroop(troop: TroopLedgerEntry): boolean {
-  if (troop.leaderNpcId === 'player') return true;
-  const text = [
-    troop.relationToPlayer,
-    troop.name,
-    troop.specialDesignation,
-    troop.sourceNote,
-    troop.lastChangeReason,
-    ...(troop.statusTags ?? []),
-  ].join(' ');
-  return /(?:self|player|own|你|主角|己方|自势力|直属|直接统领|受控|亲兵|私兵|麾下)/i.test(text);
+/**
+ * 玩家月度军需只管理玩家势力或玩家明确直接统领的建制。
+ * “亲历/听闻”只描述情报来源；友军、敌军和中立军即使拥有 operational 档案，
+ * 也不得因为 upkeepSource 缺失或误写而进入玩家府库结算。
+ */
+export function isPlayerMonthlyUpkeepTroop(
+  troop: TroopLedgerEntry,
+  state: RuntimeState,
+): boolean {
+  if (!isUpkeepTroop(troop)) return false;
+  return isPlayerOwnedFactionTroop(troop, state) || isPlayerCommandedTroop(troop, state);
+}
+
+function isPlayerOwnedFactionTroop(troop: TroopLedgerEntry, state: RuntimeState): boolean {
+  const factionId = troop.factionId?.trim();
+  if (!factionId) return false;
+  if (/^faction_player(?:_|$)/i.test(factionId)) return true;
+
+  const faction = (state.factions ?? []).find((entry) => entry.factionId === factionId);
+  if (!faction) return false;
+  const actualController = normalizeResponsibilityText(faction.actualController);
+  const playerId = normalizeResponsibilityText(state.player?.id);
+  const playerName = normalizeResponsibilityText(state.player?.name);
+  return actualController === 'player'
+    || actualController === '主角'
+    || Boolean(playerId && actualController === playerId)
+    || Boolean(playerName && actualController === playerName);
+}
+
+function isPlayerCommandedTroop(troop: TroopLedgerEntry, state: RuntimeState): boolean {
+  const leaderId = troop.leaderNpcId?.trim();
+  if (leaderId === 'player' || (leaderId && leaderId === state.player?.id)) return true;
+
+  const relation = normalizeResponsibilityText(troop.relationToPlayer);
+  if (!relation) return false;
+  if ([
+    'self',
+    'own',
+    'owned',
+    'controlled',
+    'subordinate',
+    'directcommand',
+    'playerdirect',
+  ].includes(relation)) return true;
+  return /(?:你直接统领|受你统领|归你统领|玩家控制|主角控制|直属部队|直属|己方|麾下|亲兵|私兵)/.test(relation);
+}
+
+function normalizeResponsibilityText(value: unknown): string {
+  return typeof value === 'string'
+    ? value.trim().toLowerCase().replace(/[\s_-]+/g, '')
+    : '';
 }
 
 function getSuperiorProvisionRatio(troop: TroopLedgerEntry): number {
@@ -901,13 +980,18 @@ function distributePlayerShortage(
   troopShortageByIndex: Map<number, DomesticReportResourceDelta>,
 ): void {
   if (isZeroDelta(playerShortage) || troopExpenses.length === 0) return;
-  const ratio = calculateDeltaMagnitude(playerRequiredExpenses) > 0
-    ? calculateDeltaMagnitude(playerShortage) / calculateDeltaMagnitude(playerRequiredExpenses)
-    : 0;
-  if (ratio <= 0) return;
-
   for (const troopExpense of troopExpenses) {
-    const estimatedShortage = scaleDelta(troopExpense.required, ratio);
+    const estimatedShortage = (['money', 'grain', 'horses', 'arms', 'recruits'] as const)
+      .reduce<DomesticReportResourceDelta>((result, field) => {
+        const totalRequired = playerRequiredExpenses[field];
+        result[field] = totalRequired > 0
+          ? Math.min(
+              troopExpense.required[field],
+              Math.ceil(playerShortage[field] * troopExpense.required[field] / totalRequired),
+            )
+          : 0;
+        return result;
+      }, { ...ZERO_DELTA });
     const previousShortage = troopShortageByIndex.get(troopExpense.index) ?? { ...ZERO_DELTA };
     troopShortageByIndex.set(troopExpense.index, addDelta(previousShortage, estimatedShortage));
   }
@@ -921,12 +1005,24 @@ function applyTroopSupplyShortage(
   const required = calculateTroopMonthlyUpkeep(troop);
   const requiredMagnitude = calculateDeltaMagnitude(required);
   if (requiredMagnitude <= 0) return troop;
-  const shortageRatio = calculateDeltaMagnitude(shortage) / requiredMagnitude;
+  const shortageRatio = calculateMaximumResourceShortageRatio(required, shortage);
+  if (troop.logisticsClass === 'heavy_cavalry') {
+    return applyHeavyCavalryShortageDegradation(troop, shortageRatio);
+  }
   const penalty = Math.max(1, Math.ceil(shortageRatio * 50));
   return {
     ...troop,
     supplies: Math.max(0, Math.round(troop.supplies - penalty)),
   };
+}
+
+function calculateMaximumResourceShortageRatio(
+  required: DomesticReportResourceDelta,
+  shortage: DomesticReportResourceDelta,
+): number {
+  return Math.max(...(['money', 'grain', 'horses', 'arms', 'recruits'] as const).map((field) => (
+    required[field] > 0 ? shortage[field] / required[field] : 0
+  )));
 }
 
 function calculateDeltaMagnitude(delta: DomesticReportResourceDelta): number {

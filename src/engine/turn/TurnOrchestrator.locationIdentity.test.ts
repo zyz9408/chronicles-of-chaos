@@ -20,6 +20,9 @@ const worldBook: WorldBook = {
     connectedRegionIds: [], controlHint: '', tensionHint: '', subLocations: [{
       id: 'place_old', name: '新野县', aliases: ['新野'], level: 'county', mapLayer: 'place', summary: '',
       connectedRegionIds: [], controlHint: '', tensionHint: '',
+    }, {
+      id: 'place_new', name: '真定县', aliases: ['真定'], level: 'county', mapLayer: 'place', summary: '',
+      connectedRegionIds: [], controlHint: '', tensionHint: '',
     }],
   }],
   factionsSeed: [], timelineAnchors: [], startBookmarks: [], openingCrisisTemplates: [],
@@ -43,6 +46,17 @@ function makeState(): RuntimeState {
   });
 }
 
+function makeStateWithNpc(): RuntimeState {
+  const state = makeState();
+  state.npcs = [{
+    npcId: 'npc_1', name: '蔡氏', sex: '女', age: 32, role: '同行者', locationId: 'place_old',
+    isPresent: true, isFocused: true, summary: '与主角同行。', appearance: '衣着端整。',
+    personality: '谨慎。', motivation: '照料同行事务。', relationToPlayer: '亲近', contactLevel: 20,
+    recentAttitude: '信任', memories: [],
+  }];
+  return state;
+}
+
 function makeAmbiguousWorldBook(): WorldBook {
   return {
     ...worldBook,
@@ -60,6 +74,97 @@ function makeAmbiguousWorldBook(): WorldBook {
 }
 
 describe('TurnOrchestrator location identity boundary', () => {
+  it('materializes the final structured scene roster after a location transition', async () => {
+    const llmClient = { generate: vi.fn(async () => ({
+      content: JSON.stringify({
+        narrativeText: '你与蔡氏一同抵达真定县舍。',
+        suggestedActions: [],
+        statePatches: [
+          { type: 'timeAdvance', payload: { minutesAdvanced: 30 }, reason: '同行赶路' },
+          { type: 'locationChange', payload: { toLocationId: 'place_new' }, reason: '抵达真定' },
+        ],
+        writeback: {
+          turnSummary: {
+            brief: '你与蔡氏同行抵达真定。',
+            scenePresence: {
+              locationId: 'place_old',
+              presentNpcIds: [' npc_1 ', 'npc_1'],
+            },
+          },
+          npcMemorySuggestions: [], locationWriteSuggestions: [], routeWriteSuggestions: [],
+          questChanges: [], debugNotes: [],
+        },
+      }),
+      provider: 'openai_compatible' as const,
+      model: 'test',
+    })) };
+
+    const result = await executeTurn(worldBook, makeStateWithNpc(), '与蔡氏同行去真定', {
+      apiConfig,
+      llmClient,
+    });
+
+    expect(llmClient.generate).toHaveBeenCalledTimes(1);
+    expect(result.patchValidation).toMatchObject({ valid: true, errors: [] });
+    expect(result.statePatches).toContainEqual(expect.objectContaining({
+      type: 'luanshiCommand',
+      payload: { command: {
+        action: 'updateNpcPresence', npcId: 'npc_1', locationId: 'place_new', isPresent: true,
+      } },
+    }));
+    expect(result.newRuntimeState.npcs?.[0]).toMatchObject({
+      npcId: 'npc_1', locationId: 'place_new', isPresent: true,
+    });
+  });
+
+  it('borrows the existing State Writer to repair a missing final scene roster', async () => {
+    const mainResponse = {
+      narrativeText: '你与蔡氏一同抵达真定县舍。',
+      suggestedActions: [],
+      statePatches: [
+        { type: 'timeAdvance', payload: { minutesAdvanced: 30 }, reason: '同行赶路' },
+        { type: 'locationChange', payload: { toLocationId: 'place_new' }, reason: '抵达真定' },
+      ],
+      writeback: {
+        turnSummary: { brief: '你与蔡氏同行抵达真定。' },
+        npcMemorySuggestions: [], locationWriteSuggestions: [], routeWriteSuggestions: [],
+        questChanges: [], debugNotes: [],
+      },
+    };
+    const repairedResponse = {
+      ...mainResponse,
+      writeback: {
+        ...mainResponse.writeback,
+        turnSummary: {
+          ...mainResponse.writeback.turnSummary,
+          scenePresence: { locationId: 'place_new', presentNpcIds: ['npc_1'] },
+        },
+      },
+    };
+    const llmClient = { generate: vi.fn()
+      .mockResolvedValueOnce({
+        content: JSON.stringify(mainResponse), provider: 'openai_compatible' as const, model: 'test',
+      })
+      .mockResolvedValueOnce({
+        content: JSON.stringify(repairedResponse), provider: 'openai_compatible' as const, model: 'test',
+      }) };
+
+    const result = await executeTurn(worldBook, makeStateWithNpc(), '与蔡氏同行去真定', {
+      apiConfig,
+      llmClient,
+    });
+    const calls = llmClient.generate.mock.calls as unknown as Array<[LlmGenerateRequest]>;
+    const repairPrompt = (calls[1]?.[0]?.messages ?? []).map((message) => message.content).join('\n');
+
+    expect(llmClient.generate).toHaveBeenCalledTimes(2);
+    expect(repairPrompt).toContain('## 本次当前场景在场名单复核焦点');
+    expect(repairPrompt).toContain('writeback.turnSummary.scenePresence');
+    expect(result.patchValidation).toMatchObject({ valid: true, errors: [] });
+    expect(result.newRuntimeState.npcs?.[0]).toMatchObject({
+      npcId: 'npc_1', locationId: 'place_new', isPresent: true,
+    });
+  });
+
   it('remaps same-batch canonical aliases inside nested NPC presence commands before validation', async () => {
     const state = makeState();
     state.npcs = [{
@@ -310,7 +415,7 @@ describe('TurnOrchestrator location identity boundary', () => {
     expect(result.newRuntimeState.mapNodes?.some((node) => node.id === 'incoming_xinye')).toBe(false);
   });
 
-  it('retains location and route errors in the Turn result and persisted turn summary', async () => {
+  it('silently ignores unvisited temporary places while retaining unrelated route errors', async () => {
     const llmClient = { generate: vi.fn(async () => ({
       content: JSON.stringify({
         narrativeText: '地图记录未能确认。', suggestedActions: [],
@@ -336,9 +441,7 @@ describe('TurnOrchestrator location identity boundary', () => {
     const latestTurn = result.newRuntimeState.turnLog[result.newRuntimeState.turnLog.length - 1];
     const summary = latestTurn?.statePatchSummary ?? '';
 
-    expect(result.locationWritebackErrors).toEqual([
-      expect.stringContaining('仅永久地点会写入 Map V1'),
-    ]);
+    expect(result.locationWritebackErrors).toEqual([]);
     expect(result.routeWritebackErrors).toEqual([
       expect.stringContaining('fromPlaceId 必须连接具体地点层'),
     ]);
@@ -348,8 +451,162 @@ describe('TurnOrchestrator location identity boundary', () => {
     });
     expect(latestTurn?.displayMeta?.locationWriteback)
       .toEqual(result.turnDisplayMeta.locationWriteback);
-    expect(summary).toContain('地点写回');
+    expect(summary).not.toContain('地点写回');
     expect(summary).toContain('路线写回');
+  });
+
+  it('persists a temporary place and scene after the same turn actually visits them', async () => {
+    const llmClient = { generate: vi.fn(async () => ({
+      content: JSON.stringify({
+        narrativeText: '你追着火光进入林间临时哨棚。', suggestedActions: [],
+        statePatches: [
+          { type: 'timeAdvance', payload: { minutesAdvanced: 20 }, reason: '穿林而行' },
+          {
+            type: 'locationChange',
+            payload: { toLocationId: 'place_forest_watch', toSceneId: 'scene_forest_shed' },
+            reason: '亲身抵达哨棚',
+          },
+        ],
+        writeback: {
+          npcMemorySuggestions: [],
+          locationWriteSuggestions: [{
+            locationId: 'place_forest_watch', name: '林间哨点', kind: 'outpost', mapLayer: 'place',
+            parentId: 'region_root', summary: '林中临时搭起的哨点。', permanence: 'temporary',
+          }, {
+            locationId: 'scene_forest_shed', name: '哨棚', kind: 'scene', mapLayer: 'scene',
+            parentId: 'place_forest_watch', summary: '已亲身进入的木棚。', permanence: 'temporary',
+          }],
+          routeWriteSuggestions: [{
+            routeId: 'route_old_forest_watch', fromPlaceId: 'place_old', toPlaceId: 'place_forest_watch',
+            name: '林间小径', status: '可通行', knownLevel: '亲历',
+          }],
+          questChanges: [], debugNotes: [],
+        },
+      }),
+      provider: 'openai_compatible' as const,
+      model: 'test',
+    })) };
+
+    const result = await executeTurn(worldBook, makeState(), '追踪火光进入哨棚', { apiConfig, llmClient });
+
+    expect(result.patchValidation).toMatchObject({ valid: true, errors: [] });
+    expect(result.newRuntimeState.currentPlaceId).toBe('place_forest_watch');
+    expect(result.newRuntimeState.currentSceneId).toBe('scene_forest_shed');
+    expect(result.newRuntimeState.mapNodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'place_forest_watch',
+        runtimePersistence: 'visited-temporary',
+        availability: 'active',
+      }),
+      expect.objectContaining({
+        id: 'scene_forest_shed',
+        runtimePersistence: 'visited-temporary',
+        availability: 'active',
+      }),
+    ]));
+    expect(result.newRuntimeState.routeEdges).toContainEqual(expect.objectContaining({
+      routeId: 'route_old_forest_watch',
+      toPlaceId: 'place_forest_watch',
+    }));
+    expect(result.locationWritebackErrors).toEqual([]);
+    expect(result.routeWritebackErrors).toEqual([]);
+  });
+
+  it('keeps valid movement and map writes when an unrelated hard-failure patch is rejected', async () => {
+    const llmClient = { generate: vi.fn(async () => ({
+      content: JSON.stringify({
+        narrativeText: '你抵达河畔屯点，但物资记录有冲突。', suggestedActions: [],
+        statePatches: [
+          { type: 'timeAdvance', payload: { minutesAdvanced: 30 }, reason: '赶路' },
+          { type: 'locationChange', payload: { toLocationId: 'place_river_post' }, reason: '抵达屯点' },
+          { type: 'unsupportedLegacyEvent', payload: { value: 1 }, reason: '不受支持的旧事件' },
+        ],
+        writeback: {
+          npcMemorySuggestions: [],
+          locationWriteSuggestions: [{
+            locationId: 'place_river_post', name: '河畔屯点', kind: 'outpost', mapLayer: 'place',
+            parentId: 'region_root', summary: '已亲身抵达的河畔屯点。', permanence: 'permanent',
+          }],
+          routeWriteSuggestions: [{
+            routeId: 'route_old_river_post', fromPlaceId: 'place_old', toPlaceId: 'place_river_post',
+            name: '河畔道路', status: '可通行', knownLevel: '亲历',
+          }],
+          questChanges: [], debugNotes: [],
+        },
+      }),
+      provider: 'openai_compatible' as const,
+      model: 'test',
+    })) };
+
+    const result = await executeTurn(worldBook, makeState(), '前往河畔屯点', { apiConfig, llmClient });
+
+    expect(result.patchValidation).toMatchObject({ valid: false });
+    expect(result.newRuntimeState.currentPlaceId).toBe('place_river_post');
+    expect(result.newRuntimeState.mapNodes).toContainEqual(expect.objectContaining({ id: 'place_river_post' }));
+    expect(result.newRuntimeState.routeEdges).toContainEqual(expect.objectContaining({ routeId: 'route_old_river_post' }));
+    expect(result.locationWritebackErrors).toEqual([]);
+    expect(result.routeWritebackErrors).toEqual([]);
+    expect(result.stateWritebackWarnings.join('\n')).toContain('unsupportedLegacyEvent');
+  });
+
+  it('lets the State Writer replace rejected fields on the same stable location id', async () => {
+    const originalResponse = {
+      narrativeText: '你抵达河畔哨所。',
+      suggestedActions: [],
+      statePatches: [
+        { type: 'timeAdvance', payload: { minutesAdvanced: 15 }, reason: '赶路' },
+        { type: 'locationChange', payload: { toLocationId: 'place_repair_target' }, reason: '抵达河畔哨所' },
+      ],
+      writeback: {
+        npcMemorySuggestions: [],
+        locationWriteSuggestions: [{
+          locationId: 'place_repair_target', name: '河畔哨所', kind: 'scene', mapLayer: 'scene',
+          parentId: 'missing_parent', summary: '首份响应的错误地点结构。', permanence: 'permanent',
+        }],
+        routeWriteSuggestions: [], questChanges: [], debugNotes: [],
+      },
+    };
+    const repairedResponse = {
+      ...originalResponse,
+      writeback: {
+        ...originalResponse.writeback,
+        locationWriteSuggestions: [{
+          locationId: 'place_repair_target', name: '河畔哨所', kind: 'outpost', mapLayer: 'place',
+          parentId: 'region_root', summary: '修复后的可站立地点。', permanence: 'permanent',
+        }],
+      },
+    };
+    const llmClient = { generate: vi.fn(async () => ({
+      content: JSON.stringify(originalResponse),
+      provider: 'openai_compatible' as const,
+      model: 'main',
+    })) };
+    const stateWritebackLlmClient = { generate: vi.fn(async () => ({
+      content: JSON.stringify(repairedResponse),
+      provider: 'openai_compatible' as const,
+      model: 'writer',
+    })) };
+
+    const result = await executeTurn(worldBook, makeState(), '前往河畔哨所', {
+      apiConfig,
+      llmClient,
+      stateWritebackApiConfig: { ...apiConfig, id: 'writer', model: 'writer' },
+      stateWritebackLlmClient,
+    });
+    const writerCalls = stateWritebackLlmClient.generate.mock.calls as unknown as Array<[LlmGenerateRequest]>;
+    const repairPrompt = (writerCalls[0]?.[0]?.messages ?? []).map((message) => message.content).join('\n');
+
+    expect(writerCalls).toHaveLength(1);
+    expect(repairPrompt).toContain('place_repair_target');
+    expect(repairPrompt).toContain('地图写回逐条诊断');
+    expect(result.patchValidation).toMatchObject({ valid: true, errors: [] });
+    expect(result.newRuntimeState.currentPlaceId).toBe('place_repair_target');
+    expect(result.newRuntimeState.mapNodes).toContainEqual(expect.objectContaining({
+      id: 'place_repair_target',
+      mapLayer: 'place',
+      parentId: 'region_root',
+    }));
+    expect(result.locationWritebackErrors).toEqual([]);
   });
 
   it('does not roll back a same-turn location change when a private asset omits its technical timestamp', async () => {
@@ -367,6 +624,7 @@ describe('TurnOrchestrator location identity boundary', () => {
             type: 'luanshiCommand',
             payload: { command: {
               action: 'upsertPrivateAsset',
+              operation: 'create',
               privateAssetId: 'asset_orchard_estate',
               name: '果园别院',
               type: 'estate',
@@ -374,6 +632,12 @@ describe('TurnOrchestrator location identity boundary', () => {
               status: 'active',
               summary: '城外果林环绕的私人别院。',
               locationId: 'place_orchard_estate',
+              acquisition: {
+                kind: 'grant',
+                occurredAt: '公元189年09月01日',
+                sourceRefId: 'turn:orchard-estate-confirmed',
+                summary: '本回合确认玩家获得果园别院。',
+              },
               updatedAt: '',
             } },
             reason: '确认私人别院',
@@ -515,13 +779,17 @@ describe('TurnOrchestrator location identity boundary', () => {
     expect(reentered.locationWritebackErrors).toEqual([]);
   });
 
-  it('reports prepared location and route rollback when any StatePatch validation fails', async () => {
+  it('rolls back only the new location dependency group when its movement patch fails', async () => {
     const llmClient = { generate: vi.fn(async () => ({
       content: JSON.stringify({
         narrativeText: '地图草案已经生成，但移动状态无效。', suggestedActions: [],
         statePatches: [
           { type: 'timeAdvance', payload: { minutesAdvanced: 5 }, reason: '移动耗时' },
-          { type: 'locationChange', payload: { toLocationId: 'missing_place' }, reason: '无效移动' },
+          {
+            type: 'locationChange',
+            payload: { toLocationId: 'incoming_outpost', toSceneId: 'missing_scene' },
+            reason: '无效移动',
+          },
         ],
         writeback: {
           npcMemorySuggestions: [],
@@ -547,12 +815,12 @@ describe('TurnOrchestrator location identity boundary', () => {
     expect(result.newRuntimeState.mapNodes?.some((node) => node.id === 'incoming_outpost')).toBe(false);
     expect(result.newRuntimeState.routeEdges?.some((route) => route.routeId === 'route_prepared')).toBe(false);
     expect(result.locationWritebackErrors).toEqual([
-      expect.stringMatching(/状态补丁.*失败.*回滚/),
+      expect.stringMatching(/移动补丁.*未通过.*回滚/),
     ]);
     expect(result.locationWritebackDiagnostics).toEqual([expect.objectContaining({
       code: 'location-writeback-rolled-back',
-      message: expect.stringMatching(/状态补丁.*失败.*回滚/),
-      incomingLocationId: '',
+      message: expect.stringMatching(/移动补丁.*未通过.*回滚/),
+      incomingLocationId: 'incoming_outpost',
       candidateIds: [],
     })]);
     expect(result.turnDisplayMeta.locationWriteback).toEqual({
@@ -594,15 +862,21 @@ describe('TurnOrchestrator location identity boundary', () => {
 
     expect(result.patchValidation?.valid).toBe(false);
     expect(result.locationWritebackErrors.join('\n')).toMatch(/歧义|ambiguous/i);
-    expect(result.locationWritebackDiagnostics).toEqual([expect.objectContaining({
-      code: 'location-canonical-ambiguous',
-      message: expect.stringMatching(/incoming_xinye.*place_duplicate.*place_old/),
-    })]);
+    expect(result.locationWritebackDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'location-canonical-ambiguous',
+        message: expect.stringMatching(/incoming_xinye.*place_duplicate.*place_old/),
+      }),
+      expect.objectContaining({
+        code: 'location-writeback-rolled-back',
+        incomingLocationId: 'incoming_xinye',
+      }),
+    ]));
     expect(result.turnDisplayMeta.locationWriteback?.diagnostics)
       .toEqual(result.locationWritebackDiagnostics);
     expect(latestTurn?.displayMeta?.locationWriteback?.diagnostics)
       .toEqual(result.locationWritebackDiagnostics);
-    expect(summary).toContain('地图写回警告');
+    expect(summary).toContain('地图写回回滚');
     expect(summary).not.toContain('place_duplicate');
     expect(summary).not.toContain('place_old');
   });

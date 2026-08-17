@@ -263,7 +263,7 @@ describe('MemorySummaryExecution', () => {
     const request = generateCalls[0][0];
     expect(request.config.model).toBe('memory-model');
     expect(request.responseFormat).toBe('json_object');
-    expect(request.messages.map((message) => message.content).join('\n')).toContain('短期记忆压缩为中期摘要');
+    expect(request.messages.map((message) => message.content).join('\n')).toContain('playerRecentToMid');
 
     expect(result.newState.memoryArchive?.midTermSummaries[0].summary).toContain('guarded gate');
     expect(result.newState.memoryArchive?.longTermFacts[0].factId).toBe('fact_escort_promise');
@@ -298,6 +298,36 @@ describe('MemorySummaryExecution', () => {
       Array.from({ length: 17 }, (_, index) => `recent_${index + 21}`),
     );
     expect(rebased.newState.memoryArchive?.midTermSummaries[0].summary).toContain('guarded gate');
+  });
+
+  it('keeps every source queue intact when the model returns no valid active summary', async () => {
+    const state = makeState(35);
+    const originalRecentIds = state.memoryArchive!.recentTurnSummaries.map((item) => item.id);
+    const result = await executeMemorySummaryCompression(state, {
+      apiConfig: makeConfig(),
+      llmClient: {
+        generate: vi.fn(async () => ({
+          content: JSON.stringify({
+            longTermStorySummaries: [{
+              summaryId: 'inactive_scope_result',
+              title: '不应应用',
+              fromCreatedAt: 'day 1',
+              toCreatedAt: 'day 20',
+              summary: '模型返回了本次未激活层级。',
+              sourceMidTermSummaryIds: [],
+            }],
+          }),
+          provider: 'openai_compatible' as const,
+          model: 'memory-model',
+        })),
+      },
+    });
+
+    expect(result.status).toBe('skipped');
+    expect(result.reason).toBe('summary result had no valid entries');
+    expect(result.newState.memoryArchive?.recentTurnSummaries.map((item) => item.id)).toEqual(originalRecentIds);
+    expect(result.newState.memoryArchive?.midTermSummaries).toEqual([]);
+    expect(state.memoryArchive?.recentTurnSummaries.map((item) => item.id)).toEqual(originalRecentIds);
   });
 
   it('uses memory summary system and user prompt overrides', async () => {
@@ -481,11 +511,16 @@ describe('MemorySummaryExecution', () => {
     expect(userPrompt).toContain('longTermFacts=[]');
     expect(userPrompt).toContain('每个合格玩家批次只返回一条摘要');
     expect(userPrompt).toContain('来源 ID 和稳定摘要 ID 由本地覆盖');
-    expect(userPrompt).toContain('复用已有 factId');
-    expect(userPrompt).toContain('不得仅更换 factId 新增同义事实');
+    expect(userPrompt).not.toContain('复用已有 factId');
+    expect(userPrompt).not.toContain('不得仅更换 factId 新增同义事实');
     expect(userPrompt).toContain('完成、失败、失效');
     expect(userPrompt).toContain('不得重新压缩成待办');
     expect(userPrompt).toContain('亲历、听闻、误会、推测');
     expect(userPrompt).toContain('NPC 相信的内容不得自动写成世界客观事实');
+    expect(userPrompt).toContain('activeCompressionScopes: ["npcRawToMid"]');
+    expect(userPrompt).not.toContain('### 待压缩玩家短期回合');
+    expect(userPrompt).not.toContain('### 待压缩玩家中期摘要');
+    expect(userPrompt).not.toContain('### 待压缩 NPC 中期记忆块');
+    expect(userPrompt.match(/NPC记忆1"/g)).toHaveLength(1);
   });
 });

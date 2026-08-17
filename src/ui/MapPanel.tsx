@@ -5,9 +5,11 @@ import { buildMapVisualModel, type MapVisualPoint } from './mapVisualModel';
 import {
   MAP_MAX_ZOOM,
   MAP_MIN_ZOOM,
+  MAP_LOCAL_FOCUS_ZOOM,
   buildMapLabelLayout,
   buildMapViewportModel,
   getVisibleMapPoints,
+  stepMapZoom,
   type MapLabelCluster,
 } from './mapViewportModel';
 import { MapHistoricalBaseLayer } from './MapHistoricalBaseLayer';
@@ -25,6 +27,7 @@ export const MapPanel: React.FC<MapPanelProps> = ({ worldBook, runtimeState, onC
   const [showArchive, setShowArchive] = React.useState(false);
   const [zoom, setZoom] = React.useState(0.9);
   const [pan, setPan] = React.useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = React.useState(false);
   const [selectedPointId, setSelectedPointId] = React.useState<string | undefined>(visual.currentPoint?.id);
   const mapStageRef = React.useRef<HTMLDivElement | null>(null);
   const mapSurfaceRef = React.useRef<HTMLDivElement | null>(null);
@@ -68,16 +71,23 @@ export const MapPanel: React.FC<MapPanelProps> = ({ worldBook, runtimeState, onC
     });
   }, [visual.currentPoint?.id, visual.points]);
 
-  const adjustZoom = React.useCallback((delta: number) => {
-    setZoom((value) => Math.max(MAP_MIN_ZOOM, Math.min(MAP_MAX_ZOOM, Number((value + delta).toFixed(2)))));
-  }, []);
+  const adjustZoom = React.useCallback((direction: number, inputMode: 'button' | 'wheel' = 'button') => {
+    const nextZoom = stepMapZoom(zoom, direction, inputMode);
+    if (nextZoom === zoom) return;
+    const zoomRatio = nextZoom / zoom;
+    setZoom(nextZoom);
+    setPan((current) => ({
+      x: current.x * zoomRatio,
+      y: current.y * zoomRatio,
+    }));
+  }, [zoom]);
 
   React.useEffect(() => {
     const stage = mapStageRef.current;
     if (!stage) return undefined;
 
     return bindMapWheelZoom(stage, (direction) => {
-      adjustZoom(direction * 0.28);
+      adjustZoom(direction, 'wheel');
     });
   }, [adjustZoom]);
 
@@ -106,7 +116,7 @@ export const MapPanel: React.FC<MapPanelProps> = ({ worldBook, runtimeState, onC
   const focusCurrentPoint = React.useCallback(() => {
     if (!visual.currentPoint) return;
     const focusedViewport = buildMapViewportModel({
-      zoom: Math.max(4.2, zoom),
+      zoom: Math.max(MAP_LOCAL_FOCUS_ZOOM, zoom),
       focusPoint: visual.currentPoint,
     });
     setZoom(focusedViewport.zoom);
@@ -121,9 +131,13 @@ export const MapPanel: React.FC<MapPanelProps> = ({ worldBook, runtimeState, onC
   }, [visual.currentPoint?.id]);
 
   const handlePointerDown = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.target instanceof Element && event.target.closest('button, a, input, select, textarea, [role="button"]')) {
+    if (
+      event.target instanceof Element
+      && event.target.closest('button:not(.map-v2-marker), a, input, select, textarea, [role="button"]:not(.map-v2-marker)')
+    ) {
       return;
     }
+    event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = {
       startX: event.clientX,
@@ -131,19 +145,25 @@ export const MapPanel: React.FC<MapPanelProps> = ({ worldBook, runtimeState, onC
       panX: pan.x,
       panY: pan.y,
     };
+    setIsDragging(true);
   }, [pan.x, pan.y]);
 
   const handlePointerMove = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag) return;
+    event.preventDefault();
     setPan({
       x: drag.panX + ((event.clientX - drag.startX) / 8),
       y: drag.panY + ((event.clientY - drag.startY) / 8),
     });
   }, []);
 
-  const handlePointerEnd = React.useCallback(() => {
+  const handlePointerEnd = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
     dragRef.current = null;
+    setIsDragging(false);
   }, []);
 
   return (
@@ -185,24 +205,46 @@ export const MapPanel: React.FC<MapPanelProps> = ({ worldBook, runtimeState, onC
               aria-label="全国视觉地图"
             >
               <div className="map-v2-toolbar" aria-label="地图缩放控制">
-                <button type="button" onClick={() => adjustZoom(0.45)} aria-label="放大地图" title="放大地图">+</button>
-                <button type="button" onClick={() => adjustZoom(-0.45)} aria-label="缩小地图" title="缩小地图">-</button>
+                <button
+                  type="button"
+                  onClick={() => adjustZoom(1)}
+                  aria-label="放大地图"
+                  title={`放大地图（最高 ${MAP_MAX_ZOOM}×）`}
+                  disabled={viewport.zoom >= MAP_MAX_ZOOM}
+                >+</button>
+                <button
+                  type="button"
+                  onClick={() => adjustZoom(-1)}
+                  aria-label="缩小地图"
+                  title="缩小地图"
+                  disabled={viewport.zoom <= MAP_MIN_ZOOM}
+                >-</button>
                 <button type="button" onClick={resetNationalView} aria-label="复位全国" title="复位全国">全国</button>
                 <button type="button" onClick={focusCurrentPoint} aria-label="聚焦当前位置" title="聚焦当前位置">当前位置</button>
                 <span className="map-v2-zoom-level">
-                  {viewport.tier === 'far' ? '全国' : viewport.tier === 'mid' ? '区域' : viewport.tier === 'near' ? '近景' : '详图'}
+                  {viewport.tier === 'far'
+                    ? '全国'
+                    : viewport.tier === 'mid'
+                      ? '区域'
+                      : viewport.tier === 'near'
+                        ? '近景'
+                        : `详图 ${viewport.zoom.toFixed(1)}×`}
                 </span>
               </div>
               <div
                 ref={mapSurfaceRef}
-                className={`map-v2-map-surface ${dragRef.current ? 'dragging' : ''}`}
+                className={`map-v2-map-surface ${isDragging ? 'dragging' : ''}`}
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerEnd}
                 onPointerCancel={handlePointerEnd}
+                onLostPointerCapture={handlePointerEnd}
+                onDragStart={(event) => event.preventDefault()}
               >
                 <div className="map-v2-canvas" style={{ transform: viewport.transform }}>
-                  <MapHistoricalBaseLayer />
+                  <MapHistoricalBaseLayer
+                    mode={viewport.tier === 'far' || viewport.tier === 'mid' ? 'art' : 'geographic'}
+                  />
                   <svg
                     className="map-v2-route-layer"
                     viewBox="0 0 100 100"
@@ -429,12 +471,13 @@ function MapVisualMarker({
   const markerStyle = {
     left: `${point.x}%`,
     top: `${point.y}%`,
-    '--map-label-size': `${Math.min(0.86, Math.max(0.07, 0.78 / zoom))}rem`,
-    '--map-dot-size': `${Math.min(0.72, Math.max(0.06, (point.isCurrent ? 0.72 : 0.48) / zoom))}rem`,
-    '--map-marker-gap': `${Math.min(0.35, Math.max(0.04, 0.35 / zoom))}rem`,
+    '--map-label-size': '0.78rem',
+    '--map-dot-size': `${point.isCurrent ? 0.72 : 0.48}rem`,
+    '--map-marker-gap': '0.35rem',
     '--map-inverse-zoom': `${1 / zoom}`,
-    '--map-dot-halo': `${Math.min(0.22, Math.max(0.025, 0.18 / zoom))}rem`,
-    '--map-dot-glow': `${Math.min(0.85, Math.max(0.08, 0.7 / zoom))}rem`,
+    '--map-marker-offset-x': `${0.4 / zoom}rem`,
+    '--map-dot-halo': '0.18rem',
+    '--map-dot-glow': '0.7rem',
   } as React.CSSProperties & Record<string, string>;
 
   return (

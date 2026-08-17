@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RuntimeState } from '../engine/types';
-import { buildTroopPanelModel } from './troopPanelModel';
+import { buildTroopPanelModel, formatTroopTypeForDisplay } from './troopPanelModel';
 
 const baseRuntimeState = {
   factions: [
@@ -121,7 +121,7 @@ describe('troopPanelModel', () => {
       { label: '兵种', value: '骑兵' },
       { label: '规模', value: '220人', detail: '上次记录 300人' },
       { label: '精锐度', value: '高' },
-      { label: '疲劳', value: '高' },
+      { label: '疲劳', value: '60/100' },
       { label: '整备', value: '低' },
       { label: '状态', value: '活跃' },
       { label: '可信度', value: '已确认' },
@@ -143,6 +143,109 @@ describe('troopPanelModel', () => {
     expect(model.statusTags).toEqual(['减员', '整顿中']);
     expect(model.recentBattles.map((battle) => battle.conflictId)).toEqual(['battle_luoyang_breakout']);
     expect(model.intelNotice).toContain('已知情报');
+  });
+
+  it('shows the selected troop monthly upkeep from the canonical local settlement preview', () => {
+    const model = buildTroopPanelModel({
+      ...baseRuntimeState,
+      resources: {
+        money: 1000,
+        grain: 10000,
+        horses: 100,
+        arms: 100,
+        recruits: 0,
+        weapons: [],
+        documents: [],
+        tokens: [],
+        importantSupplies: [],
+      },
+      troops: [{
+        ...baseRuntimeState.troops![0],
+        relationToPlayer: '你直接统领',
+        upkeepSource: 'player_resources',
+      }],
+    } as unknown as RuntimeState, 'troop_yueqi');
+
+    expect(model.monthlyUpkeepNote).toBe(
+      '月度军需：220人 × 骑兵 × 精锐度高 → 钱财21贯、粮草358石、战马3匹、军械1件；来源：玩家府库',
+    );
+  });
+
+  it('does not present an external army as consuming the player treasury even if a legacy source is wrong', () => {
+    const externalTroop = {
+      ...baseRuntimeState.troops![0],
+      troopId: 'troop_dongzhuo_external',
+      name: '董卓前锋部队',
+      factionId: 'faction_dongzhuo',
+      relationToPlayer: '敌对',
+      leaderNpcId: 'npc_dongzhuo_general',
+      upkeepSource: 'player_resources' as const,
+    };
+    const model = buildTroopPanelModel({
+      ...baseRuntimeState,
+      resources: {
+        money: 1000,
+        grain: 10000,
+        horses: 100,
+        arms: 100,
+        recruits: 0,
+        weapons: [],
+        documents: [],
+        tokens: [],
+        importantSupplies: [],
+      },
+      troops: [externalTroop],
+    } as unknown as RuntimeState, externalTroop.troopId);
+
+    expect(model.monthlyUpkeepNote).toBeNull();
+  });
+
+  it('does not invent exact upkeep for an intelligence-only troop', () => {
+    const model = buildTroopPanelModel({
+      ...baseRuntimeState,
+      resources: {
+        money: 1000,
+        grain: 10000,
+        horses: 100,
+        arms: 100,
+        recruits: 0,
+        weapons: [],
+        documents: [],
+        tokens: [],
+        importantSupplies: [],
+      },
+      troops: [{
+        ...baseRuntimeState.troops![0],
+        detailLevel: 'intelligence',
+      }],
+    } as unknown as RuntimeState, 'troop_yueqi');
+
+    expect(model.monthlyUpkeepNote).toBeNull();
+  });
+
+  it('exposes the commander, deputies and strategist as a stable officer roster', () => {
+    const model = buildTroopPanelModel({
+      ...baseRuntimeState,
+      npcs: [
+        ...(baseRuntimeState.npcs ?? []),
+        { npcId: 'npc_zhao_yun', name: '赵云' },
+        { npcId: 'npc_zhang_liao', name: '张辽' },
+        { npcId: 'npc_gao_shun', name: '高顺' },
+        { npcId: 'npc_guo_jia', name: '郭嘉' },
+      ],
+      troops: [{
+        ...baseRuntimeState.troops![0],
+        leaderNpcId: 'npc_zhao_yun',
+        deputyNpcIds: ['npc_zhang_liao', 'npc_gao_shun'],
+        strategistNpcId: 'npc_guo_jia',
+      }],
+    } as unknown as RuntimeState, 'troop_yueqi');
+
+    expect(model.officerRows).toEqual([
+      { label: '主将', value: '赵云' },
+      { label: '副将', value: '张辽、高顺' },
+      { label: '军师', value: '郭嘉' },
+    ]);
   });
 
   it('groups selected troop detail rows by player-reading priority for compact layout', () => {
@@ -248,7 +351,7 @@ describe('troopPanelModel', () => {
     expect(model.selectedTroop?.troopId).toBe('troop_yueqi');
   });
 
-  it('keeps terminal troop records out of the current roster after a regroup', () => {
+  it('keeps defeated and other terminal troop records out of the current roster', () => {
     const regroupedState = {
       ...baseRuntimeState,
       troops: [
@@ -267,11 +370,31 @@ describe('troopPanelModel', () => {
           lifecycleStatus: 'merged',
           mergedIntoTroopId: 'troop_new_cavalry',
         },
+        {
+          ...baseRuntimeState.troops![0],
+          troopId: 'troop_routed_camp',
+          name: '南大营溃兵',
+          size: 210,
+          lifecycleStatus: 'routed',
+        },
+        {
+          ...baseRuntimeState.troops![0],
+          troopId: 'troop_destroyed_camp',
+          name: '北大营旧部',
+          size: 0,
+          lifecycleStatus: 'destroyed',
+          destroyedInBattleId: 'battle_north_camp',
+        },
       ],
     } as unknown as RuntimeState;
     const model = buildTroopPanelModel(regroupedState, 'troop_old_camp');
 
-    expect((regroupedState.troops ?? []).map((troop) => troop.troopId)).toContain('troop_old_camp');
+    expect((regroupedState.troops ?? []).map((troop) => troop.troopId)).toEqual([
+      'troop_new_cavalry',
+      'troop_old_camp',
+      'troop_routed_camp',
+      'troop_destroyed_camp',
+    ]);
     expect(model.rosterItems.map((troop) => troop.troopId)).toEqual(['troop_new_cavalry']);
     expect(model.selectedTroopId).toBe('troop_new_cavalry');
     expect(model.groupItems).toHaveLength(1);
@@ -366,7 +489,7 @@ describe('troopPanelModel', () => {
     ]));
   });
 
-  it('treats self-commanded unbound troops as player direct troops and does not promote deputies to commander', () => {
+  it('treats self-related unbound troops as player troops while keeping the registered field commander', () => {
     const model = buildTroopPanelModel({
       ...baseRuntimeState,
       player: {
@@ -425,8 +548,7 @@ describe('troopPanelModel', () => {
     expect(model.detailRows).toEqual(expect.arrayContaining([
       { label: '所属势力', value: '荆州牧刘表' },
       { label: '指挥关系', value: '你直接统领' },
-      { label: '主将', value: '刘峙（你）' },
-      { label: '带兵副手', value: '王锐' },
+      { label: '主将', value: '王锐' },
     ]));
   });
 
@@ -499,6 +621,8 @@ describe('troopPanelModel', () => {
     expect(model.overviewRows).toEqual([
       { label: '所属势力', value: '汉廷' },
       { label: '主将', value: '陈达' },
+      { label: '副将', value: '未任命' },
+      { label: '军师', value: '未任命' },
       { label: '番号', value: '越骑营' },
       { label: '当前任务', value: '整顿伤卒' },
       { label: '当前位置', value: '洛阳宫门' },
@@ -512,7 +636,7 @@ describe('troopPanelModel', () => {
       { label: '训练', value: '55' },
       { label: '补给', value: '粮草两日' },
       { label: '整备', value: '低' },
-      { label: '疲劳', value: '高' },
+      { label: '疲劳', value: '60/100' },
       { label: '状态', value: '活跃' },
     ]);
     expect(model.visualProfile).toEqual({
@@ -715,5 +839,14 @@ describe('troopPanelModel', () => {
       .toContainEqual({ label: '最后已知位置', value: '位置未确认' });
     expect(buildTroopPanelModel(mapState, 'troop_dangling_position').detailRows)
       .toContainEqual({ label: '最后已知位置', value: '未登记地点' });
+  });
+});
+
+describe('formatTroopTypeForDisplay', () => {
+  it('keeps player-facing cavalry subclasses instead of collapsing them to cavalry', () => {
+    expect(formatTroopTypeForDisplay('轻骑兵')).toBe('轻骑兵');
+    expect(formatTroopTypeForDisplay('light_cavalry')).toBe('轻骑兵');
+    expect(formatTroopTypeForDisplay('骑兵', { logisticsClass: 'heavy_cavalry' })).toBe('重骑兵');
+    expect(formatTroopTypeForDisplay('骑兵', { primaryClass: 'cavalry', tags: ['heavy', 'mobile'] })).toBe('重骑兵');
   });
 });

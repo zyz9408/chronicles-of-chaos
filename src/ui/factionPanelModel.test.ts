@@ -158,7 +158,13 @@ describe('factionPanelModel', () => {
     expect(model.relatedMatters).toEqual(['护送族老']);
     expect(model.relatedSignals).toEqual(['颍川豪族暗结坞堡']);
     expect(model.relatedChronicles).toEqual(['士族自保：颍川豪族开始暗中联络坞堡。']);
-    expect(model.recentActions).toEqual(['暗中自保']);
+    expect(model.recentActions).toEqual([{
+      key: '0:亲历:公元189年09月01日 12:00（午时）:暗中自保',
+      summary: '暗中自保',
+      knownLevel: '亲历',
+      observedAt: '公元189年09月01日 12:00（午时）',
+      sourceNote: '士人闲谈',
+    }]);
   });
 
   it('exposes compact summary and grouped detail rows for faction layout', () => {

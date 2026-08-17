@@ -31,6 +31,9 @@ export function canonicalizeEncounterPlayerAlias<T extends EncounterStartIntent>
     if (war.playerForce.commanderActorId === 'player') {
       war.playerForce.commanderActorId = state.player.id;
     }
+    if (war.participation?.superiorCommanderActorId === 'player') {
+      war.participation.superiorCommanderActorId = state.player.id;
+    }
   }
   return intent;
 }

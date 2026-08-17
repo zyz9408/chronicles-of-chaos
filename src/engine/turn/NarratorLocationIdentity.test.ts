@@ -61,6 +61,7 @@ function writeback(): NarratorWritebackProtocol {
     protagonistMemory: { keyDeed: { summary: '守住新野', locationId: 'incoming_xinye' } },
     npcProfileSuggestions: [{
       npcId: 'npc_1', name: '甲', sex: '男', age: 30, role: '守将', locationId: 'incoming_xinye',
+      persistenceReason: 'active_system_role', persistenceEvidence: '甲已担任新野守将，持续负责城防。',
       isPresent: true, isFocused: true, currentIdentity: '守将', summary: '守卫新野。', appearance: '披甲。',
       personality: '谨慎。', motivation: '守城。', relationToPlayer: '初识', contactLevel: 1, recentAttitude: '警惕',
       abilityScores: { 武力: 50, 统率: 50, 智力: 50, 政治: 50, 魅力: 50, 机运: 50 },

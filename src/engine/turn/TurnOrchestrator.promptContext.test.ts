@@ -196,6 +196,8 @@ describe('executeTurn prompt contexts', () => {
 
   it('applies local stamina consumption and recovery on the committed turn path', async () => {
     const state = makeState();
+    state.currentDate = '公元194年05月03日 08:00（辰时）';
+    state.currentTime = { year: 194, month: 5, day: 3, hour: 8, minute: 0 };
     state.player.vitals = { hp: 100, maxHp: 100, stamina: 100, maxStamina: 100 };
 
     const fought = await executeTurn(worldBook, state, '我拔刀迎战敌人');
@@ -204,6 +206,6 @@ describe('executeTurn prompt contexts', () => {
 
     const rested = await executeTurn(worldBook, fought.newRuntimeState, '休息一夜');
     expect(rested.newRuntimeState.player.vitals?.stamina).toBe(100);
-    expect(rested.newRuntimeState.turnLog[rested.newRuntimeState.turnLog.length - 1]?.statePatchSummary).toContain('体力 90→100（休息恢复）');
+    expect(rested.newRuntimeState.turnLog[rested.newRuntimeState.turnLog.length - 1]?.statePatchSummary).toContain('体力 90→100（休息恢复，1440分钟）');
   });
 });

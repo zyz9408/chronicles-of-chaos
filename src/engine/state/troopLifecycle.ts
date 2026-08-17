@@ -3,6 +3,7 @@ import type { TroopLedgerEntry } from '../types';
 type TroopLifecycleStatus = NonNullable<TroopLedgerEntry['lifecycleStatus']>;
 
 const TERMINAL_TROOP_LIFECYCLE_STATUSES = new Set<TroopLifecycleStatus>([
+  'routed',
   'merged',
   'split',
   'destroyed',

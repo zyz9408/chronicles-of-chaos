@@ -13,9 +13,15 @@ export interface OpeningCharacterTemplateProfile {
   courtesyName: string;
   sex: OpeningCharacterTemplateSex;
   age: number;
+  /** Optional for backward compatibility with templates saved before birthday selection. */
+  birthMonth?: number;
+  /** Optional for backward compatibility with templates saved before birthday selection. */
+  birthDay?: number;
   appearance: string;
   personality: string;
   customNotes: string;
+  /** Optional for backward compatibility; blank opening requests are not persisted. */
+  playerExtraRequest?: string;
   abilityPresetId: string;
   abilityBaseScores: Record<string, number>;
   abilityScores: Record<string, number>;
@@ -101,11 +107,14 @@ export function normalizeOpeningCharacterTemplate(raw: unknown): OpeningCharacte
     ? profile.sex
     : '男';
   const ageValue = typeof profile.age === 'number' ? profile.age : Number(profile.age);
+  const birthMonthValue = typeof profile.birthMonth === 'number' ? profile.birthMonth : Number(profile.birthMonth);
+  const birthDayValue = typeof profile.birthDay === 'number' ? profile.birthDay : Number(profile.birthDay);
   const traits = Array.isArray(profile.traits)
     ? profile.traits.map(normalizeTrait).filter((trait): trait is CharacterTrait => Boolean(trait)).slice(0, 3)
     : [];
   const createdAt = trimText(record.createdAt, 40);
   const updatedAt = trimText(record.updatedAt, 40);
+  const playerExtraRequest = trimText(profile.playerExtraRequest, 6000);
 
   return {
     id,
@@ -121,9 +130,16 @@ export function normalizeOpeningCharacterTemplate(raw: unknown): OpeningCharacte
       courtesyName: trimText(profile.courtesyName, 80),
       sex,
       age: Number.isFinite(ageValue) ? Math.max(1, Math.min(120, Math.round(ageValue))) : 18,
+      ...(Number.isInteger(birthMonthValue) && birthMonthValue >= 1 && birthMonthValue <= 12
+        ? { birthMonth: birthMonthValue }
+        : {}),
+      ...(Number.isInteger(birthDayValue) && birthDayValue >= 1 && birthDayValue <= 30
+        ? { birthDay: birthDayValue }
+        : {}),
       appearance: trimText(profile.appearance, 4000),
       personality: trimText(profile.personality, 4000),
       customNotes: trimText(profile.customNotes, 6000),
+      ...(playerExtraRequest ? { playerExtraRequest } : {}),
       abilityPresetId: trimText(profile.abilityPresetId, 120) || 'custom',
       abilityBaseScores: normalizeScores(profile.abilityBaseScores),
       abilityScores: normalizeScores(profile.abilityScores),

@@ -7,6 +7,10 @@ import type {
   CharacterTrait,
   CharacterUniqueArt,
   CharacterUniqueArtDomain,
+  CharacterUniqueArtProgressEvidence,
+  CharacterUniqueArtProgressIntensity,
+  CharacterUniqueArtProgressSource,
+  CharacterUniqueArtRarity,
   CharacterTraitRarity,
   CharacterVitals,
   CombatRecord,
@@ -25,32 +29,61 @@ import type {
   LuanShiNpcRelationshipNetworkEntry,
   LuanShiNpcWombProfile,
   NpcMemorySource,
+  NpcProfilePersistenceReason,
+  PersonalEscortEntitlement,
   PrivateAssetEntry,
   PrivateAssetProjectDelta,
   PrivateAssetProjectEntry,
   ResourceLedger,
   RuntimeState,
   TroopLedgerEntry,
+  HeavyCavalrySupportLevel,
   TurnEventRecord,
 } from '../types';
+import { troopFatigueBandFromPercent } from '../troops/TroopFatigue';
+import {
+  isHeavyCavalryTroop,
+  startHeavyCavalryFormation,
+} from '../troops/HeavyCavalryFormation';
+import { CHARACTER_TRAIT_RARITIES } from '../character/TraitRarity';
+import { PERSONAL_ESCORT_ENTITLEMENT_BASES } from '../types';
 import { claimsReservedSystemDomesticReportIdentity } from '../domesticReports';
 import {
+  resolveHoldingCivilAdministrationScope,
   validateHoldingCivilAdministrationFields,
 } from '../holdings/HoldingCivilAdministration';
-import { ensureLuanShiState } from './createInitialRuntimeState';
-import { deriveNpcCurrentAge, isAdultFemaleNpcAt } from '../time/npcAge';
+import { validateHoldingCapacityUpdate } from '../holdings/HoldingCapacityPolicy';
+import {
+  findPotentialPrivateAssetDuplicate,
+  getPrivateAssetAbsoluteScaleLimits,
+  getPrivateAssetInitialScaleLimits,
+  getPrivateAssetProjectDeltaLimits,
+  type PrivateAssetScaleField,
+} from '../holdings/PrivateAssetPolicy';
+import { ensureLuanShiState, findExistingHoldingByLedgerIdentity } from './createInitialRuntimeState';
+import {
+  deriveNpcCurrentAge,
+  isAdultFemaleNpcAt,
+  normalizeCompleteBirthDate,
+} from '../time/npcAge';
 import { looksLikeEngineeringFactionType, normalizeFactionType } from './factionTypeNormalization';
 import {
   EQUIPMENT_SLOTS,
   validateCheckHooks,
+  validateEquipmentCollection,
   validateEquipmentItem,
   validateEquipmentItemAtPath,
+  validateInventoryCollection,
   validateInventoryItem,
   validateInventoryItemAtPath,
+  validateLinkedLoadoutIdentities,
 } from '../character/loadoutProtocol';
 import { isProtagonistNpcClone, PROTAGONIST_NPC_REJECTION_MESSAGE } from './playerNpcBoundary';
 import { findHeroineThreadByIdentity } from './HeroineThreadIdentity';
 import { isNpcPhysicallyPresent } from './npcPresence';
+import { isTerminalTroopLedgerEntry } from './troopLifecycle';
+import { findStableCharacterUniqueArtIndex } from '../character/NpcUniqueArtPolicy';
+import { resolveCanonicalLedgerNumberField } from './resourceLedgerIdentity';
 
 export interface CharacterIdentityUpdateFields {
   name?: string | null;
@@ -71,6 +104,7 @@ export interface CharacterIdentityUpdateFields {
   identitySummary?: string | null;
   appearance?: string | null;
   personality?: string | null;
+  personalEscortEntitlement?: PersonalEscortEntitlement | null;
 }
 
 export type CharacterIdentityUpdateCommand = CharacterIdentityUpdateFields & {
@@ -143,24 +177,49 @@ export interface CharacterUniqueArtsUpdateCommand {
   source?: string;
 }
 
-export type ResourceLedgerUpdateCommand = Partial<ResourceLedger> & {
+export interface CharacterUniqueArtProgressRecordCommand extends CharacterUniqueArtProgressEvidence {
+  action: 'recordCharacterUniqueArtProgress';
+  characterType: 'player' | 'npc';
+  characterId?: string;
+  characterName?: string;
+  artId: string;
+}
+
+export type ResourceLedgerUpdateCommand = Omit<Partial<ResourceLedger>, 'money'> & {
   action: 'updateResourceLedger';
+  /** 写回后的府库钱财绝对总量，单位固定为贯。 */
+  moneyGuan?: number;
+  /** 写回前的府库钱财总量，必须等于当前资源账本，单位固定为贯。 */
+  previousMoneyGuan?: number;
+  /** 本次府库钱财变化量，可为负数，单位固定为贯。 */
+  moneyDeltaGuan?: number;
   playerResources?: Record<string, number>;
   summary?: string;
 };
 
-export type FactionLedgerUpsertCommand = FactionLedgerEntry & {
+export type FactionLedgerUpsertCommand = Omit<FactionLedgerEntry, 'recentActionRecords'> & {
   action: 'upsertFactionLedger';
 };
+
+export interface FactionRecentActionRecordCommand {
+  action: 'recordFactionRecentAction';
+  factionId: string;
+  summary: string;
+  knownLevel: FactionLedgerEntry['knownLevel'];
+  observedAt?: string;
+  sourceNote?: string;
+}
 
 export type TroopScoreInput = TroopLedgerEntry['morale'] | string;
 
 export type TroopLedgerUpsertCommand = {
   action: 'upsertTroopLedger';
   troopId: string;
-} & Partial<Omit<TroopLedgerEntry, 'troopId' | 'morale' | 'training'>> & {
+} & Partial<Omit<TroopLedgerEntry, 'troopId' | 'morale' | 'training' | 'deployableSize' | 'changeHistory'>> & {
   morale?: TroopScoreInput;
   training?: TroopScoreInput;
+  /** reducer 以 eventId 幂等追加到 changeHistory，不能由模型覆盖历史数组。 */
+  changeEvent?: NonNullable<TroopLedgerEntry['changeHistory']>[number];
 };
 
 export type ConflictRecordUpsertCommand = Omit<ConflictRecord, 'summary'> & {
@@ -221,19 +280,45 @@ export interface HoldingSiegeUpdate {
 
 export type HoldingLedgerUpsertCommand = Omit<HoldingLedgerEntry, 'siege'> & {
   action: 'upsertHoldingLedger';
+  /**
+   * 新建领地必须显式使用 create；既有领地建议使用 update。
+   * 该字段保持可选仅用于兼容旧存档产生的内部更新，验证器不会允许省略它来创建新领地。
+   */
+  operation?: 'create' | 'update';
   siege?: HoldingSiegeUpdate;
 };
+
+export interface StartHeavyCavalryFormationCommand {
+  action: 'startHeavyCavalryFormation';
+  projectId: string;
+  troopId: string;
+  troopName: string;
+  holdingId: string;
+  factionId?: string;
+  requestedSize: number;
+  supportLevel: HeavyCavalrySupportLevel;
+  supportEvidenceRefId?: string;
+  personnelSource?: 'recruit_pool' | 'existing_troop';
+  sourceTroopId?: string;
+  leaderNpcId?: string;
+  relationToPlayer: string;
+  upkeepSource: NonNullable<TroopLedgerEntry['upkeepSource']>;
+}
 
 export type DomesticReportUpsertCommand = DomesticReportEntry & {
   action: 'upsertDomesticReport';
 };
 
-export type PrivateAssetUpsertCommand = Omit<PrivateAssetEntry, 'updatedAt'> & {
+export type PrivateAssetUpsertCommand = Omit<PrivateAssetEntry, 'updatedAt' | 'aliases'> & {
   action: 'upsertPrivateAsset';
+  operation: 'create' | 'update';
   updatedAt?: string;
 };
 
-export type PrivateAssetProjectUpsertCommand = Omit<PrivateAssetProjectEntry, 'updatedAt'> & {
+export type PrivateAssetProjectUpsertCommand = Omit<
+  PrivateAssetProjectEntry,
+  'updatedAt' | 'host' | 'assistant' | 'risk' | 'modifiers' | 'appliedArtIds' | 'cancelledAt'
+> & {
   action: 'upsertPrivateAssetProject';
   updatedAt?: string;
 };
@@ -254,6 +339,10 @@ export interface NpcProfileUpsertCommand {
   action: 'upsertNpcProfile';
   npcId: string;
   name: string;
+  /** 仅新建人物必填；已有 NPC 的完整档案更新不需要重复声明。 */
+  persistenceReason?: NpcProfilePersistenceReason;
+  /** 仅新建人物必填；记录本回合已经成立的长期承接事实。 */
+  persistenceEvidence?: string;
   courtesyName?: string | null;
   artName?: string | null;
   aliases?: string[] | null;
@@ -291,6 +380,15 @@ export interface NpcProfileUpsertCommand {
   effects?: CharacterEffect[];
   equipment?: CharacterEquipmentItem[];
   inventory?: InventoryItem[];
+}
+
+export interface NpcRelationshipUpdateCommand {
+  action: 'updateNpcRelationship';
+  npcId: string;
+  contactDelta: number;
+  relationToPlayer?: string;
+  recentAttitude?: string;
+  summary: string;
 }
 
 export interface NpcPresenceUpdateCommand {
@@ -371,9 +469,12 @@ export type LuanShiCommand =
   | NpcLoadoutUpdateCommand
   | PlayerTraitsUpdateCommand
   | CharacterUniqueArtsUpdateCommand
+  | CharacterUniqueArtProgressRecordCommand
   | ResourceLedgerUpdateCommand
   | FactionLedgerUpsertCommand
+  | FactionRecentActionRecordCommand
   | TroopLedgerUpsertCommand
+  | StartHeavyCavalryFormationCommand
   | HoldingLedgerUpsertCommand
   | DomesticReportUpsertCommand
   | PrivateAssetUpsertCommand
@@ -385,6 +486,7 @@ export type LuanShiCommand =
   | BondThreadUpsertCommand
   | CharacterReputationUpdateCommand
   | NpcProfileUpsertCommand
+  | NpcRelationshipUpdateCommand
   | NpcPresenceUpdateCommand
   | NpcBackgroundActivityUpdateCommand
   | NpcFemaleProfileUpdateCommand
@@ -429,6 +531,14 @@ const bondThreadTypes: BondThreadEntry['bondType'][] = [
   'other',
 ];
 const npcSexes: LuanShiNpc['sex'][] = ['男', '女', '其他'];
+const npcProfilePersistenceReasons: NpcProfilePersistenceReason[] = [
+  'opening_cast',
+  'historical_figure',
+  'active_system_role',
+  'recurring_contact',
+  'player_committed_relationship',
+  'strategic_actor',
+];
 const ledgerKnownLevels: FactionLedgerEntry['knownLevel'][] = ['亲历', '听闻', '推测'];
 const holdingTypes: HoldingLedgerEntry['type'][] = [
   'county',
@@ -444,6 +554,28 @@ const holdingTypes: HoldingLedgerEntry['type'][] = [
 ];
 const holdingStatuses: HoldingLedgerEntry['status'][] = ['controlled', 'contested', 'temporary', 'lost', 'archived'];
 const holdingScaleLevels: HoldingLedgerEntry['scaleLevel'][] = [1, 2, 3, 4, 5];
+const holdingCivilScaleLevels: NonNullable<HoldingLedgerEntry['civilScaleLevel']>[] = [1, 2, 3, 4, 5];
+const holdingControlEvidenceKinds: NonNullable<HoldingLedgerEntry['controlEvidence']>['kind'][] = [
+  'opening',
+  'formal_handover',
+  'grant',
+  'capture',
+  'founding',
+  'temporary_administration',
+  'active_contest',
+  'war_target',
+  'control_loss',
+];
+const holdingControlEvidenceKindsByStatus: Record<
+  HoldingLedgerEntry['status'],
+  readonly NonNullable<HoldingLedgerEntry['controlEvidence']>['kind'][]
+> = {
+  controlled: ['opening', 'formal_handover', 'grant', 'capture', 'founding'],
+  temporary: ['opening', 'formal_handover', 'capture', 'temporary_administration'],
+  contested: ['active_contest', 'war_target'],
+  lost: ['control_loss'],
+  archived: ['control_loss'],
+};
 const holdingSiegeStatuses: HoldingSiegeStatus[] = ['blockaded', 'encircled'];
 const holdingSupplyLineStatuses: HoldingSupplyLineStatus[] = ['open', 'strained', 'cut'];
 const holdingSiegePreparations: HoldingSiegePreparation[] = ['none', 'prepared', 'stockpiled'];
@@ -476,6 +608,7 @@ const holdingOptionalListFields = [
   'aliases',
   'garrisonTroopIds',
   'relatedNpcIds',
+  'governanceOfficerNpcIds',
   'riskNotes',
   'recentChanges',
 ] as const satisfies readonly (keyof HoldingLedgerEntry)[];
@@ -520,6 +653,22 @@ const privateAssetOptionalListFields = [
   'riskNotes',
   'recentChanges',
 ] as const satisfies readonly (keyof PrivateAssetEntry)[];
+const privateAssetScaleFields = [
+  'mu',
+  'households',
+  'workers',
+  'workshopScale',
+  'ranchCapacity',
+] as const satisfies readonly PrivateAssetScaleField[];
+const privateAssetAcquisitionKinds: NonNullable<PrivateAssetEntry['acquisition']>['kind'][] = [
+  'opening',
+  'purchase',
+  'grant',
+  'inheritance',
+  'construction',
+  'seizure',
+  'transfer',
+];
 const privateAssetProjectTypes: PrivateAssetProjectEntry['type'][] = [
   'expand_farmland',
   'irrigation',
@@ -552,6 +701,20 @@ const troopLifecycleStatuses: NonNullable<TroopLedgerEntry['lifecycleStatus']>[]
   'disbanded',
   'unknown',
   'archived',
+];
+const troopDetailLevels: NonNullable<TroopLedgerEntry['detailLevel']>[] = ['intelligence', 'operational'];
+const troopChangeKinds: NonNullable<TroopLedgerEntry['changeHistory']>[number]['kind'][] = [
+  'observed',
+  'commander_changed',
+  'strength_changed',
+  'defeated',
+  'routed',
+  'reorganized',
+  'merged',
+  'split',
+  'surrendered',
+  'destroyed',
+  'moved',
 ];
 const troopCertainties: NonNullable<TroopLedgerEntry['certainty']>[] = ['confirmed', 'reported', 'rumor', 'uncertain'];
 const troopStrengthTrends: NonNullable<TroopLedgerEntry['strengthTrend']>[] = ['increased', 'decreased', 'stable', 'unknown'];
@@ -679,6 +842,7 @@ const troopOptionalTextFields = [
   'troopType',
   'specialDesignation',
   'leaderNpcId',
+  'strategistNpcId',
   'locationId',
   'lastKnownLocationId',
   'lastKnownAt',
@@ -691,6 +855,7 @@ const troopOptionalTextFields = [
   'estimatedArrivalAt',
   'arrivedAt',
   'movementNotes',
+  'operationalParentForceId',
   'parentTroopId',
   'mergedIntoTroopId',
   'destroyedInBattleId',
@@ -702,6 +867,7 @@ const troopOptionalTextFields = [
 const troopOptionalListFields = [
   'aliases',
   'statusTags',
+  'deputyNpcIds',
   'childTroopIds',
   'mergedFromTroopIds',
 ] as const satisfies readonly (keyof TroopLedgerEntry)[];
@@ -712,7 +878,16 @@ const factionOptionalListFields = [
   'relatedTroopIds',
 ] as const satisfies readonly (keyof FactionLedgerEntry)[];
 const requiredNpcAbilityNames = ['武力', '统率', '智力', '政治', '魅力', '机运'] as const;
-const traitRarities: CharacterTraitRarity[] = ['white', 'green', 'blue', 'red', 'gold'];
+const traitRarities: readonly CharacterTraitRarity[] = CHARACTER_TRAIT_RARITIES;
+const uniqueArtRarities: Array<CharacterUniqueArtRarity | 'gold'> = [
+  'white',
+  'green',
+  'blue',
+  'purple',
+  'orange',
+  'red',
+  'gold',
+];
 const uniqueArtDomains: CharacterUniqueArtDomain[] = [
   'personalCombat',
   'warfare',
@@ -723,6 +898,22 @@ const uniqueArtDomains: CharacterUniqueArtDomain[] = [
   'craft',
   'other',
 ];
+const uniqueArtAcquisitionKinds: Array<NonNullable<CharacterUniqueArt['acquisition']>['kind']> = [
+  'opening',
+  'background',
+  'training',
+  'teaching',
+  'manual',
+  'event',
+  'achievement',
+];
+const uniqueArtProgressSources: CharacterUniqueArtProgressSource[] = [
+  'actual_use',
+  'autonomous_practice',
+  'instruction_or_manual',
+  'major_achievement',
+];
+const uniqueArtProgressIntensities: CharacterUniqueArtProgressIntensity[] = ['minor', 'normal', 'major'];
 const femaleProfileTextFields = [
   'birthday',
   'addressToPlayer',
@@ -776,9 +967,12 @@ const identityFieldNames = [
   'identitySummary',
   'appearance',
   'personality',
+  'personalEscortEntitlement',
 ] as const satisfies readonly (keyof CharacterIdentityUpdateFields)[];
 
-const stringIdentityFieldNames = identityFieldNames.filter((field) => field !== 'aliases');
+const stringIdentityFieldNames = identityFieldNames.filter((field) => (
+  field !== 'aliases' && field !== 'personalEscortEntitlement'
+));
 
 export function normalizeTurnEventVisibility(value: unknown): TurnEventRecord['visibility'] | undefined {
   if (typeof value !== 'string') return undefined;
@@ -827,13 +1021,23 @@ export function validateLuanShiCommand(
     return { valid: errors.length === 0, errors, warnings };
   }
 
+  if (command.action === 'recordCharacterUniqueArtProgress') {
+    validateCharacterUniqueArtProgressRecordCommand(normalized, command, errors);
+    return { valid: errors.length === 0, errors, warnings };
+  }
+
   if (command.action === 'updateResourceLedger') {
-    validateUpdateResourceLedgerCommand(command, errors);
+    validateUpdateResourceLedgerCommand(normalized, command, errors);
     return { valid: errors.length === 0, errors, warnings };
   }
 
   if (command.action === 'upsertFactionLedger') {
     validateUpsertFactionLedgerCommand(command, errors);
+    return { valid: errors.length === 0, errors, warnings };
+  }
+
+  if (command.action === 'recordFactionRecentAction') {
+    validateRecordFactionRecentActionCommand(normalized, command, errors);
     return { valid: errors.length === 0, errors, warnings };
   }
 
@@ -843,7 +1047,7 @@ export function validateLuanShiCommand(
   }
 
   if (command.action === 'upsertHoldingLedger') {
-    validateUpsertHoldingLedgerCommand(command, errors);
+    validateUpsertHoldingLedgerCommand(normalized, command, errors);
     return { valid: errors.length === 0, errors, warnings };
   }
 
@@ -853,7 +1057,7 @@ export function validateLuanShiCommand(
   }
 
   if (command.action === 'upsertPrivateAsset') {
-    validateUpsertPrivateAssetCommand(command, errors);
+    validateUpsertPrivateAssetCommand(normalized, command, errors);
     return { valid: errors.length === 0, errors, warnings };
   }
 
@@ -897,6 +1101,16 @@ export function validateLuanShiCommand(
     return { valid: errors.length === 0, errors, warnings };
   }
 
+  if (command.action === 'startHeavyCavalryFormation') {
+    validateStartHeavyCavalryFormationCommand(normalized, command, errors);
+    return { valid: errors.length === 0, errors, warnings };
+  }
+
+  if (command.action === 'updateNpcRelationship') {
+    validateNpcRelationshipUpdateCommand(normalized, command, errors);
+    return { valid: errors.length === 0, errors, warnings };
+  }
+
   if (command.action === 'updateNpcPresence') {
     validateNpcPresenceUpdateCommand(normalized, command, errors);
     return { valid: errors.length === 0, errors, warnings };
@@ -931,7 +1145,7 @@ export function validateLuanShiCommand(
   return { valid: false, errors, warnings };
 }
 
-const resourceNumberFields = ['money', 'grain', 'horses', 'arms', 'recruits'] as const satisfies readonly (keyof ResourceLedger)[];
+const resourceNumberFields = ['grain', 'horses', 'arms', 'recruits'] as const satisfies readonly (keyof ResourceLedger)[];
 const resourceListFields = ['weapons', 'documents', 'tokens', 'importantSupplies'] as const satisfies readonly (keyof ResourceLedger)[];
 const personalMoneyResourceKeys = new Set(['钱财', 'money']);
 
@@ -940,18 +1154,69 @@ export function isPersonalMoneyResourceKey(resourceKey: string): boolean {
 }
 
 function validateUpdateResourceLedgerCommand(
+  state: ReturnType<typeof ensureLuanShiState>,
   command: ResourceLedgerUpdateCommand,
   errors: string[],
 ): void {
+  const rawCommand = command as unknown as Record<string, unknown>;
+  const moneyGuanFields = ['moneyGuan', 'previousMoneyGuan', 'moneyDeltaGuan'] as const;
+  const hasAnyMoneyGuanField = moneyGuanFields.some((field) => Object.prototype.hasOwnProperty.call(rawCommand, field));
   const hasLedgerField = [
     ...resourceNumberFields,
     ...resourceListFields,
-    'playerResources',
-    'summary',
-  ].some((field) => Object.prototype.hasOwnProperty.call(command, field));
+  ].some((field) => Object.prototype.hasOwnProperty.call(command, field)) || hasAnyMoneyGuanField;
+  const hasPlayerResourceField = Boolean(
+    command.playerResources
+    && typeof command.playerResources === 'object'
+    && !Array.isArray(command.playerResources)
+    && Object.keys(command.playerResources).length > 0,
+  );
 
-  if (!hasLedgerField) {
-    errors.push('updateResourceLedger 至少需要一个资源字段。');
+  if (!hasLedgerField && !hasPlayerResourceField) {
+    errors.push('updateResourceLedger 至少需要一个实际资源字段；summary 不能单独构成资源写回。');
+  }
+
+  if (Object.prototype.hasOwnProperty.call(rawCommand, 'money')) {
+    errors.push('updateResourceLedger.money 已废弃且单位含糊；府库钱财必须改用 moneyGuan、previousMoneyGuan、moneyDeltaGuan，三者单位均为贯。');
+  }
+
+  if (hasAnyMoneyGuanField) {
+    for (const field of moneyGuanFields) {
+      if (!Object.prototype.hasOwnProperty.call(rawCommand, field)) {
+        errors.push(`updateResourceLedger.${field} 在府库钱财变化时不能为空。`);
+      }
+    }
+
+    const nextMoney = command.moneyGuan;
+    const previousMoney = command.previousMoneyGuan;
+    const moneyDelta = command.moneyDeltaGuan;
+    if (typeof nextMoney !== 'number' || !Number.isFinite(nextMoney) || nextMoney < 0) {
+      errors.push('updateResourceLedger.moneyGuan 必须是大于等于 0 的 finite number，单位为贯。');
+    }
+    if (typeof previousMoney !== 'number' || !Number.isFinite(previousMoney) || previousMoney < 0) {
+      errors.push('updateResourceLedger.previousMoneyGuan 必须是大于等于 0 的 finite number，单位为贯。');
+    }
+    if (typeof moneyDelta !== 'number' || !Number.isFinite(moneyDelta)) {
+      errors.push('updateResourceLedger.moneyDeltaGuan 必须是 finite number，单位为贯。');
+    }
+    if (
+      typeof previousMoney === 'number'
+      && Number.isFinite(previousMoney)
+      && previousMoney !== state.resources.money
+    ) {
+      errors.push(`updateResourceLedger.previousMoneyGuan 必须等于当前府库钱财 ${state.resources.money}贯。`);
+    }
+    if (
+      typeof nextMoney === 'number'
+      && Number.isFinite(nextMoney)
+      && typeof previousMoney === 'number'
+      && Number.isFinite(previousMoney)
+      && typeof moneyDelta === 'number'
+      && Number.isFinite(moneyDelta)
+      && nextMoney !== previousMoney + moneyDelta
+    ) {
+      errors.push('updateResourceLedger.moneyGuan 必须严格等于 previousMoneyGuan + moneyDeltaGuan。');
+    }
   }
 
   for (const field of resourceNumberFields) {
@@ -979,6 +1244,17 @@ function validateUpdateResourceLedgerCommand(
           errors.push(
             `updateResourceLedger.playerResources.${key} 是个人钱财保留字段；普通收支请改用 updatePlayerLoadout.personalMoneyDelta，只有开局初始化或明确重算才使用 absolute personalMoney。`,
           );
+        } else {
+          const canonicalField = resolveCanonicalLedgerNumberField(resourceKey);
+          if (canonicalField) {
+            const writebackField = canonicalField === 'money' ? 'moneyGuan' : canonicalField;
+            const reconciliationHint = canonicalField === 'money'
+              ? '，并同时提供 previousMoneyGuan 与 moneyDeltaGuan'
+              : '';
+            errors.push(
+              `updateResourceLedger.playerResources.${key} 是府库标准资源保留字段；请改用 updateResourceLedger.${writebackField}${reconciliationHint} 写当前总量。`,
+            );
+          }
         }
         if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
           errors.push(`updateResourceLedger.playerResources.${key} 必须是大于等于 0 的数字。`);
@@ -1030,6 +1306,30 @@ function validateUpsertFactionLedgerCommand(
   }
 }
 
+function validateRecordFactionRecentActionCommand(
+  state: ReturnType<typeof ensureLuanShiState>,
+  command: FactionRecentActionRecordCommand,
+  errors: string[],
+): void {
+  const factionId = typeof command.factionId === 'string' ? command.factionId.trim() : '';
+  if (!factionId) {
+    errors.push('recordFactionRecentAction.factionId 不能为空。');
+  } else if (!state.factions.some((faction) => faction.factionId === factionId)) {
+    errors.push(`recordFactionRecentAction.factionId 不存在于当前势力账本：${factionId}`);
+  }
+
+  if (!isNonEmptyString(command.summary)) {
+    errors.push('recordFactionRecentAction.summary 不能为空。');
+  }
+
+  if (!ledgerKnownLevels.includes(command.knownLevel)) {
+    errors.push(`recordFactionRecentAction.knownLevel 非法：${String(command.knownLevel)}`);
+  }
+
+  validateOptionalString(command.observedAt, 'recordFactionRecentAction.observedAt', errors);
+  validateOptionalString(command.sourceNote, 'recordFactionRecentAction.sourceNote', errors);
+}
+
 function validateUpsertTroopLedgerCommand(
   state: ReturnType<typeof ensureLuanShiState>,
   command: TroopLedgerUpsertCommand,
@@ -1041,8 +1341,42 @@ function validateUpsertTroopLedgerCommand(
   }
   const existingTroop = troopId ? state.troops.find((troop) => troop.troopId === troopId) : undefined;
   const isExistingTroop = existingTroop !== undefined;
+  const effectiveDetailLevel = command.detailLevel ?? existingTroop?.detailLevel ?? 'operational';
+  const promotesIntelligenceToOperational = existingTroop?.detailLevel === 'intelligence'
+    && effectiveDetailLevel === 'operational';
+  const requiresOperationalFields = effectiveDetailLevel === 'operational'
+    && (!existingTroop || existingTroop.detailLevel === 'intelligence');
 
-  for (const field of ['troopId', 'name', 'task', 'relationToPlayer'] as const) {
+  if (command.detailLevel !== undefined && !troopDetailLevels.includes(command.detailLevel)) {
+    errors.push(`upsertTroopLedger.detailLevel 非法：${String(command.detailLevel)}`);
+  }
+
+  const effectiveHeavyCavalry = isHeavyCavalryTroop({
+    logisticsClass: command.logisticsClass ?? existingTroop?.logisticsClass,
+    troopType: command.troopType ?? existingTroop?.troopType,
+  });
+  if ((!isExistingTroop || promotesIntelligenceToOperational)
+    && effectiveDetailLevel === 'operational'
+    && effectiveHeavyCavalry) {
+    validateNewHeavyCavalryAcquisition(state, command, errors);
+  }
+  const existingHeavyCavalry = existingTroop ? isHeavyCavalryTroop(existingTroop) : false;
+  if (isExistingTroop && !promotesIntelligenceToOperational && effectiveHeavyCavalry && !existingHeavyCavalry) {
+    errors.push('既有普通部队不得通过 upsertTroopLedger 直接改写为重骑兵；必须另建重骑组建项目并保留原建制。');
+  }
+  if (effectiveDetailLevel === 'operational'
+    && !promotesIntelligenceToOperational
+    && existingHeavyCavalry
+    && existingTroop
+    && command.size !== undefined
+    && command.size > existingTroop.size) {
+    validateHeavyCavalryExpansionEvidence(state, command, errors);
+  }
+  if (command.logisticsClass !== undefined && !['ordinary', 'heavy_cavalry'].includes(command.logisticsClass)) {
+    errors.push(`upsertTroopLedger.logisticsClass 非法：${String(command.logisticsClass)}`);
+  }
+
+  for (const field of ['troopId', 'name', 'relationToPlayer'] as const) {
     if ((field !== 'troopId' && isExistingTroop && command[field] === undefined)) {
       continue;
     }
@@ -1051,8 +1385,12 @@ function validateUpsertTroopLedgerCommand(
     }
   }
 
+  if (requiresOperationalFields && !isNonEmptyString(command.task)) {
+    errors.push('upsertTroopLedger.task 在完整作战建制首次建立或由军情升级时不能为空。');
+  }
+
   if (command.supplies === undefined) {
-    if (!isExistingTroop) {
+    if (requiresOperationalFields) {
       validateSuppliesValue(command.supplies, errors);
     }
   } else {
@@ -1060,7 +1398,7 @@ function validateUpsertTroopLedgerCommand(
   }
 
   if (command.size === undefined) {
-    if (!isExistingTroop) {
+    if (requiresOperationalFields) {
       errors.push('upsertTroopLedger.size 必须是大于等于 0 的整数。');
     }
   } else if (!Number.isInteger(command.size) || command.size < 0) {
@@ -1073,7 +1411,7 @@ function validateUpsertTroopLedgerCommand(
 
   for (const field of ['morale', 'training'] as const) {
     const value = command[field];
-    if (value === undefined && isExistingTroop) {
+    if (value === undefined && !requiresOperationalFields) {
       continue;
     }
     if (normalizeTroopScore(value) === undefined) {
@@ -1081,12 +1419,71 @@ function validateUpsertTroopLedgerCommand(
     }
   }
 
+  if (command.strengthEstimate !== undefined) {
+    const estimate = command.strengthEstimate;
+    if (!estimate || typeof estimate !== 'object'
+      || !Number.isInteger(estimate.min) || estimate.min < 0
+      || !Number.isInteger(estimate.max) || estimate.max < estimate.min) {
+      errors.push('upsertTroopLedger.strengthEstimate 必须包含非负整数 min/max，且 max 不得小于 min。');
+    } else {
+      validateOptionalString(estimate.asOf, 'upsertTroopLedger.strengthEstimate.asOf', errors);
+      validateOptionalString(estimate.basis, 'upsertTroopLedger.strengthEstimate.basis', errors);
+    }
+  }
+
+  if (effectiveDetailLevel === 'intelligence' && command.lifecycleStatus === 'active') {
+    errors.push('军情级部队不得声明 lifecycleStatus=active；应使用 unknown，补齐作战字段后再升级为 operational。');
+  }
+
+  if (command.changeEvent !== undefined) {
+    const event = command.changeEvent;
+    if (!isNonEmptyString(event.eventId)) errors.push('upsertTroopLedger.changeEvent.eventId 不能为空。');
+    if (!troopChangeKinds.includes(event.kind)) {
+      errors.push(`upsertTroopLedger.changeEvent.kind 非法：${String(event.kind)}`);
+    }
+    if (!isNonEmptyString(event.occurredAt)) errors.push('upsertTroopLedger.changeEvent.occurredAt 不能为空。');
+    if (!isNonEmptyString(event.summary)) errors.push('upsertTroopLedger.changeEvent.summary 不能为空。');
+    validateOptionalString(event.sourceNote, 'upsertTroopLedger.changeEvent.sourceNote', errors);
+  }
+
   for (const field of troopOptionalTextFields) {
     validateOptionalString(command[field], `upsertTroopLedger.${field}`, errors);
   }
 
+  if (command.operationalParentForceId !== undefined) {
+    const parentId = command.operationalParentForceId.trim();
+    if (parentId === troopId) {
+      errors.push('upsertTroopLedger.operationalParentForceId 不得指向自身。');
+    } else if (parentId && !state.troops.some((troop) => troop.troopId === parentId)) {
+      errors.push(`upsertTroopLedger.operationalParentForceId 不存在于当前部队账本：${parentId}`);
+    }
+  }
+
   for (const field of troopOptionalListFields) {
     validateOptionalStringList(command[field], `upsertTroopLedger.${field}`, errors);
+  }
+
+  const officerAssignmentChanged = command.leaderNpcId !== undefined
+    || command.deputyNpcIds !== undefined
+    || command.strategistNpcId !== undefined;
+  if (officerAssignmentChanged) {
+    if ((command.deputyNpcIds?.length ?? existingTroop?.deputyNpcIds?.length ?? 0) > 2) {
+      errors.push('upsertTroopLedger.deputyNpcIds 最多只能登记两名副将。');
+    }
+    const officerIds = [
+      command.leaderNpcId ?? existingTroop?.leaderNpcId,
+      ...(command.deputyNpcIds ?? existingTroop?.deputyNpcIds ?? []),
+      command.strategistNpcId ?? existingTroop?.strategistNpcId,
+    ].filter((id): id is string => isNonEmptyString(id));
+    if (new Set(officerIds).size !== officerIds.length) {
+      errors.push('upsertTroopLedger 的带兵将领、副将和军师不得重复任职。');
+    }
+    const knownNpcIds = new Set(state.npcs.map((npc) => npc.npcId));
+    for (const officerId of officerIds) {
+      if (!knownNpcIds.has(officerId) && officerId !== state.player.id && officerId !== 'player') {
+        errors.push(`upsertTroopLedger 随军人员 ${officerId} 不存在于当前角色账本。`);
+      }
+    }
   }
 
   if (command.knownLevel !== undefined && !ledgerKnownLevels.includes(command.knownLevel)) {
@@ -1113,6 +1510,16 @@ function validateUpsertTroopLedgerCommand(
   }
   if (command.lifecycleStatus !== undefined && !troopLifecycleStatuses.includes(command.lifecycleStatus)) {
     errors.push(`upsertTroopLedger.lifecycleStatus 非法：${String(command.lifecycleStatus)}`);
+  }
+  if (
+    existingTroop
+    && isTerminalTroopLedgerEntry(existingTroop)
+    && (command.lifecycleStatus === 'active' || command.lifecycleStatus === 'unknown')
+  ) {
+    errors.push(
+      'upsertTroopLedger 不得使用原 troopId 将终态或溃散旧建制恢复为当前部队；'
+      + '玩家重组必须创建新的 troopId，并用 mergedFromTroopIds/mergedIntoTroopId 保留谱系。',
+    );
   }
   if (command.lifecycleStatus === 'destroyed') {
     if (command.size !== 0) {
@@ -1172,11 +1579,111 @@ function validateUpsertTroopLedgerCommand(
   }
 }
 
+function validateNewHeavyCavalryAcquisition(
+  state: ReturnType<typeof ensureLuanShiState>,
+  command: TroopLedgerUpsertCommand,
+  errors: string[],
+): void {
+  if (command.logisticsClass !== 'heavy_cavalry') {
+    errors.push('新建重骑兵必须显式写 logisticsClass=heavy_cavalry，不得仅靠兵种名称口胡。');
+  }
+  const evidence = command.acquisitionEvidence;
+  if (!evidence || typeof evidence !== 'object') {
+    errors.push('新建重骑兵不得通过普通 upsertTroopLedger 无依据生成；必须提供已经发生的 acquisitionEvidence，或改用 startHeavyCavalryFormation。');
+    return;
+  }
+  const allowedKinds = ['opening', 'superior_grant', 'transfer', 'incorporation', 'observed_existing'];
+  if (!allowedKinds.includes(evidence.kind)) {
+    errors.push('upsertTroopLedger.acquisitionEvidence.kind 只能登记开局、上级调拨、移交、收编或已存在的外部部队；自行组建必须走本地项目。');
+  }
+  for (const field of ['occurredAt', 'sourceRefId', 'summary'] as const) {
+    if (!isNonEmptyString(evidence[field])) errors.push(`upsertTroopLedger.acquisitionEvidence.${field} 不能为空。`);
+  }
+  const sourceRefId = evidence.sourceRefId?.trim();
+  const evidenceExists = Boolean(sourceRefId) && (
+    state.turnEvents.some((event) => event.eventId === sourceRefId)
+    || state.conflicts.some((conflict) => conflict.conflictId === sourceRefId)
+  );
+  if (sourceRefId && !evidenceExists) {
+    errors.push(`新建重骑兵的调拨、赐予、收编或既存事实依据不存在：${sourceRefId}`);
+  }
+  if (evidence.kind === 'observed_existing') {
+    const playerFactionId = state.player.factionId?.trim();
+    if (
+      command.leaderNpcId === 'player'
+      || command.leaderNpcId === state.player.id
+      || Boolean(playerFactionId && command.factionId?.trim() === playerFactionId)
+    ) {
+      errors.push('observed_existing 只能登记外部既存重骑，不能据此把重骑直接写给玩家或玩家势力。');
+    }
+  }
+  if (command.quality === '精锐' && evidence.kind !== 'opening' && evidence.kind !== 'observed_existing') {
+    errors.push('调拨、移交或收编不能凭一次写回直接把新重骑定为精锐；精锐必须来自既有事实、后续训练或实战。');
+  }
+}
+
+function validateHeavyCavalryExpansionEvidence(
+  state: ReturnType<typeof ensureLuanShiState>,
+  command: TroopLedgerUpsertCommand,
+  errors: string[],
+): void {
+  const evidence = command.acquisitionEvidence;
+  if (!evidence || !['superior_grant', 'transfer', 'incorporation'].includes(evidence.kind)) {
+    errors.push('既有重骑扩编不能直接修改 size；自行组建必须走项目，上级增拨、移交或收编则必须提供 acquisitionEvidence。');
+    return;
+  }
+  const sourceRefId = evidence.sourceRefId?.trim();
+  if (!sourceRefId || !(
+    state.turnEvents.some((event) => event.eventId === sourceRefId)
+    || state.conflicts.some((conflict) => conflict.conflictId === sourceRefId)
+  )) {
+    errors.push(`重骑扩编依据不存在：${sourceRefId || 'missing'}`);
+  }
+}
+
+function validateStartHeavyCavalryFormationCommand(
+  state: ReturnType<typeof ensureLuanShiState>,
+  command: StartHeavyCavalryFormationCommand,
+  errors: string[],
+): void {
+  for (const field of ['projectId', 'troopId', 'troopName', 'holdingId', 'relationToPlayer'] as const) {
+    if (!isNonEmptyString(command[field])) errors.push(`startHeavyCavalryFormation.${field} 不能为空。`);
+  }
+  if (!Number.isInteger(command.requestedSize) || command.requestedSize <= 0) {
+    errors.push('startHeavyCavalryFormation.requestedSize 必须是大于 0 的整数。');
+  }
+  const supportLevels: HeavyCavalrySupportLevel[] = ['limited', 'stable', 'major_faction', 'state_level'];
+  if (!supportLevels.includes(command.supportLevel)) {
+    errors.push(`startHeavyCavalryFormation.supportLevel 非法：${String(command.supportLevel)}`);
+  }
+  if (!troopUpkeepSources.includes(command.upkeepSource)) {
+    errors.push(`startHeavyCavalryFormation.upkeepSource 非法：${String(command.upkeepSource)}`);
+  }
+  const personnelSources = ['recruit_pool', 'existing_troop'] as const;
+  if (command.personnelSource !== undefined && !personnelSources.includes(command.personnelSource)) {
+    errors.push(`startHeavyCavalryFormation.personnelSource 非法：${String(command.personnelSource)}`);
+  }
+  if (command.personnelSource === 'existing_troop' && !isNonEmptyString(command.sourceTroopId)) {
+    errors.push('startHeavyCavalryFormation.sourceTroopId 在现役转编时不能为空。');
+  }
+  if (command.personnelSource !== 'existing_troop' && command.sourceTroopId !== undefined) {
+    errors.push('startHeavyCavalryFormation.sourceTroopId 只能与 personnelSource=existing_troop 同时使用。');
+  }
+  if (command.leaderNpcId && command.leaderNpcId !== 'player' && command.leaderNpcId !== state.player.id
+    && !state.npcs.some((npc) => npc.npcId === command.leaderNpcId)) {
+    errors.push(`startHeavyCavalryFormation.leaderNpcId 不存在于人物账本：${command.leaderNpcId}`);
+  }
+  if (errors.length > 0) return;
+  const result = startHeavyCavalryFormation(state, command);
+  if (!result.ok && result.error) errors.push(result.error);
+}
+
 export function canonicalRelationshipStableKey(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
 function validateUpsertHoldingLedgerCommand(
+  state: RuntimeState,
   command: HoldingLedgerUpsertCommand,
   errors: string[],
 ): void {
@@ -1195,6 +1702,30 @@ function validateUpsertHoldingLedgerCommand(
   if (!holdingScaleLevels.includes(command.scaleLevel)) {
     errors.push('upsertHoldingLedger.scaleLevel must be 1, 2, 3, 4, or 5.');
   }
+  if (
+    command.civilScaleLevel !== undefined
+    && !holdingCivilScaleLevels.includes(command.civilScaleLevel)
+  ) {
+    errors.push('upsertHoldingLedger.civilScaleLevel must be 1, 2, 3, 4, or 5.');
+  }
+
+  const previous = findExistingHoldingByLedgerIdentity(state.holdings ?? [], command);
+  if (command.operation !== undefined && command.operation !== 'create' && command.operation !== 'update') {
+    errors.push(`upsertHoldingLedger.operation 非法：${String(command.operation)}。`);
+  } else if (!previous) {
+    if (command.operation !== 'create') {
+      errors.push('新建领地必须显式设置 upsertHoldingLedger.operation=create，并提供 controlEvidence；驻守、守城、经过或位于城墙不构成领地控制。');
+    }
+    validateHoldingControlEvidence(command.controlEvidence, command.status, true, errors);
+  } else {
+    if (command.operation === 'create') {
+      errors.push(`领地 ${previous.holdingId} 已存在；更新既有领地时必须使用 operation=update。`);
+    }
+    const controlChanged = previous.status !== command.status
+      || normalizeOptionalIdentity(previous.actualController) !== normalizeOptionalIdentity(command.actualController)
+      || normalizeOptionalIdentity(previous.factionId) !== normalizeOptionalIdentity(command.factionId);
+    validateHoldingControlEvidence(command.controlEvidence, command.status, controlChanged, errors);
+  }
 
   for (const field of holdingScoreFields) {
     validateScoreNumber(command[field], `upsertHoldingLedger.${field}`, errors);
@@ -1208,10 +1739,49 @@ function validateUpsertHoldingLedgerCommand(
   validateOptionalScoreNumber(command.eliteControlledShare, 'upsertHoldingLedger.eliteControlledShare', errors);
   validateOptionalRelationNumber(command.localEliteRelation, 'upsertHoldingLedger.localEliteRelation', errors);
   errors.push(...validateHoldingCivilAdministrationFields(command));
+  if (holdingTypes.includes(command.type) && holdingScaleLevels.includes(command.scaleLevel)) {
+    const previous = findExistingHoldingByLedgerIdentity(state.holdings ?? [], command);
+    const resolvedScope = command.civilAdministrationScope
+      ?? previous?.civilAdministrationScope
+      ?? resolveHoldingCivilAdministrationScope(command);
+    errors.push(...validateHoldingCapacityUpdate(command, previous, resolvedScope));
+  }
   for (const field of holdingOptionalListFields) {
     validateOptionalStringList(command[field], `upsertHoldingLedger.${field}`, errors);
   }
   validateHoldingSiegeUpdate(command.siege, errors);
+}
+
+function validateHoldingControlEvidence(
+  value: HoldingLedgerEntry['controlEvidence'],
+  status: HoldingLedgerEntry['status'],
+  required: boolean,
+  errors: string[],
+): void {
+  if (value === undefined) {
+    if (required) {
+      errors.push('upsertHoldingLedger.controlEvidence 缺失；新建领地或改变控制状态/控制者必须引用本回合真实发生的接管事实，驻守、守城、经过或位于城墙不构成领地控制。');
+    }
+    return;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    errors.push('upsertHoldingLedger.controlEvidence 必须是对象。');
+    return;
+  }
+  if (!holdingControlEvidenceKinds.includes(value.kind)) {
+    errors.push(`upsertHoldingLedger.controlEvidence.kind 非法：${String(value.kind)}。`);
+  } else if (holdingStatuses.includes(status) && !holdingControlEvidenceKindsByStatus[status].includes(value.kind)) {
+    errors.push(`upsertHoldingLedger.controlEvidence.kind=${value.kind} 与 status=${status} 不匹配。`);
+  }
+  for (const field of ['occurredAt', 'sourceRefId', 'summary'] as const) {
+    if (!isNonEmptyString(value[field])) {
+      errors.push(`upsertHoldingLedger.controlEvidence.${field} cannot be empty.`);
+    }
+  }
+}
+
+function normalizeOptionalIdentity(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function validateHoldingSiegeUpdate(value: HoldingSiegeUpdate | undefined, errors: string[]): void {
@@ -1320,6 +1890,7 @@ function validateUpsertDomesticReportCommand(
 }
 
 function validateUpsertPrivateAssetCommand(
+  state: ReturnType<typeof ensureLuanShiState>,
   command: PrivateAssetUpsertCommand,
   errors: string[],
 ): void {
@@ -1339,6 +1910,9 @@ function validateUpsertPrivateAssetCommand(
   if (!privateAssetStatuses.includes(command.status)) {
     errors.push(`upsertPrivateAsset.status is invalid: ${String(command.status)}`);
   }
+  if (command.operation !== 'create' && command.operation !== 'update') {
+    errors.push('upsertPrivateAsset.operation must be create or update.');
+  }
 
   for (const field of privateAssetOptionalTextFields) {
     validateOptionalString(command[field], `upsertPrivateAsset.${field}`, errors);
@@ -1357,6 +1931,82 @@ function validateUpsertPrivateAssetCommand(
   }
   for (const field of privateAssetOptionalListFields) {
     validateOptionalStringList(command[field], `upsertPrivateAsset.${field}`, errors);
+  }
+  validatePrivateAssetAcquisition(command.acquisition, command.operation === 'create', errors);
+
+  if (
+    !privateAssetTypes.includes(command.type)
+    || !privateAssetOwnerScopes.includes(command.ownerScope)
+  ) {
+    return;
+  }
+
+  const privateAssetId = isNonEmptyString(command.privateAssetId)
+    ? command.privateAssetId.trim()
+    : '';
+  const exactExisting = privateAssetId
+    ? state.privateAssets.find((asset) => asset.privateAssetId === privateAssetId)
+    : undefined;
+  const identityExisting = privateAssetId
+    ? findPotentialPrivateAssetDuplicate(state.privateAssets, command)
+    : undefined;
+
+  if (command.operation === 'create') {
+    if (
+      (command.acquisition?.kind === 'purchase' || command.acquisition?.kind === 'construction')
+      && (command.acquisition.costMoney ?? 0) <= 0
+      && (command.acquisition.costGrain ?? 0) <= 0
+    ) {
+      errors.push(
+        `upsertPrivateAsset acquisition.kind=${command.acquisition.kind} requires a positive costMoney or costGrain.`,
+      );
+    }
+    if (exactExisting) {
+      errors.push(`upsertPrivateAsset create cannot reuse existing privateAssetId ${privateAssetId}; use operation=update.`);
+    } else if (identityExisting) {
+      errors.push(
+        `upsertPrivateAsset create matches existing private asset ${identityExisting.privateAssetId}; `
+        + 'reuse that privateAssetId with operation=update instead of creating a duplicate.',
+      );
+    }
+    validatePrivateAssetScaleLimits(
+      command,
+      getPrivateAssetInitialScaleLimits(command.type, command.ownerScope),
+      'initial',
+      errors,
+    );
+    return;
+  }
+
+  if (command.operation === 'update') {
+    if (!exactExisting) {
+      if (identityExisting) {
+        errors.push(
+          `upsertPrivateAsset update used drifted privateAssetId ${privateAssetId}; `
+          + `reuse existing privateAssetId ${identityExisting.privateAssetId}.`,
+        );
+      } else {
+        errors.push(`upsertPrivateAsset update does not reference an existing private asset: ${privateAssetId}`);
+      }
+      return;
+    }
+    if (command.type !== exactExisting.type || command.ownerScope !== exactExisting.ownerScope) {
+      errors.push('upsertPrivateAsset update cannot change the asset type or ownerScope identity.');
+    }
+    if (
+      exactExisting.acquisition
+      && command.acquisition
+      && command.acquisition.sourceRefId.trim() !== exactExisting.acquisition.sourceRefId.trim()
+    ) {
+      errors.push('upsertPrivateAsset update cannot replace the immutable acquisition sourceRefId.');
+    }
+    validatePrivateAssetScaleLimits(
+      command,
+      getPrivateAssetAbsoluteScaleLimits(command.type, command.ownerScope),
+      'absolute',
+      errors,
+    );
+    validatePrivateAssetDirectGrowth(exactExisting, command, errors);
   }
 }
 
@@ -1378,7 +2028,10 @@ function validateUpsertPrivateAssetProjectCommand(
   if (!privateAssetProjectStatuses.includes(command.status)) {
     errors.push(`upsertPrivateAssetProject.status is invalid: ${String(command.status)}`);
   }
-  if (isNonEmptyString(command.assetId) && !state.privateAssets.some((asset) => asset.privateAssetId === command.assetId.trim())) {
+  const targetAsset = isNonEmptyString(command.assetId)
+    ? state.privateAssets.find((asset) => asset.privateAssetId === command.assetId.trim())
+    : undefined;
+  if (isNonEmptyString(command.assetId) && !targetAsset) {
     errors.push(`upsertPrivateAssetProject.assetId does not reference an existing private asset: ${command.assetId}`);
   }
 
@@ -1388,6 +2041,9 @@ function validateUpsertPrivateAssetProjectCommand(
   validateOptionalStringList(command.riskNotes, 'upsertPrivateAssetProject.riskNotes', errors);
   validateOptionalStringList(command.progressNotes, 'upsertPrivateAssetProject.progressNotes', errors);
   validatePrivateAssetProjectDelta(command.targetDelta, 'upsertPrivateAssetProject.targetDelta', errors);
+  if (targetAsset && command.targetDelta) {
+    validatePrivateAssetProjectGrowth(targetAsset, command, errors);
+  }
 }
 
 function validatePrivateAssetProjectDelta(
@@ -1408,7 +2064,116 @@ function validatePrivateAssetProjectDelta(
     if (item === undefined || item === null) continue;
     if (typeof item !== 'number' || !Number.isFinite(item)) {
       errors.push(`${fieldName}.${key} must be a finite number.`);
+    } else if (item < 0) {
+      errors.push(`${fieldName}.${key} must be non-negative.`);
     }
+  }
+}
+
+function validatePrivateAssetAcquisition(
+  value: PrivateAssetEntry['acquisition'] | undefined,
+  required: boolean,
+  errors: string[],
+): void {
+  if (value === undefined || value === null) {
+    if (required) errors.push('upsertPrivateAsset.acquisition is required when operation=create.');
+    return;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    errors.push('upsertPrivateAsset.acquisition must be an object.');
+    return;
+  }
+  if (!privateAssetAcquisitionKinds.includes(value.kind)) {
+    errors.push(`upsertPrivateAsset.acquisition.kind is invalid: ${String(value.kind)}`);
+  }
+  for (const field of ['occurredAt', 'sourceRefId', 'summary'] as const) {
+    if (!isNonEmptyString(value[field])) {
+      errors.push(`upsertPrivateAsset.acquisition.${field} cannot be empty.`);
+    }
+  }
+  validateOptionalNonNegativeNumber(value.costMoney, 'upsertPrivateAsset.acquisition.costMoney', errors);
+  validateOptionalNonNegativeNumber(value.costGrain, 'upsertPrivateAsset.acquisition.costGrain', errors);
+}
+
+function validatePrivateAssetScaleLimits(
+  value: Pick<PrivateAssetEntry, PrivateAssetScaleField>,
+  limits: Readonly<Record<PrivateAssetScaleField, number>>,
+  scope: 'initial' | 'absolute',
+  errors: string[],
+): void {
+  for (const field of privateAssetScaleFields) {
+    const fieldValue = value[field];
+    if (fieldValue === undefined || typeof fieldValue !== 'number' || !Number.isFinite(fieldValue)) continue;
+    if (fieldValue > limits[field]) {
+      errors.push(
+        `upsertPrivateAsset.${field} exceeds the ${scope} limit ${limits[field]} `
+        + `for ${String((value as PrivateAssetEntry).type)}/${String((value as PrivateAssetEntry).ownerScope)}.`,
+      );
+    }
+  }
+}
+
+function validatePrivateAssetDirectGrowth(
+  current: PrivateAssetEntry,
+  incoming: PrivateAssetUpsertCommand,
+  errors: string[],
+): void {
+  const initialLimits = getPrivateAssetInitialScaleLimits(current.type, current.ownerScope);
+  for (const field of privateAssetScaleFields) {
+    const nextValue = incoming[field];
+    if (nextValue === undefined || typeof nextValue !== 'number' || !Number.isFinite(nextValue)) continue;
+    const currentValue = current[field];
+    if (currentValue === undefined) {
+      if (nextValue > initialLimits[field]) {
+        errors.push(
+          `upsertPrivateAsset.${field} cannot establish an unknown legacy scale above ${initialLimits[field]}; `
+          + 'use a time-and-cost-bearing private asset project.',
+        );
+      }
+      continue;
+    }
+    if (nextValue > currentValue) {
+      errors.push(
+        `upsertPrivateAsset.${field} cannot increase directly from ${currentValue} to ${nextValue}; `
+        + 'growth must use upsertPrivateAssetProject.',
+      );
+    }
+  }
+}
+
+function validatePrivateAssetProjectGrowth(
+  asset: PrivateAssetEntry,
+  command: PrivateAssetProjectUpsertCommand,
+  errors: string[],
+): void {
+  const delta = command.targetDelta ?? {};
+  const deltaLimits = getPrivateAssetProjectDeltaLimits(asset.type, asset.ownerScope);
+  const absoluteLimits = getPrivateAssetAbsoluteScaleLimits(asset.type, asset.ownerScope);
+  let hasPositiveGrowth = false;
+
+  for (const field of privateAssetScaleFields) {
+    const value = delta[field];
+    if (value === undefined || typeof value !== 'number' || !Number.isFinite(value)) continue;
+    if (value > 0) hasPositiveGrowth = true;
+    if (value > deltaLimits[field]) {
+      errors.push(
+        `upsertPrivateAssetProject.targetDelta.${field} exceeds the per-project limit ${deltaLimits[field]}.`,
+      );
+    }
+    const projected = (asset[field] ?? 0) + value;
+    if (projected > absoluteLimits[field]) {
+      errors.push(
+        `upsertPrivateAssetProject.targetDelta.${field} would exceed the asset limit ${absoluteLimits[field]}.`,
+      );
+    }
+  }
+
+  if (!hasPositiveGrowth) return;
+  if (!isNonEmptyString(command.expectedCompleteAt)) {
+    errors.push('upsertPrivateAssetProject.expectedCompleteAt is required for scale growth.');
+  }
+  if ((command.investedMoney ?? 0) <= 0 && (command.investedGrain ?? 0) <= 0) {
+    errors.push('upsertPrivateAssetProject scale growth requires investedMoney or investedGrain above zero.');
   }
 }
 
@@ -1645,10 +2410,7 @@ export function normalizeTroopFatigue(value: unknown): TroopLedgerEntry['fatigue
   }
   const numericScore = normalizeNumericScoreInput(value);
   if (numericScore !== undefined) {
-    if (numericScore >= 86) return '极高';
-    if (numericScore >= 66) return '高';
-    if (numericScore >= 36) return '中';
-    return '低';
+    return troopFatigueBandFromPercent(numericScore);
   }
   return undefined;
 }
@@ -2422,6 +3184,36 @@ function validateUpsertNpcProfileCommand(
     errors.push(`npcName 与 npcId 不匹配：期望 ${existingNpc.name}，收到 ${command.name}`);
   }
 
+  if (!existingNpc) {
+    if (
+      typeof command.persistenceReason !== 'string'
+      || !npcProfilePersistenceReasons.includes(command.persistenceReason)
+    ) {
+      errors.push(
+        `新建 NPC 必须提供合法 persistenceReason：${npcProfilePersistenceReasons.join('/')}`,
+      );
+    }
+    if (!isNonEmptyString(command.persistenceEvidence)) {
+      errors.push('新建 NPC 必须提供非空 persistenceEvidence，说明已经成立的长期承接事实。');
+    }
+  } else {
+    if (
+      command.persistenceReason !== undefined
+      && (
+        typeof command.persistenceReason !== 'string'
+        || !npcProfilePersistenceReasons.includes(command.persistenceReason)
+      )
+    ) {
+      errors.push(`upsertNpcProfile.persistenceReason 非法：${String(command.persistenceReason)}`);
+    }
+    if (
+      command.persistenceEvidence !== undefined
+      && !isNonEmptyString(command.persistenceEvidence)
+    ) {
+      errors.push('upsertNpcProfile.persistenceEvidence 提供时不得为空。');
+    }
+  }
+
   if (isProtagonistNpcClone(state, command)) {
     errors.push(PROTAGONIST_NPC_REJECTION_MESSAGE);
   }
@@ -2441,6 +3233,15 @@ function validateUpsertNpcProfileCommand(
     }
   }
 
+  const incomingBirthDate = normalizeCompleteBirthDate(command.birthDate);
+  const existingBirthDate = normalizeCompleteBirthDate(existingNpc?.birthDate);
+  if (command.birthDate && !incomingBirthDate) {
+    errors.push('upsertNpcProfile.birthDate 必须是 1—12 月、1—30 日的完整日期。');
+  }
+  if (existingBirthDate && incomingBirthDate && incomingBirthDate !== existingBirthDate) {
+    errors.push(`NPC ${existingNpc?.name ?? command.name} 的 birthDate 已固定，不得改写。`);
+  }
+
   if (typeof command.isPresent !== 'boolean') {
     errors.push('upsertNpcProfile.isPresent 必须是布尔值。');
   }
@@ -2458,6 +3259,18 @@ function validateUpsertNpcProfileCommand(
 
   if (command.uniqueArts !== undefined) {
     validateUniqueArtList(command.uniqueArts, 'upsertNpcProfile.uniqueArts', errors, { allowEmpty: true });
+    validateNewUniqueArtAcquisitions(
+      command.uniqueArts,
+      existingNpc?.uniqueArts,
+      'upsertNpcProfile.uniqueArts',
+      errors,
+    );
+    validateUniqueArtArchiveBoundaries(
+      command.uniqueArts,
+      existingNpc?.uniqueArts,
+      'upsertNpcProfile.uniqueArts',
+      errors,
+    );
   }
 
   if (command.effects !== undefined) {
@@ -2473,6 +3286,7 @@ function validateUpsertNpcProfileCommand(
       errors.push('upsertNpcProfile.equipment 必须是装备数组。');
     } else {
       command.equipment.forEach((item, index) => validateEquipmentItem(item, index, errors, 'upsertNpcProfile.equipment'));
+      validateEquipmentCollection(command.equipment, 'upsertNpcProfile.equipment', errors);
     }
   }
 
@@ -2481,7 +3295,19 @@ function validateUpsertNpcProfileCommand(
       errors.push('upsertNpcProfile.inventory 必须是物品数组。');
     } else {
       command.inventory.forEach((item, index) => validateInventoryItem(item, index, errors, 'upsertNpcProfile.inventory'));
+      validateInventoryCollection(command.inventory, 'upsertNpcProfile.inventory', errors);
     }
+  }
+
+  if (Array.isArray(command.equipment) || Array.isArray(command.inventory)) {
+    const existing = state.npcs.find((npc) => npc.npcId === command.npcId);
+    validateLinkedLoadoutIdentities(
+      Array.isArray(command.equipment) ? command.equipment : existing?.equipment ?? [],
+      Array.isArray(command.inventory) ? command.inventory : existing?.inventory ?? [],
+      'upsertNpcProfile.equipment',
+      'upsertNpcProfile.inventory',
+      errors,
+    );
   }
 
   if (command.vitals !== undefined) {
@@ -2513,6 +3339,33 @@ function validateNpcPresenceUpdateCommand(
   }
   if (command.isFocused !== undefined && typeof command.isFocused !== 'boolean') {
     errors.push('updateNpcPresence.isFocused 必须是布尔值。');
+  }
+}
+
+function validateNpcRelationshipUpdateCommand(
+  state: ReturnType<typeof ensureLuanShiState>,
+  command: NpcRelationshipUpdateCommand,
+  errors: string[],
+): void {
+  const npcId = typeof command.npcId === 'string' ? command.npcId.trim() : '';
+  if (!npcId) {
+    errors.push('updateNpcRelationship.npcId 不能为空。');
+  } else if (!state.npcs.some((npc) => npc.npcId === npcId)) {
+    errors.push(`updateNpcRelationship.npcId 未匹配已有 NPC：${npcId}`);
+  }
+
+  if (!Number.isInteger(command.contactDelta) || command.contactDelta < 1 || command.contactDelta > 10) {
+    errors.push('updateNpcRelationship.contactDelta 必须是 1—10 的整数。');
+  }
+
+  if (!isNonEmptyString(command.summary)) {
+    errors.push('updateNpcRelationship.summary 不能为空。');
+  }
+
+  for (const field of ['relationToPlayer', 'recentAttitude'] as const) {
+    if (command[field] !== undefined && !isNonEmptyString(command[field])) {
+      errors.push(`updateNpcRelationship.${field} 提供时不能为空。`);
+    }
   }
 }
 
@@ -2671,7 +3524,7 @@ function validatePlayerTraitList(value: unknown, errors: string[]): void {
       errors.push(`updatePlayerTraits.traits[${index}].source cannot be empty.`);
     }
     if (!traitRarities.includes(item.rarity as CharacterTraitRarity)) {
-      errors.push(`updatePlayerTraits.traits[${index}].rarity must be one of white/green/blue/red/gold.`);
+      errors.push(`updatePlayerTraits.traits[${index}].rarity must be one of white/green/blue/purple/orange/red.`);
     }
     validateCheckHooks(item.checkHooks, `updatePlayerTraits.traits[${index}].checkHooks`, errors);
   });
@@ -2719,6 +3572,24 @@ function validateUpdateCharacterUniqueArtsCommand(
 
   validateUniqueArtList(command.uniqueArts, 'updateCharacterUniqueArts.uniqueArts', errors, { allowEmpty: true });
 
+  const targetUniqueArts = command.characterType === 'player'
+    ? state.player.uniqueArts
+    : characterId
+      ? state.npcs.find((item) => item.npcId === characterId)?.uniqueArts
+      : state.npcs.find((item) => item.name === characterName)?.uniqueArts;
+  validateNewUniqueArtAcquisitions(
+    command.uniqueArts,
+    targetUniqueArts,
+    'updateCharacterUniqueArts.uniqueArts',
+    errors,
+  );
+  validateUniqueArtArchiveBoundaries(
+    command.uniqueArts,
+    targetUniqueArts,
+    'updateCharacterUniqueArts.uniqueArts',
+    errors,
+  );
+
   for (const field of ['summary', 'updatedAt', 'source'] as const) {
     const value = command[field];
     if (value !== undefined && typeof value !== 'string') {
@@ -2758,8 +3629,8 @@ function validateUniqueArtList(
     if (typeof item.source !== 'string' || item.source.trim().length === 0) {
       errors.push(`${prefix}.source cannot be empty.`);
     }
-    if (!traitRarities.includes(item.rarity as CharacterTraitRarity)) {
-      errors.push(`${prefix}.rarity must be one of white/green/blue/red/gold.`);
+    if (!uniqueArtRarities.includes(item.rarity as CharacterUniqueArtRarity | 'gold')) {
+      errors.push(`${prefix}.rarity must be one of white/green/blue/purple/orange/red.`);
     }
     if (!uniqueArtDomains.includes(item.domain as CharacterUniqueArtDomain)) {
       errors.push(`${prefix}.domain is invalid.`);
@@ -2784,6 +3655,8 @@ function validateUniqueArtList(
         errors.push(`${prefix}.${field} must be a string.`);
       }
     }
+
+    validateUniqueArtAcquisition(item.acquisition, `${prefix}.acquisition`, errors);
 
     validateOptionalStringList(item.tags, `${prefix}.tags`, errors);
     validateOptionalStringList(item.relatedNpcIds, `${prefix}.relatedNpcIds`, errors);
@@ -2846,11 +3719,16 @@ function validateUpdatePlayerLoadoutCommand(
       errors.push('updatePlayerLoadout.equipment 必须是装备数组。');
     } else {
       command.equipment.forEach((item, index) => validateEquipmentItem(item, index, errors));
+      validateEquipmentCollection(command.equipment, 'updatePlayerLoadout.equipment', errors);
     }
   }
 
   if (command.equipmentChanges !== undefined) {
-    validateEquipmentChanges(command.equipmentChanges, errors);
+    validateEquipmentChanges(command.equipmentChanges, errors, 'updatePlayerLoadout.equipmentChanges', {
+      allowEquipFromInventory: true,
+      baseEquipment: Array.isArray(command.equipment) ? command.equipment : state.player?.equipment,
+      baseInventory: Array.isArray(command.inventory) ? command.inventory : state.player?.inventory,
+    });
   }
 
   if (command.inventory !== undefined) {
@@ -2858,7 +3736,18 @@ function validateUpdatePlayerLoadoutCommand(
       errors.push('updatePlayerLoadout.inventory 必须是物品数组。');
     } else {
       command.inventory.forEach((item, index) => validateInventoryItem(item, index, errors));
+      validateInventoryCollection(command.inventory, 'updatePlayerLoadout.inventory', errors);
     }
+  }
+
+  if (Array.isArray(command.equipment) || Array.isArray(command.inventory)) {
+    validateLinkedLoadoutIdentities(
+      Array.isArray(command.equipment) ? command.equipment : state.player?.equipment ?? [],
+      Array.isArray(command.inventory) ? command.inventory : state.player?.inventory ?? [],
+      'updatePlayerLoadout.equipment',
+      'updatePlayerLoadout.inventory',
+      errors,
+    );
   }
 
   if (command.inventoryChanges !== undefined) {
@@ -2867,6 +3756,7 @@ function validateUpdatePlayerLoadoutCommand(
       errors,
       'updatePlayerLoadout.inventoryChanges',
       Array.isArray(command.inventory) ? command.inventory : state.player?.inventory,
+      Array.isArray(command.equipment) ? command.equipment : state.player?.equipment,
     );
   }
 
@@ -2901,12 +3791,15 @@ function validateUpdateNpcLoadoutCommand(
       errors.push('updateNpcLoadout.equipment 必须是装备数组。');
     } else {
       command.equipment.forEach((item, index) => validateEquipmentItem(item, index, errors, 'updateNpcLoadout.equipment'));
+      validateEquipmentCollection(command.equipment, 'updateNpcLoadout.equipment', errors);
     }
   }
 
   if (command.equipmentChanges !== undefined) {
     validateEquipmentChanges(command.equipmentChanges, errors, 'updateNpcLoadout.equipmentChanges', {
       allowEquipFromInventory: false,
+      baseEquipment: Array.isArray(command.equipment) ? command.equipment : npc?.equipment,
+      baseInventory: Array.isArray(command.inventory) ? command.inventory : npc?.inventory,
     });
   }
 
@@ -2915,7 +3808,18 @@ function validateUpdateNpcLoadoutCommand(
       errors.push('updateNpcLoadout.inventory 必须是物品数组。');
     } else {
       command.inventory.forEach((item, index) => validateInventoryItem(item, index, errors, 'updateNpcLoadout.inventory'));
+      validateInventoryCollection(command.inventory, 'updateNpcLoadout.inventory', errors);
     }
+  }
+
+  if (Array.isArray(command.equipment) || Array.isArray(command.inventory)) {
+    validateLinkedLoadoutIdentities(
+      Array.isArray(command.equipment) ? command.equipment : npc?.equipment ?? [],
+      Array.isArray(command.inventory) ? command.inventory : npc?.inventory ?? [],
+      'updateNpcLoadout.equipment',
+      'updateNpcLoadout.inventory',
+      errors,
+    );
   }
 
   if (command.inventoryChanges !== undefined) {
@@ -2924,6 +3828,7 @@ function validateUpdateNpcLoadoutCommand(
       errors,
       'updateNpcLoadout.inventoryChanges',
       Array.isArray(command.inventory) ? command.inventory : npc?.inventory,
+      Array.isArray(command.equipment) ? command.equipment : npc?.equipment,
     );
   }
 
@@ -2942,7 +3847,11 @@ function validateEquipmentChanges(
   changes: PlayerEquipmentChange[] | NpcEquipmentChange[],
   errors: string[],
   fieldPrefix = 'updatePlayerLoadout.equipmentChanges',
-  options: { allowEquipFromInventory: boolean } = { allowEquipFromInventory: true },
+  options: {
+    allowEquipFromInventory: boolean;
+    baseEquipment?: CharacterEquipmentItem[];
+    baseInventory?: InventoryItem[];
+  } = { allowEquipFromInventory: true },
 ): void {
   if (!Array.isArray(changes)) {
     errors.push(`${fieldPrefix} 必须是数组。`);
@@ -2966,6 +3875,13 @@ function validateEquipmentChanges(
     }
     if (change.action === 'upsert') {
       validateEquipmentItemAtPath(change.item, `${fieldName}.item`, errors);
+      validateEquipmentIdentityReuse(
+        change.item,
+        `${fieldName}.item`,
+        options.baseEquipment,
+        options.baseInventory,
+        errors,
+      );
       if (change.treasureIndex !== undefined && (!Number.isInteger(change.treasureIndex) || change.treasureIndex < 0 || change.treasureIndex > 2)) {
         errors.push(`${fieldName}.treasureIndex 必须是 0-2 的整数。`);
       }
@@ -2979,11 +3895,215 @@ function validateEquipmentChanges(
   });
 }
 
+function validateCharacterUniqueArtProgressRecordCommand(
+  state: ReturnType<typeof ensureLuanShiState>,
+  command: CharacterUniqueArtProgressRecordCommand,
+  errors: string[],
+): void {
+  const target = resolveUniqueArtTarget(state, command, 'recordCharacterUniqueArtProgress', errors);
+  if (!command.artId?.trim()) {
+    errors.push('recordCharacterUniqueArtProgress.artId cannot be empty.');
+  } else if (target && !(target.uniqueArts ?? []).some((art) => art.id === command.artId.trim())) {
+    errors.push(`recordCharacterUniqueArtProgress target art not found: ${command.artId.trim()}`);
+  }
+
+  for (const field of ['eventId', 'occurredAt', 'sourceRefId', 'summary'] as const) {
+    if (!isNonEmptyString(command[field])) {
+      errors.push(`recordCharacterUniqueArtProgress.${field} cannot be empty.`);
+    }
+  }
+  if (!uniqueArtProgressSources.includes(command.source)) {
+    errors.push(`recordCharacterUniqueArtProgress.source is invalid: ${String(command.source)}`);
+  }
+  if (!uniqueArtProgressIntensities.includes(command.intensity)) {
+    errors.push(`recordCharacterUniqueArtProgress.intensity is invalid: ${String(command.intensity)}`);
+  }
+  for (const field of ['instructorNpcId', 'sourceItemId'] as const) {
+    if (command[field] !== undefined && !isNonEmptyString(command[field])) {
+      errors.push(`recordCharacterUniqueArtProgress.${field} must be a non-empty string when provided.`);
+    }
+  }
+  if (
+    command.instructorNpcId?.trim()
+    && !state.npcs.some((npc) => npc.npcId === command.instructorNpcId?.trim())
+  ) {
+    errors.push(`recordCharacterUniqueArtProgress.instructorNpcId is not a known NPC: ${command.instructorNpcId.trim()}`);
+  }
+}
+
+function resolveUniqueArtTarget(
+  state: ReturnType<typeof ensureLuanShiState>,
+  command: Pick<CharacterUniqueArtProgressRecordCommand, 'characterType' | 'characterId' | 'characterName'>,
+  commandName: string,
+  errors: string[],
+): { uniqueArts?: CharacterUniqueArt[] } | undefined {
+  if (command.characterType === 'player') {
+    const characterId = command.characterId?.trim();
+    if (characterId && characterId !== 'player' && characterId !== state.player.id) {
+      errors.push(`${commandName} can only target player ${state.player.id}, received characterId: ${characterId}`);
+    }
+    if (command.characterName?.trim() && command.characterName.trim() !== state.player.name) {
+      errors.push(`${commandName}.characterName does not match player: expected ${state.player.name}, received ${command.characterName.trim()}`);
+    }
+    return state.player;
+  }
+  if (command.characterType !== 'npc') {
+    errors.push(`${commandName}.characterType must be player or npc.`);
+    return undefined;
+  }
+
+  const characterId = command.characterId?.trim();
+  const characterName = command.characterName?.trim();
+  if (!characterId && !characterName) {
+    errors.push(`${commandName} for npc requires characterId or unique characterName.`);
+    return undefined;
+  }
+  const matches = characterId
+    ? state.npcs.filter((npc) => npc.npcId === characterId)
+    : state.npcs.filter((npc) => npc.name === characterName);
+  if (matches.length === 0) {
+    errors.push(`${commandName} target npc not found: ${characterId || characterName}`);
+    return undefined;
+  }
+  if (matches.length > 1) {
+    errors.push(`${commandName} target npc name is ambiguous: ${characterName}`);
+    return undefined;
+  }
+  if (characterName && matches[0].name !== characterName) {
+    errors.push(`${commandName}.characterName does not match npcId ${characterId}: expected ${matches[0].name}, received ${characterName}`);
+  }
+  return matches[0];
+}
+
+function validateNewUniqueArtAcquisitions(
+  incomingArts: readonly CharacterUniqueArt[],
+  existingArts: readonly CharacterUniqueArt[] | undefined,
+  fieldName: string,
+  errors: string[],
+): void {
+  incomingArts.forEach((art, index) => {
+    const existingIndex = findStableCharacterUniqueArtIndex(existingArts ?? [], art);
+    if (existingIndex < 0) {
+      if (art.acquisition === undefined || art.acquisition === null) {
+        errors.push(`${fieldName}[${index}].acquisition is required for a new unique art.`);
+      }
+      return;
+    }
+
+    const existingAcquisition = existingArts?.[existingIndex]?.acquisition;
+    if (
+      existingAcquisition
+      && art.acquisition
+      && art.acquisition.sourceRefId.trim() !== existingAcquisition.sourceRefId.trim()
+    ) {
+      errors.push(`${fieldName}[${index}].acquisition.sourceRefId cannot replace an established acquisition source.`);
+    }
+  });
+}
+
+function validateUniqueArtArchiveBoundaries(
+  incomingArts: readonly CharacterUniqueArt[],
+  existingArts: readonly CharacterUniqueArt[] | undefined,
+  fieldName: string,
+  errors: string[],
+): void {
+  incomingArts.forEach((art, index) => {
+    const prefix = `${fieldName}[${index}]`;
+    const existingIndex = findStableCharacterUniqueArtIndex(existingArts ?? [], art);
+    if (existingIndex >= 0) {
+      const existing = existingArts![existingIndex];
+      if (art.level !== existing.level) {
+        errors.push(`${prefix}.level cannot modify an established unique art; use recordCharacterUniqueArtProgress.`);
+      }
+      if (art.progress !== undefined && art.progress !== (existing.progress ?? 0)) {
+        errors.push(`${prefix}.progress cannot modify an established unique art; use recordCharacterUniqueArtProgress.`);
+      }
+      if (art.maxLevel !== undefined && art.maxLevel !== (existing.maxLevel ?? 10)) {
+        errors.push(`${prefix}.maxLevel cannot replace an established unique art limit.`);
+      }
+      if (art.bankedProgress !== undefined || art.progressHistory !== undefined) {
+        errors.push(`${prefix} cannot write local progress ledger fields.`);
+      }
+      return;
+    }
+
+    if (art.bankedProgress !== undefined || art.progressHistory !== undefined) {
+      errors.push(`${prefix} cannot supply local progress ledger fields for a new unique art.`);
+    }
+    const acquisitionKind = art.acquisition?.kind;
+    if (acquisitionKind !== 'opening' && acquisitionKind !== 'background') {
+      if (art.level !== 1) {
+        errors.push(`${prefix}.level must be 1 when an in-game unique art is first acquired.`);
+      }
+      if (art.progress !== undefined && art.progress !== 0) {
+        errors.push(`${prefix}.progress must be 0 when an in-game unique art is first acquired.`);
+      }
+    }
+  });
+}
+
+function validateUniqueArtAcquisition(
+  value: CharacterUniqueArt['acquisition'] | undefined,
+  fieldName: string,
+  errors: string[],
+): void {
+  if (value === undefined || value === null) return;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    errors.push(`${fieldName} must be an object.`);
+    return;
+  }
+  if (!uniqueArtAcquisitionKinds.includes(value.kind)) {
+    errors.push(`${fieldName}.kind is invalid: ${String(value.kind)}`);
+  }
+  for (const field of ['occurredAt', 'sourceRefId', 'summary'] as const) {
+    if (!isNonEmptyString(value[field])) {
+      errors.push(`${fieldName}.${field} cannot be empty.`);
+    }
+  }
+  for (const field of ['instructorNpcId', 'sourceItemId'] as const) {
+    if (value[field] !== undefined && !isNonEmptyString(value[field])) {
+      errors.push(`${fieldName}.${field} must be a non-empty string when provided.`);
+    }
+  }
+}
+
+function validateEquipmentIdentityReuse(
+  item: CharacterEquipmentItem,
+  fieldName: string,
+  baseEquipment: CharacterEquipmentItem[] | undefined,
+  baseInventory: InventoryItem[] | undefined,
+  errors: string[],
+): void {
+  const itemId = typeof item?.id === 'string' ? item.id.trim() : '';
+  const itemName = typeof item?.name === 'string' ? item.name.trim() : '';
+  if (!itemId || !itemName || !EQUIPMENT_SLOTS.includes(item.slot)) return;
+
+  const existingEquipment = baseEquipment?.find((existing) => existing.id === itemId);
+  if (
+    existingEquipment
+    && (existingEquipment.name.trim() !== itemName || existingEquipment.slot !== item.slot)
+  ) {
+    errors.push(`${fieldName}.id 复用了既有装备 ${itemId}，但名称或装备槽不一致。`);
+  }
+
+  const linkedInventory = baseInventory?.find((existing) => existing.id === itemId);
+  if (
+    linkedInventory
+    && (
+      linkedInventory.name.trim() !== itemName
+      || (linkedInventory.equipSlot !== undefined && linkedInventory.equipSlot !== item.slot)
+    )
+  ) {
+    errors.push(`${fieldName}.id 复用了既有背包物品 ${itemId}，但名称或装备槽不一致。`);
+  }
+}
+
 function validateInventoryChanges(
   changes: PlayerInventoryChange[] | NpcInventoryChange[],
   errors: string[],
   fieldPrefix = 'updatePlayerLoadout.inventoryChanges',
   baseInventory?: InventoryItem[],
+  baseEquipment?: CharacterEquipmentItem[],
 ): void {
   if (!Array.isArray(changes)) {
     errors.push(`${fieldPrefix} 必须是数组。`);
@@ -3005,6 +4125,7 @@ function validateInventoryChanges(
     }
     if (change.action === 'upsert') {
       validateInventoryItemAtPath(change.item, `${fieldName}.item`, errors);
+      validateInventoryIdentityReuse(change.item, `${fieldName}.item`, baseInventory, baseEquipment, errors);
       const itemId = typeof change.item?.id === 'string' ? change.item.id.trim() : '';
       if (itemId && Number.isFinite(change.item.quantity) && change.item.quantity > 0) {
         quantitiesById.set(itemId, Math.max(1, Math.floor(change.item.quantity)));
@@ -3055,6 +4176,44 @@ function validateInventoryChanges(
     }
     errors.push(`${fieldName}.action 非法：${String((change as { action?: unknown }).action)}`);
   });
+}
+
+function validateInventoryIdentityReuse(
+  item: InventoryItem,
+  fieldName: string,
+  baseInventory: InventoryItem[] | undefined,
+  baseEquipment: CharacterEquipmentItem[] | undefined,
+  errors: string[],
+): void {
+  const itemId = typeof item?.id === 'string' ? item.id.trim() : '';
+  const itemName = typeof item?.name === 'string' ? item.name.trim() : '';
+  if (!itemId || !itemName) return;
+
+  const existingInventory = baseInventory?.find((existing) => existing.id === itemId);
+  if (
+    existingInventory
+    && (
+      existingInventory.name.trim() !== itemName
+      || (
+        existingInventory.equipSlot !== undefined
+        && item.equipSlot !== undefined
+        && existingInventory.equipSlot !== item.equipSlot
+      )
+    )
+  ) {
+    errors.push(`${fieldName}.id 复用了既有背包物品 ${itemId}，但名称或装备槽不一致。`);
+  }
+
+  const linkedEquipment = baseEquipment?.find((existing) => existing.id === itemId);
+  if (
+    linkedEquipment
+    && (
+      linkedEquipment.name.trim() !== itemName
+      || (item.equipSlot !== undefined && linkedEquipment.slot !== item.equipSlot)
+    )
+  ) {
+    errors.push(`${fieldName}.id 复用了既有装备 ${itemId}，但名称或装备槽不一致。`);
+  }
 }
 
 function validatePushNpcMemoryCommand(
@@ -3354,6 +4513,87 @@ function validateUpdateCharacterIdentityCommand(
       errors.push('updateCharacterIdentity.aliases 只能包含字符串。');
     }
   }
+
+  if (Object.prototype.hasOwnProperty.call(command, 'personalEscortEntitlement')) {
+    if (!isPlayerTarget) {
+      errors.push('updateCharacterIdentity.personalEscortEntitlement 只允许写入当前玩家。');
+    }
+    if (command.personalEscortEntitlement !== null && command.personalEscortEntitlement !== undefined) {
+      validatePersonalEscortEntitlement(command.personalEscortEntitlement, errors);
+    }
+  }
+
+  const target = isPlayerTarget ? state.player : npc;
+  if (!target) return;
+  const authorityFields = [
+    'currentIdentity',
+    'factionId',
+    'factionName',
+    'officeTitle',
+    'militaryTitle',
+    'nobleTitle',
+  ] as const;
+  const changedAuthorityFields = authorityFields.filter((field) => (
+    Object.prototype.hasOwnProperty.call(command, field)
+    && normalizeIdentityContractValue(target[field]) !== normalizeIdentityContractValue(command[field])
+  ));
+  const changedSecondaryAuthority = changedAuthorityFields.some((field) => field !== 'currentIdentity');
+  if (changedSecondaryAuthority && !Object.prototype.hasOwnProperty.call(command, 'currentIdentity')) {
+    errors.push('updateCharacterIdentity 修改势力、官职、军职或爵位时必须显式包含 currentIdentity；主身份不变时复用原值。');
+  }
+  const currentIdentityChanged = changedAuthorityFields.includes('currentIdentity');
+  if (currentIdentityChanged) {
+    if (!isNonEmptyString(command.currentIdentityDescription)) {
+      errors.push('updateCharacterIdentity 修改 currentIdentity 时必须同步提供非空 currentIdentityDescription。');
+    }
+    if (!isNonEmptyString(command.identitySummary)) {
+      errors.push('updateCharacterIdentity 修改 currentIdentity 时必须同步提供非空 identitySummary。');
+    }
+  }
+  if (
+    isPlayerTarget
+    && changedAuthorityFields.length > 0
+    && !Object.prototype.hasOwnProperty.call(command, 'personalEscortEntitlement')
+  ) {
+    errors.push('updateCharacterIdentity 修改主角身份、势力或职衔时必须同步重算 personalEscortEntitlement。');
+  }
+}
+
+function normalizeIdentityContractValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function validatePersonalEscortEntitlement(value: unknown, errors: string[]): void {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    errors.push('updateCharacterIdentity.personalEscortEntitlement 必须是对象或 null。');
+    return;
+  }
+  const entitlement = value as Record<string, unknown>;
+  if (entitlement.status !== 'none' && entitlement.status !== 'customary') {
+    errors.push('updateCharacterIdentity.personalEscortEntitlement.status 必须为 none 或 customary。');
+  }
+  if (!Array.isArray(entitlement.bases)) {
+    errors.push('updateCharacterIdentity.personalEscortEntitlement.bases 必须是数组。');
+  } else {
+    const bases = entitlement.bases;
+    if (bases.some((basis) => !PERSONAL_ESCORT_ENTITLEMENT_BASES.includes(
+      basis as (typeof PERSONAL_ESCORT_ENTITLEMENT_BASES)[number],
+    ))) {
+      errors.push('updateCharacterIdentity.personalEscortEntitlement.bases 包含未知依据。');
+    }
+    if (new Set(bases).size !== bases.length) {
+      errors.push('updateCharacterIdentity.personalEscortEntitlement.bases 不得重复。');
+    }
+    if (entitlement.status === 'none' && bases.length !== 0) {
+      errors.push('护卫资格为 none 时 bases 必须为空。');
+    }
+    if (entitlement.status === 'customary' && bases.length === 0) {
+      errors.push('护卫资格为 customary 时必须至少包含一项依据。');
+    }
+  }
+  if (!isNonEmptyString(entitlement.updatedAt)) {
+    errors.push('updateCharacterIdentity.personalEscortEntitlement.updatedAt 不能为空。');
+  }
 }
 
 function validateRecordTurnEventCommand(
@@ -3361,11 +4601,11 @@ function validateRecordTurnEventCommand(
   command: Extract<LuanShiCommand, { action: 'recordTurnEvent' }>,
   errors: string[],
 ): void {
-  if (!command.locationId.trim()) {
+  if (typeof command.locationId !== 'string' || !command.locationId.trim()) {
     errors.push('recordTurnEvent 必须包含 locationId。');
   }
 
-  if (!command.summary.trim()) {
+  if (typeof command.summary !== 'string' || !command.summary.trim()) {
     errors.push('recordTurnEvent 必须包含 summary。');
   }
 

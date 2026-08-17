@@ -50,12 +50,35 @@ function makeHolding(overrides: Partial<HoldingLedgerEntry> = {}): HoldingLedger
 describe('troop lifecycle upkeep boundary', () => {
   it('charges only current troop records and excludes every terminal regroup state', () => {
     expect(isUpkeepTroop(makeTroop({ lifecycleStatus: 'active' }))).toBe(true);
-    expect(isUpkeepTroop(makeTroop({ lifecycleStatus: 'routed' }))).toBe(true);
     expect(isUpkeepTroop(makeTroop({ lifecycleStatus: 'unknown' }))).toBe(true);
 
-    for (const lifecycleStatus of ['merged', 'split', 'destroyed', 'surrendered', 'disbanded', 'archived'] as const) {
+    for (const lifecycleStatus of ['routed', 'merged', 'split', 'destroyed', 'surrendered', 'disbanded', 'archived'] as const) {
       expect(isUpkeepTroop(makeTroop({ lifecycleStatus })), lifecycleStatus).toBe(false);
     }
+  });
+});
+
+describe('holding civil scale output projection', () => {
+  it('lets a regional city use its larger civil ledger while keeping collection bounded', () => {
+    const small = calculateHoldingOutputProjection(makeHolding({
+      type: 'city',
+      civilAdministrationScope: 'territorial',
+      civilScaleLevel: 3,
+      farmlandMu: 180_000,
+      registeredHouseholds: 16_000,
+    }));
+    const regional = calculateHoldingOutputProjection(makeHolding({
+      type: 'city',
+      civilAdministrationScope: 'territorial',
+      civilScaleLevel: 5,
+      farmlandMu: 1_200_000,
+      registeredHouseholds: 90_000,
+    }));
+
+    expect(regional.estimatedOutput.grain).toBeGreaterThan(small.estimatedOutput.grain);
+    expect(regional.estimatedOutput.money).toBeGreaterThan(small.estimatedOutput.money);
+    expect(regional.actualCollection.grain).toBeLessThanOrEqual(regional.estimatedOutput.grain);
+    expect(regional.actualCollection.money).toBeLessThanOrEqual(regional.estimatedOutput.money);
   });
 });
 
@@ -297,6 +320,80 @@ describe('calculateHoldingAnnualSettlement', () => {
 
     expect(cooperativeResult.income.grain).toBeGreaterThan(hostileResult.income.grain);
     expect(cooperativeResult.income.money).toBeGreaterThan(hostileResult.income.money);
+  });
+
+  it('builds annual cash tax from registered households plus commerce while preserving grain projection', () => {
+    const estate = makeHolding({
+      holdingId: 'holding_wei_estate',
+      name: 'Wei estate',
+      type: 'estate',
+      civilAdministrationScope: 'territorial',
+      scaleLevel: 1,
+      agriculture: 30,
+      commerce: 10,
+      population: 50,
+      publicOrder: 70,
+      popularSupport: 70,
+      corruption: 0,
+      farmlandMu: 2000,
+      registeredHouseholds: 150,
+      eliteControlledShare: 0,
+      localEliteRelation: -50,
+    });
+
+    const projection = calculateHoldingOutputProjection(estate);
+    const settlement = calculateHoldingAnnualSettlement({
+      year: 189,
+      settledAt: '189-09-01',
+      holdings: [estate],
+      troops: [],
+      currentResources: makeResources({ money: 0, grain: 0 }),
+    });
+
+    expect(projection.estimatedOutput.grain).toBe(400);
+    expect(projection.estimatedOutput.money).toBe(37);
+    expect(projection.actualCollection.grain).toBe(340);
+    expect(projection.actualCollection.money).toBe(31);
+    expect(projection.collectionRate.money).toBe(0.84);
+    expect(settlement.income).toMatchObject({ grain: 340, money: 31 });
+    expect(settlement.nextResources).toMatchObject({ grain: 340, money: 31 });
+  });
+
+  it('keeps household cash tax at zero commerce and adds commerce as a separate cash source', () => {
+    const baseEstate = makeHolding({
+      type: 'estate',
+      civilAdministrationScope: 'territorial',
+      scaleLevel: 1,
+      population: 50,
+      registeredHouseholds: 150,
+      farmlandMu: 2000,
+      eliteControlledShare: 0,
+    });
+
+    const noCommerce = calculateHoldingOutputProjection({ ...baseEstate, commerce: 0 });
+    const fullCommerce = calculateHoldingOutputProjection({ ...baseEstate, commerce: 100 });
+    const halfHouseholds = calculateHoldingOutputProjection({
+      ...baseEstate,
+      commerce: 0,
+      registeredHouseholds: 75,
+    });
+
+    expect(noCommerce.estimatedOutput.money).toBe(36);
+    expect(fullCommerce.estimatedOutput.money).toBe(48);
+    expect(halfHouseholds.estimatedOutput.money).toBe(18);
+  });
+
+  it('keeps the legacy scale cash projection when a migrated holding has no registered-household truth', () => {
+    const migratedHolding = makeHolding({
+      farmlandMu: 12000,
+      registeredHouseholds: undefined,
+      eliteControlledShare: 0,
+    });
+
+    const projection = calculateHoldingOutputProjection(migratedHolding);
+
+    expect(projection.estimatedOutput.money).toBe(82);
+    expect(projection.actualCollection.money).toBe(60);
   });
 
   it('falls back to existing scale-based income when local elite fields are absent', () => {
@@ -1303,6 +1400,36 @@ describe('applyHoldingAnnualSettlementRuntime', () => {
 });
 
 describe('applyHoldingSettlementTimelineRuntime', () => {
+  it('completes due private-asset projects on ordinary dated turns without waiting for September', () => {
+    const previousState = makeSettlementTimelineState(189, 6, 1, {
+      privateAssets: [makePrivateAsset()],
+      privateAssetProjects: [makePrivateAssetProject({
+        startedAt: '189-05-01',
+        expectedCompleteAt: '189-06-02',
+        updatedAt: '189-05-01',
+      })],
+    });
+    const finalState = {
+      ...previousState,
+      currentDate: '189-06-03',
+      currentTime: { year: 189, month: 6, day: 3, hour: 8, minute: 0 },
+    } as any;
+
+    const result = applyHoldingSettlementTimelineRuntime(finalState, previousState);
+
+    expect(result.annualMeta).toBeUndefined();
+    expect(result.monthlyMeta).toBeUndefined();
+    expect(result.state.privateAssetProjects?.[0]).toMatchObject({
+      projectId: 'project_expand_estate',
+      status: 'completed',
+      updatedAt: '189-06-03',
+    });
+    expect(result.state.privateAssets?.[0].mu).toBe(makePrivateAsset().mu! + 40);
+    expect(result.state.privateAssets?.[0].households).toBe(makePrivateAsset().households! + 6);
+    expect(result.state.turnLog[0].statePatchSummary).toContain('私产工程到期');
+    expect(result.state.turnLog[0].statePatchSummary).toContain('project_expand_estate');
+  });
+
   it('settles three crossed Septembers once in month order on rolling state', () => {
     const previousState = makeSettlementTimelineState(189, 8, 28, {
       privateAssets: [makePrivateAsset()],
@@ -1468,6 +1595,185 @@ describe('applyHoldingSettlementTimelineRuntime', () => {
 });
 
 describe('applyHoldingMonthlyUpkeepRuntime', () => {
+  it('never charges allied, enemy, or neutral armies to the player even when legacy upkeep sources are wrong', () => {
+    const playerTroop = makeTroop({
+      troopId: 'troop_player_guard',
+      name: '主角直属亲军',
+      size: 120,
+      upkeepSource: 'player_resources',
+    });
+    const externalTroops = [
+      makeTroop({
+        troopId: 'troop_cao_cavalry',
+        name: '曹操东甲骑兵',
+        size: 1000,
+        factionId: 'faction_han_court',
+        relationToPlayer: '友军',
+        leaderNpcId: 'npc_cao_cao',
+        upkeepSource: 'player_resources',
+      }),
+      makeTroop({
+        troopId: 'troop_yellow_turban_guard',
+        name: '阳翟黄巾守军',
+        size: 3000,
+        factionId: 'faction_taipingdao',
+        relationToPlayer: '敌对',
+        leaderNpcId: 'npc_bo_cai',
+        upkeepSource: 'player_resources',
+      }),
+      makeTroop({
+        troopId: 'troop_external_unknown',
+        name: '长社汉军主力',
+        size: 10000,
+        factionId: 'faction_han_court',
+        relationToPlayer: '友军',
+        leaderNpcId: 'npc_huangfu_song',
+        upkeepSource: 'unknown',
+      }),
+      makeTroop({
+        troopId: 'troop_external_mixed',
+        name: '协同部队',
+        size: 800,
+        factionId: 'faction_han_court',
+        relationToPlayer: '协同友军',
+        leaderNpcId: 'npc_ally_general',
+        upkeepSource: 'mixed',
+      }),
+    ];
+    const previousState = {
+      currentDate: '189-07-02',
+      currentTime: { year: 189, month: 7, day: 2, hour: 8, minute: 0 },
+      resources: makeResources({ money: 5000, grain: 50000, horses: 500, arms: 500, recruits: 0 }),
+      holdings: [makeHolding()],
+      factions: [{
+        factionId: 'faction_han_court',
+        name: '汉室朝廷',
+        type: '朝廷',
+        summary: '主角当前效力的朝廷，但并非由主角控制。',
+        stanceToPlayer: '自势力相关',
+        knownLevel: '亲历',
+        recentActions: [],
+      }],
+      troops: [playerTroop, ...externalTroops],
+      domesticReports: [],
+      turnLog: [],
+    } as any;
+    const currentState = {
+      ...previousState,
+      currentDate: '189-08-02',
+      currentTime: { year: 189, month: 8, day: 2, hour: 8, minute: 0 },
+    } as any;
+
+    const preview = calculateHoldingMonthlyUpkeepPreview(currentState);
+    const result = applyHoldingMonthlyUpkeepRuntime(currentState, previousState);
+
+    expect(preview?.activeTroopCount).toBe(1);
+    expect(preview?.troopBreakdown.map((entry) => entry.troopId)).toEqual(['troop_player_guard']);
+    expect(preview?.sourceTroopCounts).toEqual({
+      player_resources: 1,
+      superior_provision: 0,
+      mixed: 0,
+    });
+    expect(result.state.resources).toMatchObject({
+      money: 5000 - (preview?.playerRequiredExpenses.money ?? 0),
+      grain: 50000 - (preview?.playerRequiredExpenses.grain ?? 0),
+      horses: 500 - (preview?.playerRequiredExpenses.horses ?? 0),
+      arms: 500 - (preview?.playerRequiredExpenses.arms ?? 0),
+    });
+    expect(result.state.troops?.slice(1)).toEqual(externalTroops);
+  });
+
+  it('keeps directly commanded government troops in the ledger while respecting superior provision', () => {
+    const troop = makeTroop({
+      troopId: 'troop_han_direct_command',
+      factionId: 'faction_han_court',
+      relationToPlayer: '你直接统领',
+      leaderNpcId: 'player',
+      upkeepSource: 'superior_provision',
+    });
+    const state = {
+      currentDate: '189-08-02',
+      currentTime: { year: 189, month: 8, day: 2, hour: 8, minute: 0 },
+      resources: makeResources(),
+      troops: [troop],
+      holdings: [],
+    } as any;
+
+    const preview = calculateHoldingMonthlyUpkeepPreview(state);
+
+    expect(preview?.troopBreakdown).toEqual([
+      expect.objectContaining({
+        troopId: 'troop_han_direct_command',
+        source: 'superior_provision',
+      }),
+    ]);
+    expect(preview?.playerRequiredExpenses).toEqual({ money: 0, grain: 0, horses: 0, arms: 0, recruits: 0 });
+  });
+
+  it('recognizes a custom player faction only through its structured actual controller', () => {
+    const troop = makeTroop({
+      troopId: 'troop_custom_player_faction',
+      factionId: 'faction_linyan_command',
+      relationToPlayer: '自势力相关',
+      leaderNpcId: 'npc_subordinate_general',
+      upkeepSource: 'player_resources',
+    });
+    const state = {
+      currentDate: '189-08-02',
+      currentTime: { year: 189, month: 8, day: 2, hour: 8, minute: 0 },
+      player: { id: 'player_linyan', name: '林砚' },
+      resources: makeResources(),
+      factions: [{
+        factionId: 'faction_linyan_command',
+        name: '林砚军府',
+        type: '军府',
+        summary: '主角自立军府。',
+        stanceToPlayer: '自势力相关',
+        actualController: 'player_linyan',
+        knownLevel: '亲历',
+        recentActions: [],
+      }],
+      troops: [troop],
+      holdings: [],
+    } as any;
+
+    expect(calculateHoldingMonthlyUpkeepPreview(state)?.troopBreakdown).toEqual([
+      expect.objectContaining({ troopId: 'troop_custom_player_faction', source: 'player_resources' }),
+    ]);
+  });
+
+  it('does not create a player upkeep settlement when the ledger contains only external armies', () => {
+    const externalTroop = makeTroop({
+      troopId: 'troop_external_only',
+      name: '黄巾外军',
+      factionId: 'faction_taipingdao',
+      relationToPlayer: '敌对',
+      leaderNpcId: 'npc_yellow_turban_general',
+      upkeepSource: 'player_resources',
+    });
+    const previousState = {
+      currentDate: '189-07-02',
+      currentTime: { year: 189, month: 7, day: 2, hour: 8, minute: 0 },
+      resources: makeResources(),
+      holdings: [makeHolding()],
+      troops: [externalTroop],
+      domesticReports: [],
+      turnLog: [],
+    } as any;
+    const currentState = {
+      ...previousState,
+      currentDate: '189-08-02',
+      currentTime: { year: 189, month: 8, day: 2, hour: 8, minute: 0 },
+    } as any;
+
+    const result = applyHoldingMonthlyUpkeepRuntime(currentState, previousState);
+
+    expect(result.meta).toBeUndefined();
+    expect(result.state.resources).toEqual(previousState.resources);
+    expect(result.state.troops).toEqual([externalTroop]);
+    expect(result.state.domesticReports).toEqual([]);
+  });
+
   it('uses the same source-aware preview values for the actual monthly deduction', () => {
     const previousState = {
       currentDate: '189-07-02',

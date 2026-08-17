@@ -8,6 +8,6 @@ describe('createPendingOpeningLoadout', () => {
     expect(loadout.personalMoney).toBe(0);
     expect(loadout.equipment).toEqual([]);
     expect(loadout.inventory).toEqual([]);
-    expect(loadout.summary).toContain('真开局 AI');
+    expect(loadout.summary).toContain('随开场剧情一并确定');
   });
 });

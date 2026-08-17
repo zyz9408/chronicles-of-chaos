@@ -37,6 +37,7 @@ describe('private asset commands', () => {
   it('accepts and writes private assets with stable ids', () => {
     const command = {
       action: 'upsertPrivateAsset',
+      operation: 'create',
       privateAssetId: 'asset_li_estate',
       name: 'Li clan estate',
       type: 'estate',
@@ -51,6 +52,12 @@ describe('private asset commands', () => {
       ranchCapacity: 20,
       riskNotes: ['bandit pressure'],
       recentChanges: ['new tenant fields opened'],
+      acquisition: {
+        kind: 'opening',
+        occurredAt: '189-09-01',
+        sourceRefId: 'opening:test-player',
+        summary: 'Opening profile establishes the manor.',
+      },
       updatedAt: '189-09-01',
     } satisfies LuanShiCommand;
 
@@ -71,12 +78,19 @@ describe('private asset commands', () => {
   it('uses the current game time when private-asset technical timestamps are blank', () => {
     const assetCommand = {
       action: 'upsertPrivateAsset',
+      operation: 'create',
       privateAssetId: 'asset_orchard_estate',
       name: 'Orchard Estate',
       type: 'estate',
       ownerScope: 'personal',
       status: 'active',
       summary: 'A private orchard estate outside the city.',
+      acquisition: {
+        kind: 'opening',
+        occurredAt: '189-09-01',
+        sourceRefId: 'opening:orchard-estate',
+        summary: 'Opening profile establishes the orchard estate.',
+      },
       updatedAt: '',
     } as unknown as LuanShiCommand;
 
@@ -103,12 +117,19 @@ describe('private asset commands', () => {
   it('accepts and writes private asset expansion projects', () => {
     const state = applyLuanShiCommand(makeState(), {
       action: 'upsertPrivateAsset',
+      operation: 'create',
       privateAssetId: 'asset_li_estate',
       name: 'Li clan estate',
       type: 'estate',
       ownerScope: 'personal',
       status: 'active',
       summary: 'A private manor outside the county seat.',
+      acquisition: {
+        kind: 'opening',
+        occurredAt: '189-09-01',
+        sourceRefId: 'opening:li-estate',
+        summary: 'Opening profile establishes the manor.',
+      },
       updatedAt: '189-09-01',
     } as any);
     const command = {
@@ -181,6 +202,219 @@ describe('private asset commands', () => {
     expect(badProject.errors.join('\n')).toContain('type');
     expect(badProject.errors.join('\n')).toContain('status');
     expect(badProject.errors.join('\n')).toContain('targetDelta');
+  });
+
+  it('rejects unsupported self-claimed wealth, direct scale growth, and ambiguous duplicate creation', () => {
+    const acquisition = {
+      kind: 'opening' as const,
+      occurredAt: '189-09-01',
+      sourceRefId: 'opening:lin-estate',
+      summary: 'Opening profile establishes a modest clan estate.',
+    };
+    const exaggerated = validateLuanShiCommand(makeState(), {
+      action: 'upsertPrivateAsset',
+      operation: 'create',
+      privateAssetId: 'asset_lin_estate',
+      name: '阳翟林氏坞堡',
+      type: 'estate',
+      ownerScope: 'personal',
+      status: 'active',
+      summary: 'A private estate outside Yangdi.',
+      locationId: 'place_yangdi',
+      mu: 10_000,
+      households: 2_000,
+      acquisition,
+    });
+    expect(exaggerated.valid).toBe(false);
+    expect(exaggerated.errors.join('\n')).toContain('initial limit');
+
+    const missingAcquisition = validateLuanShiCommand(makeState(), {
+      action: 'upsertPrivateAsset',
+      operation: 'create',
+      privateAssetId: 'asset_without_source',
+      name: '无来源庄园',
+      type: 'estate',
+      ownerScope: 'personal',
+      status: 'active',
+      summary: 'The player merely claims this estate.',
+    } as LuanShiCommand);
+    expect(missingAcquisition.errors.join('\n')).toContain('acquisition is required');
+
+    const stateWithAsset = applyLuanShiCommand(makeState(), {
+      action: 'upsertPrivateAsset',
+      operation: 'create',
+      privateAssetId: 'asset_lin_estate',
+      name: '林氏坞堡',
+      type: 'estate',
+      ownerScope: 'clan',
+      status: 'active',
+      summary: '阳翟林氏旁支的私产。',
+      locationId: 'place_yangdi',
+      mu: 120,
+      households: 18,
+      acquisition,
+    });
+
+    const directGrowth = validateLuanShiCommand(stateWithAsset, {
+      action: 'upsertPrivateAsset',
+      operation: 'update',
+      privateAssetId: 'asset_lin_estate',
+      name: '林氏坞堡',
+      type: 'estate',
+      ownerScope: 'clan',
+      status: 'active',
+      summary: 'The same estate is now described as larger.',
+      locationId: 'place_yangdi',
+      mu: 900,
+      households: 18,
+    });
+    expect(directGrowth.errors.join('\n')).toContain('cannot increase directly');
+
+    const duplicate = validateLuanShiCommand(stateWithAsset, {
+      action: 'upsertPrivateAsset',
+      operation: 'create',
+      privateAssetId: 'asset_lin_clan_manor_new',
+      name: '阳翟林氏宗族庄园（坞堡）',
+      type: 'estate',
+      ownerScope: 'clan',
+      status: 'active',
+      summary: 'The same Lin clan compound under a new name.',
+      locationId: 'place_yangdi',
+      acquisition: {
+        ...acquisition,
+        sourceRefId: 'turn:invented-second-source',
+      },
+    });
+    expect(duplicate.valid).toBe(false);
+    expect(duplicate.errors.join('\n')).toContain('reuse that privateAssetId');
+
+    const distinctLocation = validateLuanShiCommand(stateWithAsset, {
+      action: 'upsertPrivateAsset',
+      operation: 'create',
+      privateAssetId: 'asset_lin_xuchang_estate',
+      name: '许昌林氏坞堡',
+      type: 'estate',
+      ownerScope: 'clan',
+      status: 'active',
+      summary: 'A separately acquired Lin estate at Xuchang.',
+      locationId: 'place_xuchang',
+      acquisition: {
+        kind: 'purchase',
+        occurredAt: '189-09-02',
+        sourceRefId: 'turn:xuchang-estate-purchase',
+        summary: 'The clan purchases a distinct estate at Xuchang.',
+        costMoney: 80,
+      },
+    });
+    expect(distinctLocation.valid).toBe(true);
+  });
+
+  it('requires time and investment for bounded scale-growth projects', () => {
+    const state = applyLuanShiCommand(makeState(), {
+      action: 'upsertPrivateAsset',
+      operation: 'create',
+      privateAssetId: 'asset_project_estate',
+      name: 'Project Estate',
+      type: 'estate',
+      ownerScope: 'personal',
+      status: 'active',
+      summary: 'A modest estate.',
+      mu: 120,
+      acquisition: {
+        kind: 'opening',
+        occurredAt: '189-09-01',
+        sourceRefId: 'opening:project-estate',
+        summary: 'Opening profile establishes the estate.',
+      },
+    });
+    const invalid = validateLuanShiCommand(state, {
+      action: 'upsertPrivateAssetProject',
+      projectId: 'project_impossible_growth',
+      assetId: 'asset_project_estate',
+      title: 'Instant vast expansion',
+      type: 'expand_farmland',
+      status: 'active',
+      startedAt: '189-09-01',
+      targetDelta: { mu: 5_000 },
+    });
+
+    expect(invalid.valid).toBe(false);
+    expect(invalid.errors.join('\n')).toContain('per-project limit');
+    expect(invalid.errors.join('\n')).toContain('expectedCompleteAt is required');
+    expect(invalid.errors.join('\n')).toContain('requires investedMoney or investedGrain');
+  });
+
+  it('conservatively merges strong legacy duplicates and remaps dependent references', () => {
+    const normalized = ensureLuanShiState({
+      ...makeState(),
+      privateAssets: [
+        {
+          privateAssetId: 'asset_lin_fort',
+          name: '林氏坞堡',
+          type: 'estate',
+          ownerScope: 'clan',
+          status: 'active',
+          summary: '阳翟林氏旁支的基业。',
+          locationId: 'place_yangdi',
+          mu: 120,
+          updatedAt: '189-08-01',
+        },
+        {
+          privateAssetId: 'asset_lin_manor_drifted',
+          name: '阳翟林氏宗族庄园（坞堡）',
+          type: 'estate',
+          ownerScope: 'clan',
+          status: 'active',
+          summary: '位于阳翟的同一处林氏坞堡。',
+          locationId: 'place_yangdi',
+          households: 18,
+          updatedAt: '189-09-01',
+        },
+      ],
+      privateAssetProjects: [{
+        projectId: 'project_lin_fields',
+        assetId: 'asset_lin_manor_drifted',
+        title: '林氏庄园增修水渠',
+        type: 'irrigation',
+        status: 'active',
+        startedAt: '189-08-01',
+        updatedAt: '189-08-01',
+      }],
+      domesticReports: [{
+        reportId: 'report_lin_estate',
+        year: 189,
+        settledAt: '189-09-01',
+        title: '林氏私产报告',
+        summary: '同一私产的报告。',
+        income: { money: 0, grain: 0, horses: 0, arms: 0, recruits: 0 },
+        expenses: { money: 0, grain: 0, horses: 0, arms: 0, recruits: 0 },
+        netChange: { money: 0, grain: 0, horses: 0, arms: 0, recruits: 0 },
+        privateAssetHighlights: [
+          { privateAssetId: 'asset_lin_fort', summary: '旧称。' },
+          { privateAssetId: 'asset_lin_manor_drifted', summary: '新称。' },
+        ],
+        projectHighlights: [{
+          projectId: 'project_lin_fields',
+          assetId: 'asset_lin_manor_drifted',
+          summary: '工程继续。',
+        }],
+        readByPlayer: false,
+      }],
+    });
+
+    expect(normalized.privateAssets).toHaveLength(1);
+    expect(normalized.privateAssets[0]).toMatchObject({
+      privateAssetId: 'asset_lin_fort',
+      name: '阳翟林氏宗族庄园（坞堡）',
+      aliases: expect.arrayContaining(['林氏坞堡']),
+      mu: 120,
+      households: 18,
+    });
+    expect(normalized.privateAssetProjects[0]?.assetId).toBe('asset_lin_fort');
+    expect(normalized.domesticReports[0]?.privateAssetHighlights).toEqual([
+      { privateAssetId: 'asset_lin_fort', summary: '新称。' },
+    ]);
+    expect(normalized.domesticReports[0]?.projectHighlights?.[0]?.assetId).toBe('asset_lin_fort');
   });
 
   it('accepts domestic reports with private asset and project highlights', () => {

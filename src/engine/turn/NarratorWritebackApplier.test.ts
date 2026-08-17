@@ -118,6 +118,8 @@ function makeNpcProfileSuggestion(
   return {
     npcId: 'npc_shen_yue',
     name: '沈岳',
+    persistenceReason: 'active_system_role',
+    persistenceEvidence: '本回合已确认其担任河东军府校尉并奉军令持续参与营务。',
     courtesyName: '子衡',
     aliases: ['白袍校尉'],
     sex: '男',
@@ -209,7 +211,214 @@ function makeProtagonistCloneSuggestion(): NarratorNpcProfileSuggestion {
   });
 }
 
+describe('NPC 人物志长期准入合同', () => {
+  it('拒绝没有长期准入理由和事实证据的新人物档案', () => {
+    const application = applyNarratorWriteback(makeState(), {
+      protagonistMemory: null,
+      npcProfileSuggestions: [makeNpcProfileSuggestion({
+        npcId: 'npc_one_turn_scout',
+        name: '周安',
+        role: '临时斥候',
+        currentIdentity: '递送一次军报的斥候',
+        persistenceReason: undefined,
+        persistenceEvidence: undefined,
+      })],
+      npcMemorySuggestions: [],
+      locationWriteSuggestions: [],
+      routeWriteSuggestions: [],
+      questChanges: [],
+      worldEventSummary: null,
+      debugNotes: [],
+    }, worldBook);
+
+    expect(application.state.npcs).toEqual([]);
+    expect(application.ignoredSummaries.join('\n')).toContain('新建 NPC 必须提供合法 persistenceReason');
+    expect(application.ignoredSummaries.join('\n')).toContain('新建 NPC 必须提供非空 persistenceEvidence');
+  });
+
+  it('已有 NPC 的正常完整档案更新不需要重复提交准入理由', () => {
+    const archived = makeNpcProfileSuggestion();
+    const initialState = {
+      ...makeState(),
+      npcs: [{ ...archived, memories: [] }],
+    } as RuntimeState;
+    const application = applyNarratorWriteback(initialState, {
+      protagonistMemory: null,
+      npcProfileSuggestions: [makeNpcProfileSuggestion({
+        persistenceReason: undefined,
+        persistenceEvidence: undefined,
+        summary: '本回合确认其继续负责营中军务。',
+      })],
+      npcMemorySuggestions: [],
+      locationWriteSuggestions: [],
+      routeWriteSuggestions: [],
+      questChanges: [],
+      worldEventSummary: null,
+      debugNotes: [],
+    }, worldBook);
+
+    expect(application.state.npcs?.find((npc) => npc.npcId === archived.npcId)?.summary)
+      .toBe('本回合确认其继续负责营中军务。');
+    expect(application.ignoredSummaries).toEqual([]);
+  });
+
+  it('保留人物基础档案并隔离缺少 acquisition 的绝艺子结构', () => {
+    const application = applyNarratorWriteback(makeState(), {
+      protagonistMemory: null,
+      npcProfileSuggestions: [makeNpcProfileSuggestion({
+        npcId: 'npc_pei_shao_salvaged',
+        name: '裴绍',
+        persistenceReason: 'player_committed_relationship',
+        persistenceEvidence: '本回合裴绍已经正式受命统领玩家部曲，形成持续军职。',
+        role: '部曲将',
+        currentIdentity: '玩家麾下部曲将',
+        abilityScores: { 武力: 72, 统率: 76, 智力: 58, 政治: 48, 魅力: 55, 机运: 50 },
+        uniqueArts: [{
+          id: 'art_pei_shao_drill',
+          name: '整军有法',
+          rarity: 'blue',
+          domain: 'warfare',
+          level: 1,
+          description: '善于约束新募部曲。',
+          effectSummary: '整军时更易维持军纪。',
+          source: '人物经历',
+        } as any],
+      })],
+      npcMemorySuggestions: [],
+      locationWriteSuggestions: [],
+      routeWriteSuggestions: [],
+      questChanges: [],
+      worldEventSummary: null,
+      debugNotes: [],
+    }, worldBook);
+
+    const peiShao = application.state.npcs?.find((npc) => npc.npcId === 'npc_pei_shao_salvaged');
+    expect(peiShao).toBeDefined();
+    expect(peiShao?.uniqueArts).toBeUndefined();
+    expect(application.ignoredSummaries.join('\n')).toContain(
+      '裴绍 的绝艺子结构未通过合同，已保留人物基础档案',
+    );
+  });
+});
+
+describe('applyNarratorWriteback faction recent action support', () => {
+  it('applies firsthand and heard suggestions through the strict faction action command', () => {
+    const initialState = {
+      ...makeState(),
+      factions: [
+        {
+          factionId: 'faction_player_command',
+          name: '主角军府',
+          type: '军府',
+          summary: '主角任职并参与军务的势力。',
+          stanceToPlayer: '自势力相关',
+          knownLevel: '亲历' as const,
+          recentActions: ['整顿营寨'],
+        },
+        {
+          factionId: 'faction_rebel_remnant',
+          name: '黄巾余部',
+          type: '叛乱组织',
+          summary: '在郊外活动的黄巾余部。',
+          stanceToPlayer: '敌对',
+          knownLevel: '听闻' as const,
+          recentActions: ['郊外出没'],
+        },
+      ],
+    } as RuntimeState;
+    const application = applyNarratorWriteback(
+      initialState,
+      {
+        protagonistMemory: null,
+        npcProfileSuggestions: [],
+        npcMemorySuggestions: [],
+        factionRecentActionSuggestions: [
+          {
+            factionId: 'faction_player_command',
+            summary: '主角代表军府完成军粮交割',
+            knownLevel: '亲历',
+          },
+          {
+            factionId: 'faction_rebel_remnant',
+            summary: '黄巾余部烧毁东郊驿站',
+            knownLevel: '听闻',
+            sourceNote: '斥候军报',
+          },
+          {
+            factionId: 'faction_rebel_remnant',
+            summary: '黄巾余部烧毁东郊驿站',
+            knownLevel: '听闻',
+          },
+          {
+            factionId: 'faction_missing',
+            summary: '不存在势力的动作',
+            knownLevel: '推测',
+          },
+        ],
+        locationWriteSuggestions: [],
+        routeWriteSuggestions: [],
+        questChanges: [],
+        worldEventSummary: null,
+        debugNotes: [],
+      },
+      worldBook,
+    );
+
+    expect(application.state.factions?.find((faction) => faction.factionId === 'faction_player_command'))
+      .toMatchObject({
+        knownLevel: '亲历',
+        recentActions: ['【亲历】整顿营寨', '【亲历】主角代表军府完成军粮交割'],
+      });
+    expect(application.state.factions?.find((faction) => faction.factionId === 'faction_rebel_remnant'))
+      .toMatchObject({
+        knownLevel: '听闻',
+        sourceNote: '斥候军报',
+        recentActions: ['【听闻】郊外出没', '【听闻】黄巾余部烧毁东郊驿站'],
+      });
+    expect(application.appliedSummaries).toContain('势力近期动作x2');
+    expect(application.ignoredSummaries.join('\n')).toContain('faction_missing');
+  });
+});
+
 describe('applyNarratorWriteback Map V1 support', () => {
+  it('does not let a full profile refresh overwrite an existing NPC relationship truth', () => {
+    const existing = makeNpcProfileSuggestion({
+      relationToPlayer: '生死之交，彼此承担过重大风险。',
+      contactLevel: 44,
+      recentAttitude: '充分信任',
+    });
+    const initialState = {
+      ...makeState(),
+      npcs: [{ ...existing, memories: [] }],
+    } as RuntimeState;
+    const application = applyNarratorWriteback(
+      initialState,
+      {
+        protagonistMemory: null,
+        npcProfileSuggestions: [makeNpcProfileSuggestion({
+          relationToPlayer: '初识',
+          contactLevel: 3,
+          recentAttitude: '陌生',
+          summary: '本回合只补充人物简介。',
+        })],
+        npcMemorySuggestions: [],
+        locationWriteSuggestions: [],
+        routeWriteSuggestions: [],
+        questChanges: [],
+        worldEventSummary: null,
+        debugNotes: [],
+      },
+      worldBook,
+    );
+
+    expect(application.state.npcs?.find((npc) => npc.npcId === existing.npcId)).toMatchObject({
+      relationToPlayer: '生死之交，彼此承担过重大风险。',
+      contactLevel: 44,
+      recentAttitude: '充分信任',
+      summary: '本回合只补充人物简介。',
+    });
+  });
+
   it('does not let a routine profile refresh move an existing NPC into the player scene', () => {
     const initialState = {
       ...makeState(),
@@ -346,6 +555,53 @@ describe('applyNarratorWriteback Map V1 support', () => {
     expect(result.state.npcs?.some((npc) => npc.npcId === 'npc_liuzhi')).toBe(false);
   });
 
+  it('keeps a mandatory NPC base profile when optional arts or loadout structures are invalid', () => {
+    const profile = makeNpcProfileSuggestion({
+      npcId: 'npc_weiyan_admission',
+      name: '魏延',
+      role: '左垒先锋将',
+      currentIdentity: '主角正式任命的左垒先锋将',
+      persistenceReason: 'player_committed_relationship',
+      persistenceEvidence: '本回合魏延已经接受招募并被正式任命为左垒先锋将。',
+      summary: '魏延已接受招募，开始承担左垒先锋军务。',
+      relationToPlayer: '受主角正式任命的先锋将',
+      uniqueArts: [{
+        id: 'art_weiyan_invalid',
+        name: '长刀破阵',
+        rarity: 'orange',
+        domain: 'personalCombat',
+        level: 4,
+        description: '以长刀冲阵。',
+        effectSummary: '强化破阵能力。',
+        source: '人物经历',
+      } as any],
+      equipment: [{
+        id: 'eq_weiyan_invalid',
+        slot: 'weapon',
+        name: '御赐长刀',
+        quality: '御赐' as any,
+        description: '身份来源误写成了装备品级。',
+      }],
+    });
+
+    const result = tryApplyNpcProfileForCompliance(makeState(), profile);
+
+    expect(result.accepted).toBe(true);
+    expect(result.acceptedProfile).toMatchObject({
+      npcId: 'npc_weiyan_admission',
+      name: '魏延',
+    });
+    expect(result.acceptedProfile?.uniqueArts).toBeUndefined();
+    expect(result.acceptedProfile?.equipment).toBeUndefined();
+    expect(result.state.npcs?.find((npc) => npc.npcId === 'npc_weiyan_admission')).toMatchObject({
+      name: '魏延',
+      currentIdentity: '主角正式任命的左垒先锋将',
+    });
+    expect(result.diagnostics.join('\n')).toContain('已保留人物基础档案');
+    expect(result.diagnostics.join('\n')).toContain('绝艺子结构');
+    expect(result.diagnostics.join('\n')).toContain('行装子结构');
+  });
+
   it('still accepts same-name NPC profile suggestions when identity evidence is distinct', () => {
     const application = applyNarratorWriteback(makeProtagonistBoundaryState(), {
       protagonistMemory: null,
@@ -384,7 +640,7 @@ describe('applyNarratorWriteback Map V1 support', () => {
       id: 'eq_profile_sabre',
       slot: 'weapon' as const,
       name: '校尉环首刀',
-      quality: '军中精造',
+      quality: 'blue',
       description: '随身佩刀。',
       condition: '完好',
       statBonuses: { 武力: 4 },
@@ -399,7 +655,7 @@ describe('applyNarratorWriteback Map V1 support', () => {
       quantity: 1,
       description: '验明军府身份。',
       category: 'token',
-      quality: '官造',
+      quality: 'green',
       equipSlot: 'treasure' as const,
       condition: '完好',
       statBonuses: { 交涉: 3 },
@@ -669,6 +925,11 @@ describe('applyNarratorWriteback Map V1 support', () => {
           appearance: '年少而清瘦，甲衣尚新，眉眼里有压不住的警觉。',
           personality: '谨慎敏锐，重承诺，也知道乱局里不能轻信人。',
           identitySummary: '汉室远支出身的北军军侯。',
+          personalEscortEntitlement: {
+            status: 'customary',
+            bases: ['military_command'],
+            updatedAt: 'day 1',
+          },
         },
         protagonistMemory: {
           recentTurnSummary: '确定身份：以汉室远支之身，担任北军军侯。',
@@ -1127,6 +1388,45 @@ describe('applyNarratorWriteback Map V1 support', () => {
 
     expect(repeated.state.player).toMatchObject({ level: 2, xp: 10, growthPoints: 6 });
     expect(repeated.ignoredSummaries.join('\n')).toContain('重复');
+  });
+
+  it('derives quest experience from severity when the model omits the legacy reward field', () => {
+    const initialState = {
+      ...makeState(),
+      player: {
+        ...makeState().player,
+        level: 2,
+        xp: 0,
+        growthPoints: 0,
+      },
+      activeQuests: [{
+        id: 'quest_major_relief',
+        title: '解围乡寨',
+        description: '击退围寨流寇并安置乡民。',
+        severity: 'major',
+        status: 'active',
+        createdAt: 'day 1',
+        updatedAt: 'day 1',
+      }],
+    } as any;
+
+    const completed = applyNarratorWriteback(initialState, {
+      protagonistMemory: null,
+      npcMemorySuggestions: [],
+      locationWriteSuggestions: [],
+      routeWriteSuggestions: [],
+      questChanges: [{
+        action: 'complete',
+        questId: 'quest_major_relief',
+        outcomeSummary: '流寇退去，乡民得到安置。',
+      }],
+      worldEventSummary: null,
+      debugNotes: [],
+    } as any, worldBook);
+
+    expect(completed.state.activeQuests[0].completionExperienceAwarded).toBe(100);
+    expect(completed.state.player).toMatchObject({ level: 2, xp: 100, growthPoints: 0 });
+    expect(completed.appliedSummaries.join('\n')).toContain('获得阅历 100');
   });
 
   it.each([
@@ -1881,9 +2181,11 @@ describe('applyNarratorWriteback Map V1 support', () => {
       {
         protagonistMemory: null,
         npcProfileSuggestions: [
-          {
-            npcId: 'npc_gate_captain',
-            name: '门候',
+           {
+             npcId: 'npc_gate_captain',
+             name: '门候',
+             persistenceReason: 'active_system_role',
+             persistenceEvidence: '本回合已确认其长期负责洛阳城门盘查。',
             sex: '男',
             age: 39,
             role: '城门军吏',
@@ -2260,7 +2562,7 @@ describe('applyNarratorWriteback Map V1 support', () => {
     expect(application.ignoredSummaries.join('\n')).toContain('npcId 身份冲突');
   });
 
-  it('accepts an exact npcId update when age growth matches ageKnownAtDate and currentDate', () => {
+  it('accepts an exact npcId update and converts the legacy age anchor to a stable birthday', () => {
     const archivedProfile = makeNpcProfileSuggestion({
       npcId: 'npc_wei_yan', name: '魏延', courtesyName: '文长', age: 24, birthOrigin: '义阳郡',
     });
@@ -2286,10 +2588,39 @@ describe('applyNarratorWriteback Map V1 support', () => {
       worldBook,
     );
 
-    expect(application.state.npcs?.find((npc) => npc.npcId === 'npc_wei_yan')).toMatchObject({
-      name: '魏延', age: 30, ageKnownAtDate: currentDate, role: '前锋将领',
-    });
+    const stored = application.state.npcs?.find((npc) => npc.npcId === 'npc_wei_yan');
+    expect(stored).toMatchObject({ name: '魏延', age: 30, role: '前锋将领' });
+    expect(stored?.birthDate).toMatch(/^公元\d+年\d{2}月\d{2}日$/);
+    expect(stored?.ageKnownAtDate).toBeUndefined();
     expect(application.ignoredSummaries.join('\n')).not.toContain('npcId 身份冲突');
+  });
+
+  it('fills a missing new-NPC birthday locally and keeps it immutable on later writeback', () => {
+    const currentDate = '公元189年09月01日 08:00（辰时）';
+    const first = applyNarratorWriteback(
+      { ...makeState(), currentDate } as RuntimeState,
+      {
+        protagonistMemory: null,
+        npcProfileSuggestions: [makeNpcProfileSuggestion({ birthDate: undefined })],
+        npcMemorySuggestions: [], locationWriteSuggestions: [], routeWriteSuggestions: [], questChanges: [],
+        worldEventSummary: null, debugNotes: [],
+      },
+      worldBook,
+    );
+    const firstBirthDate = first.state.npcs?.find((npc) => npc.npcId === 'npc_shen_yue')?.birthDate;
+    expect(firstBirthDate).toMatch(/^公元\d+年\d{2}月\d{2}日$/);
+
+    const second = applyNarratorWriteback(
+      first.state,
+      {
+        protagonistMemory: null,
+        npcProfileSuggestions: [makeNpcProfileSuggestion({ birthDate: '公元100年01月01日' })],
+        npcMemorySuggestions: [], locationWriteSuggestions: [], routeWriteSuggestions: [], questChanges: [],
+        worldEventSummary: null, debugNotes: [],
+      },
+      worldBook,
+    );
+    expect(second.state.npcs?.find((npc) => npc.npcId === 'npc_shen_yue')?.birthDate).toBe(firstBirthDate);
   });
 
   it('reuses a drifted npcId when anchored age growth matches the current campaign date', () => {
@@ -3064,9 +3395,11 @@ describe('applyNarratorWriteback Map V1 support', () => {
       {
         protagonistMemory: null,
         npcProfileSuggestions: [
-          {
-            npcId: 'npc_zhang_san_soldier',
-            name: '张三',
+           {
+             npcId: 'npc_zhang_san_soldier',
+             name: '张三',
+             persistenceReason: 'active_system_role',
+             persistenceEvidence: '本回合已确认其成为乙地守军的长期在册军士。',
             sex: '男',
             age: 24,
             role: '军士',
@@ -3232,9 +3565,11 @@ describe('applyNarratorWriteback Map V1 support', () => {
       {
         protagonistMemory: null,
         npcProfileSuggestions: [
-          {
-            npcId: 'npc_chenwu',
-            name: '陈伍',
+           {
+             npcId: 'npc_chenwu',
+             name: '陈伍',
+             persistenceReason: 'player_committed_relationship',
+             persistenceEvidence: '正文确认其已追随主角两年并继续作为忠实下属任事。',
             sex: '男',
             age: 32,
             role: '副将/亲兵',
@@ -3296,9 +3631,11 @@ describe('applyNarratorWriteback Map V1 support', () => {
       {
         protagonistMemory: null,
         npcProfileSuggestions: [
-          {
-            npcId: 'npc_adult_woman',
-            name: '某氏',
+           {
+             npcId: 'npc_adult_woman',
+             name: '某氏',
+             persistenceReason: 'strategic_actor',
+             persistenceEvidence: '本回合确认其代表地方贵族势力处理亲族危局，具有长期关系承接。',
             sex: '女',
             age: 33,
             role: '重要女性 NPC',

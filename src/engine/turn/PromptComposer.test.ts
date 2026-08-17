@@ -3,16 +3,26 @@ import type { InventoryItem, LuanShiNpc, RuntimeState, TimelineAnchor, WorldBook
 import { ensureLuanShiState } from '../state/createInitialRuntimeState';
 import { deletePromptOverride, savePromptOverride } from '../prompts/PromptOverrideStore';
 import {
-  saveAdultIntimacyStyleToStorage,
   saveNarrativeLengthToStorage,
   savePregnancyModeToStorage,
 } from '../settings/DisplaySettings';
 import { clearWorldlineKnowledgeRegistryForTest, registerWorldlineKnowledgeBase } from '../worldline/WorldlineKnowledgeRegistry';
 import { composePrompt } from './PromptComposer';
-import { buildTurnUserMessage } from './TurnPromptMessages';
+import {
+  buildTurnUserMessage,
+  STATE_WRITER_STABLE_PROTOCOL_MARKER,
+  TURN_DYNAMIC_CONTEXT_MARKER,
+} from './TurnPromptMessages';
 
 function countOccurrences(value: string, needle: string): number {
   return value.split(needle).length - 1;
+}
+
+function commonPrefixLength(left: string, right: string): number {
+  const limit = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < limit && left[index] === right[index]) index += 1;
+  return index;
 }
 
 const worldBook: WorldBook = {
@@ -563,7 +573,69 @@ function makeProtagonistClonePromptState(): RuntimeState {
 }
 
 describe('composePrompt', () => {
-  it('places permanent prompts after the resolved main template without treating them as the player action', () => {
+  it('keeps invariant turn contracts before the changing date, state, and player action', () => {
+    const prompt = composePrompt(worldBook, undefined, [], undefined, makeState(), '巡视营寨');
+
+    expect(prompt.systemPrompt).not.toContain('当前日期锚点：');
+    expect(prompt.userPrompt.indexOf('## narrativeText 显示格式'))
+      .toBeLessThan(prompt.userPrompt.indexOf('## 本回合动态上下文'));
+    expect(prompt.userPrompt.indexOf('## 本回合动态上下文'))
+      .toBeLessThan(prompt.userPrompt.indexOf('巡视营寨'));
+    expect(prompt.userPrompt).toContain('当前日期锚点');
+  });
+
+  it('produces an identical cacheable prefix across consecutive dynamic turns', () => {
+    const firstState = makeState();
+    const secondState = JSON.parse(JSON.stringify(firstState)) as RuntimeState;
+    secondState.currentDate = '乱世元年3月';
+    const first = composePrompt(worldBook, undefined, [], undefined, firstState, '巡视营寨');
+    const second = composePrompt(worldBook, undefined, [], undefined, secondState, '前往县衙');
+    const marker = '## 本回合动态上下文';
+
+    expect(first.systemPrompt).toBe(second.systemPrompt);
+    expect(first.userPrompt.slice(0, first.userPrompt.indexOf(marker)))
+      .toBe(second.userPrompt.slice(0, second.userPrompt.indexOf(marker)));
+    expect(first.userPrompt).not.toBe(second.userPrompt);
+  });
+
+  it('extends the DeepSeek prefix with the stable state-writeback protocol without dropping runtime state', () => {
+    const firstState = makeState();
+    const secondState = JSON.parse(JSON.stringify(firstState)) as RuntimeState;
+    secondState.currentDate = '乱世元年3月';
+    const first = composePrompt(worldBook, undefined, [], undefined, firstState, '巡视营寨');
+    const second = composePrompt(worldBook, undefined, [], undefined, secondState, '前往县衙');
+    const defaultFirst = buildTurnUserMessage(first.userPrompt, first.stateWriterContext);
+    const defaultSecond = buildTurnUserMessage(second.userPrompt, second.stateWriterContext);
+    const deepSeekFirst = buildTurnUserMessage(
+      first.userPrompt,
+      first.stateWriterContext,
+      '',
+      '',
+      '',
+      'deepseek_prefix',
+    );
+    const deepSeekSecond = buildTurnUserMessage(
+      second.userPrompt,
+      second.stateWriterContext,
+      '',
+      '',
+      '',
+      'deepseek_prefix',
+    );
+    const defaultPrefixCharacters = commonPrefixLength(defaultFirst, defaultSecond);
+    const deepSeekPrefixCharacters = commonPrefixLength(deepSeekFirst, deepSeekSecond);
+
+    expect(first.stateWriterContext).toContain(STATE_WRITER_STABLE_PROTOCOL_MARKER);
+    expect(deepSeekPrefixCharacters).toBeGreaterThan(defaultPrefixCharacters * 1.5);
+    expect(deepSeekFirst.indexOf(STATE_WRITER_STABLE_PROTOCOL_MARKER))
+      .toBeLessThan(deepSeekFirst.indexOf(TURN_DYNAMIC_CONTEXT_MARKER));
+    expect(deepSeekFirst.indexOf('currentDate:'))
+      .toBeGreaterThan(deepSeekFirst.indexOf(TURN_DYNAMIC_CONTEXT_MARKER));
+    expect(deepSeekFirst).toContain('allowedLuanShiCommands:');
+    expect(deepSeekFirst).toContain('currentLocationId: loc_market_town');
+  });
+
+  it('places permanent prompts in the stable prefix without treating them as the player action', () => {
     const prompt = composePrompt(
       worldBook,
       undefined,
@@ -583,8 +655,10 @@ describe('composePrompt', () => {
     expect(prompt.userPrompt).toContain('## 玩家启用的永久提示词');
     expect(prompt.userPrompt).toContain('1. 对话更符合历史人物个性。');
     expect(prompt.userPrompt).toContain('巡视营寨');
-    expect(prompt.userPrompt.indexOf('巡视营寨'))
-      .toBeLessThan(prompt.userPrompt.indexOf('## 玩家启用的永久提示词'));
+    expect(prompt.userPrompt.indexOf('## 玩家启用的永久提示词'))
+      .toBeLessThan(prompt.userPrompt.indexOf('## 本回合动态上下文'));
+    expect(prompt.userPrompt.indexOf('## 本回合动态上下文'))
+      .toBeLessThan(prompt.userPrompt.indexOf('巡视营寨'));
   });
 
   it('requires narrativeText to use display-friendly speaker labels for dialogue bubbles', () => {
@@ -599,12 +673,124 @@ describe('composePrompt', () => {
     expect(prompt.userPrompt).toContain('不要把直接台词塞进 `【旁白】` 段');
     expect(prompt.userPrompt).not.toContain('或 `【你】` 开头');
     expect(prompt.userPrompt).toContain('不要在正文里输出 XML 标签或旧式命令块');
-    expect(prompt.userPrompt).toContain('必须在 writeback.npcProfileSuggestions 写入人物志');
-    expect(prompt.userPrompt).toContain('本回合直接出场、发话、发令、参与战斗、参与任务推进或被玩家当面处理的有名有姓人物');
-    expect(prompt.userPrompt).toContain('必须在 writeback.npcProfileSuggestions 建档或更新');
-    expect(prompt.userPrompt).toContain('不得只写入正文、当前事项、风声线索、天下纪事或 npcAwarenessRegistered');
+    expect(prompt.userPrompt).toContain('先按下方“新人物志准入合同”判断');
+    expect(prompt.userPrompt).toContain('仅一次传令、报信、参战或被反复点名的普通人物不得因此建档');
+    expect(prompt.userPrompt).toContain('只能证明人物存在于本场，不能单独证明应进入人物志');
     expect(prompt.userPrompt).toContain('如果当前势力账本为空');
     expect(prompt.userPrompt).toContain('必须用 upsertFactionLedger 写回相关当前势力');
+    expect(prompt.userPrompt).toContain('必须在同一份响应的 writeback.factionRecentActionSuggestions');
+    expect(prompt.userPrompt).toContain('传闻、军报或线索新获知的其他势力行动');
+  });
+
+  it('injects the current-save perspective and never uses the courtesy name as third-person subject', () => {
+    const state = makeState();
+    state.narrativePerspective = 'third_person';
+    const prompt = composePrompt(worldBook, undefined, [], undefined, state, '巡视营寨');
+
+    expect(prompt.systemPrompt).toContain('本局正文叙事人称：第三人称');
+    expect(prompt.userPrompt).toContain('姓名“主角”');
+    expect(prompt.userPrompt).toContain('不得用主角表字');
+    expect(prompt.userPrompt).not.toContain('姓名“子衡”');
+    expect(prompt.userPrompt).toContain('绝不授权补写玩家未输入的对白、心理决定');
+  });
+
+  it('normalizes an old save without perspective to second person in the main prompt', () => {
+    const state = makeState();
+    state.narrativePerspective = undefined;
+    const prompt = composePrompt(worldBook, undefined, [], undefined, state, '巡视营寨');
+
+    expect(prompt.systemPrompt).toContain('本局正文叙事人称：第二人称');
+    expect(prompt.userPrompt).toContain('统一使用“你”');
+  });
+
+  it('gives the state writer complete player-identity and private-asset stable-id snapshots', () => {
+    const state = makeState();
+    state.player.currentIdentity = '羽林郎';
+    state.player.militaryTitle = '行军司马';
+    state.player.identitySummary = '现为羽林郎，并兼任行军司马。';
+    state.privateAssets = [{
+      privateAssetId: 'asset_yingchuan_estate',
+      name: '颍川林氏庄园',
+      type: 'estate',
+      ownerScope: 'clan',
+      status: 'active',
+      summary: '林氏宗族私产。',
+      mu: 120,
+      households: 18,
+      updatedAt: '乱世元年2月',
+    }];
+    state.privateAssetProjects = [{
+      projectId: 'project_expand_yingchuan_estate',
+      assetId: 'asset_yingchuan_estate',
+      title: '增修庄园水渠',
+      type: 'irrigation',
+      status: 'active',
+      startedAt: '乱世元年2月',
+      expectedCompleteAt: '乱世元年3月',
+      targetDelta: { mu: 20 },
+      updatedAt: '乱世元年2月',
+    }];
+
+    const prompt = composePrompt(worldBook, undefined, [], undefined, state, '核对身份与庄园工程');
+
+    expect(prompt.stateWriterContext).toContain('playerIdentitySnapshot:');
+    expect(prompt.stateWriterContext).toContain('currentIdentity=羽林郎');
+    expect(prompt.stateWriterContext).toContain('militaryTitle=行军司马');
+    expect(prompt.stateWriterContext).toContain('privateAssetWritebackStableIndex:');
+    expect(prompt.stateWriterContext).toContain('privateAssetId=asset_yingchuan_estate');
+    expect(prompt.stateWriterContext).toContain('projectId=project_expand_yingchuan_estate');
+    expect(prompt.stateWriterContext).toContain('更新必须逐字复用以上稳定 ID');
+  });
+
+  it('projects active heavy-cavalry formation projects as stable local facts', () => {
+    const state = makeState();
+    state.heavyCavalryFormationProjects = [{
+      projectId: 'project_heavy_guard',
+      troopId: 'troop_heavy_guard',
+      troopName: '新编宿卫甲骑',
+      holdingId: 'holding_camp',
+      requestedSize: 50,
+      supportLevel: 'stable',
+      status: 'active',
+      startedAt: '公元190年01月01日 08:00（辰时）',
+      expectedCompleteAt: '公元190年03月21日 08:00（辰时）',
+      investedMoney: 400,
+      investedGrain: 300,
+      investedHorses: 58,
+      investedArms: 100,
+      investedRecruits: 50,
+      reserveHorseCount: 8,
+      relationToPlayer: '你直接统领',
+      upkeepSource: 'player_resources',
+      updatedAt: '公元190年01月01日 08:00（辰时）',
+    }];
+
+    const prompt = composePrompt(worldBook, undefined, [], undefined, state, '查看甲骑组建进度');
+    expect(prompt.narrativeContext).toContain('重骑组建项目：');
+    expect(prompt.narrativeContext).toContain('projectId=project_heavy_guard');
+    expect(prompt.narrativeContext).toContain('expectedCompleteAt=公元190年03月21日 08:00（辰时）');
+  });
+
+  it('adds a final faction action review with reusable ids when factions already exist', () => {
+    const state = {
+      ...makeState(),
+      factions: [{
+        factionId: 'faction_player',
+        name: '主角军',
+        type: '军府',
+        summary: '主角所属军府。',
+        stanceToPlayer: '自势力相关',
+        knownLevel: '亲历',
+        recentActions: ['完成整编'],
+      }],
+    } as RuntimeState;
+
+    const prompt = composePrompt(worldBook, undefined, [], undefined, state, '派兵护送粮草');
+
+    expect(prompt.userPrompt).toContain('## 势力近期动作提交前复核');
+    expect(prompt.userPrompt).toContain('faction_player=主角军');
+    expect(prompt.userPrompt).toContain('"factionId":"必须逐字复用上方ID"');
+    expect(prompt.userPrompt).toContain('必须逐字复用上方ID');
   });
 
   it('injects the saved long narrative length target into the main prompt', () => {
@@ -618,7 +804,13 @@ describe('composePrompt', () => {
     expect(prompt.userPrompt).toContain('当前设置：长篇');
     expect(prompt.userPrompt).toContain('1600-2400 字');
     expect(prompt.userPrompt).toContain('narrativeText 正文');
-    expect(prompt.userPrompt).toContain('不要把建议行动、状态写回、公开思路摘要计入正文篇幅');
+    expect(prompt.userPrompt).toContain('不要把建议行动、状态写回或 JSON 字段名计入正文篇幅');
+    expect(prompt.narrativeLengthContract).toMatchObject({
+      preference: 'long',
+      minimumCharacters: 1600,
+      maximumCharacters: 2400,
+    });
+    expect(prompt.narrativeLengthFinalReminder).toContain('narrativeText 仍必须不少于 1600 个非空白字符');
   });
 
   it('uses era-style current date in narrative context instead of 公元 labels', () => {
@@ -784,7 +976,10 @@ describe('composePrompt', () => {
 
     const prompt = composePrompt(worldBook, undefined, anchors, undefined, state, 'observe');
 
-    expect(prompt.systemPrompt).toContain('本局事实 > 玩家行动');
+    expect(prompt.systemPrompt).toContain('当前存档与动态系统已落库真值 > 本回合最终正文明确成立的结果 > 玩家行动意图或主张');
+    expect(prompt.systemPrompt).toContain('玩家输入首先是行动意图、对话内容、要求、假设或主张');
+    expect(prompt.systemPrompt).toContain('不得机械拒绝玩家');
+    expect(prompt.systemPrompt).toContain('缺少任一关键依据时省略该写回');
     expect(prompt.systemPrompt).toContain('KnowledgeBase');
     expect(prompt.systemPrompt).toContain('ANCHOR_ONE_SENTINEL');
     expect(prompt.systemPrompt).toContain('ANCHOR_THREE_SENTINEL');
@@ -814,6 +1009,8 @@ describe('composePrompt', () => {
     expect(prompt.userPrompt).toContain('PLAYER_INPUT_SENTINEL');
     expect(prompt.stateWriterContext).toContain('STATE_WRITER_SENTINEL');
     expect(prompt.stateWriterContext).toContain('currentLocationId: loc_market_town');
+    expect(prompt.userPrompt).toContain('## 正文篇幅提交前检查');
+    expect(prompt.userPrompt).toContain('narrativeText 仍必须不少于 600 个非空白字符');
   });
 
   it('surfaces existing non-present NPCs linked by current matters as writeback reuse candidates', () => {
@@ -890,65 +1087,44 @@ describe('composePrompt', () => {
     expect(combined).toContain('NAMESAKE_STAFF_SENTINEL');
   });
 
-  it('injects the common adult intimacy protocol and relationship immersion style by default', () => {
+  it('injects one concise adult intimacy protocol without a second review block', () => {
     const storage = new MemoryStorage();
     vi.stubGlobal('localStorage', storage);
 
     const prompt = composePrompt(worldBook, undefined, [], undefined, makeState(), '我与成年伴侣独处');
 
-    expect(prompt.userPrompt).toContain('## 成人亲密描写指南');
-    expect(prompt.userPrompt).toContain('当剧情已经自然进入成人亲密场景');
-    expect(prompt.userPrompt).toContain('不要淡出、不要空泛跳过');
-    expect(prompt.userPrompt).toContain('## 成人亲密描写风格：关系沉浸');
-    expect(prompt.userPrompt).toContain('以人物关系、心理变化、身份处境和场景压力为中心');
-    expect(prompt.userPrompt).toContain('直白用语是两种成人描写风格的共同最低要求');
-    expect(prompt.userPrompt).toContain('关系沉浸只改变叙事重心，不降低用语直白程度');
-    expect(prompt.userPrompt).toContain('关系沉浸同样使用直白身体词和明确动作');
-    expect(prompt.userPrompt).toContain('肉棒、龟头、阴茎、小穴、阴蒂、乳头、蜜液、精液、穴口');
-    expect(prompt.userPrompt).toContain('禁止委婉语、含蓄代称与比喻遮蔽');
-    expect(prompt.userPrompt).toContain('先立当前近景、双方站位或姿势、衣物状态与正在发生的动作');
-    expect(prompt.userPrompt).toContain('每个动作必须引出对方可观察的身体、语言或情绪反馈');
-    expect(prompt.userPrompt).toContain('不要重演最近正文已经反复使用的动作顺序和反应套路');
-    expect(prompt.userPrompt).toContain('直接词表只在当前动作确实涉及对应部位时选用');
+    expect(prompt.userPrompt).toContain('## 成人亲密场景单一协议');
+    expect(prompt.userPrompt).toContain('未进入成人场景时完全忽略本协议');
+    expect(prompt.userPrompt).toContain('乳房、乳头、阴茎、龟头、阴蒂、阴唇、阴道、肛门、精液');
+    expect(prompt.userPrompt).toContain('只有人物对白、身份和现场语气确实粗俗时');
+    expect(prompt.userPrompt).toContain('白腻、雪乳、红梅、蓓蕾、花心、花径、花穴、甬道、蜜壶、玉峰、肉刃、天鹅颈、弓起如满弓');
+    expect(prompt.userPrompt).toContain('不做脱离上下文的全局禁词');
+    expect(prompt.userPrompt).not.toContain('乳头、蜜液');
+    expect(prompt.userPrompt).toContain('摩擦、压力、力度、深浅、节奏、温度、湿润、呼吸、声音、肌肉紧张或放松');
+    expect(prompt.userPrompt).toContain('不要把这些项目写成逐项检查表');
+    expect(prompt.userPrompt).toContain('不用固定的景物、器物或身体轮廓意象代替实际部位与动作');
+    expect(prompt.userPrompt).toContain('同一身体部位在同一段动作中使用一个符合场景的稳定称谓');
+    expect(prompt.userPrompt).toContain('私密档案只提供事实连续性，不是文风范本');
     expect(prompt.userPrompt).toContain('updateNpcFemaleProfile');
-    expect(prompt.userPrompt).toContain('红颜系统');
-    expect(prompt.userPrompt).toContain('adultPrivateProfile 已被投喂且当前剧情自然进入亲密/成人场景');
-    expect(prompt.userPrompt).toContain('身体字段作为正文描写锚点');
-    expect(prompt.userPrompt).toContain('不得机械罗列档案，也不得忽略已记录的稳定私密信息');
-    expect(prompt.userPrompt).toContain('正文 NSFW 与档案信息分工');
-    expect(prompt.userPrompt).toContain('正文写正在发生的动作、接触、摩擦');
-    expect(prompt.userPrompt).toContain('身体字段是长期私密锚点和未来文生图锚点');
-    expect(prompt.userPrompt).toContain('偏好、边界、敏感、风险、子宫和初夜字段是长期信息');
-    expect(prompt.userPrompt).toContain('不得把 adultPrivateProfile 写成正文小作文');
-    expect(prompt.userPrompt).toContain('避免诗化比喻、审美套话');
-    expect(prompt.userPrompt).toContain('当前剧情事实 > 当前人物状态 > 女性档案稳定锚点 > 风格指南');
-    expect(prompt.userPrompt).toContain('女性档案记录她的长期私密信息');
-    expect(prompt.userPrompt).toContain('红颜系统记录她与主角这条关系线推进到哪里');
-    expect(prompt.userPrompt).toContain('身体/情绪反应、稳定互动习惯');
-    expect(prompt.userPrompt).not.toContain('长期稳定正文描写');
+    expect(prompt.userPrompt).toContain('既有红颜关系写回');
+    expect(prompt.userPrompt).toContain('当前剧情事实 > 当前人物状态 > 私密档案事实锚点 > 本协议');
     expect(prompt.userPrompt).not.toContain('绕过年龄门禁');
     expect(prompt.userPrompt).not.toContain('无视年龄门禁');
-    expect(prompt.userPrompt).toContain('## 关系沉浸最终复核');
-    expect(prompt.userPrompt).toContain('具体部位、接触和动作仍必须直白清楚');
-    expect(prompt.userPrompt).toContain('年龄是角色事实和门禁依据，不是情色风格标签');
-    expect(prompt.userPrompt).toContain('正文可以在首次描写、身份辨识、年龄相关剧情或自然需要时写数字年龄、年龄段或成熟风格词');
-    expect(prompt.userPrompt).toContain('“三十多岁”“四十出头”“熟女”“熟透”等年龄或成熟描述词都允许，不设禁词');
-    expect(prompt.userPrompt).toContain('近期正文已经连续或高频使用同一年龄描述');
-    expect(prompt.userPrompt).toContain('若本回合是首次或自然使用，应予保留');
-    expect(prompt.userPrompt).toContain('静默对照已投喂的最近正文');
-    expect(prompt.userPrompt).toContain('年龄称谓、身体修饰、动作起手、反应句式与场景收束');
-    expect(prompt.userPrompt).toContain('若近期已经反复出现同一表达或同一动作骨架');
+    expect(prompt.userPrompt).not.toContain('## 成人亲密场景最终复核');
+    expect(prompt.userPrompt).not.toContain('动作—接触变化—可观察反馈—顺势调整—关系或局面变化');
+    expect(prompt.userPrompt.split('## 成人亲密场景单一协议')).toHaveLength(2);
     const runtimeMessage = buildTurnUserMessage(
       prompt.userPrompt,
       prompt.stateWriterContext,
       prompt.adultIntimacyFinalReminder,
     );
     expect(runtimeMessage.endsWith(prompt.adultIntimacyFinalReminder)).toBe(true);
-    expect(runtimeMessage.indexOf('## 关系沉浸最终复核'))
+    expect(runtimeMessage.indexOf('## 成人亲密场景单一协议'))
       .toBeGreaterThan(runtimeMessage.indexOf('## 回合输出要求'));
-    expect(prompt.userPrompt.indexOf('## 关系沉浸最终复核'))
+    expect(prompt.userPrompt.indexOf('## 成人亲密场景单一协议'))
       .toBeGreaterThan(prompt.userPrompt.indexOf('地点 canonical 身份规则'));
-    expect(prompt.userPrompt).not.toContain('## 直白写实最终复核');
+    expect(prompt.userPrompt).not.toContain('## 成人亲密描写风格：关系沉浸');
+    expect(prompt.userPrompt).not.toContain('## 成人亲密描写风格：直白写实');
   });
 
   it('injects the narrative prose style guide before adult intimacy guidance', () => {
@@ -958,33 +1134,26 @@ describe('composePrompt', () => {
     const prompt = composePrompt(worldBook, undefined, [], undefined, makeState(), '我观察陈衡的反应');
 
     const proseGuideIndex = prompt.userPrompt.indexOf('## 正文文风指南');
-    const adultGuideIndex = prompt.userPrompt.indexOf('## 成人亲密描写指南');
+    const adultGuideIndex = prompt.userPrompt.indexOf('## 成人亲密场景单一协议');
 
     expect(proseGuideIndex).toBeGreaterThan(0);
     expect(adultGuideIndex).toBeGreaterThan(proseGuideIndex);
-    expect(prompt.userPrompt).toContain('只选一至两种最适合当前因果的推进方式');
-    expect(prompt.userPrompt).toContain('不得按“场面铺陈 → 玩家行动复述 → NPC 反馈 → 总结变化”的固定顺序');
-    expect(prompt.userPrompt).toContain('默认从本回合最先发生变化的答复、动作、阻力或账目开始');
-    expect(prompt.userPrompt).toContain('人物反应的表达顺序');
+    expect(prompt.userPrompt).toContain('先静默判断当前场景的主要功能');
+    expect(prompt.userPrompt).toContain('围绕一个主要变化组织正文');
+    expect(prompt.userPrompt).toContain('空间要可理解');
+    expect(prompt.userPrompt).toContain('行动要连续');
+    expect(prompt.userPrompt).toContain('感官细节服务当下行动与判断');
     expect(prompt.userPrompt).toContain('从“近期正文回放”中先识别已经用过的人物反应方式');
     expect(prompt.userPrompt).toContain('改用近期未出现');
-    expect(prompt.userPrompt).toContain('普通正文优先直述事实');
-    expect(prompt.userPrompt).toContain('NPC 的明确答复、条件或反对理由必须在前两段出现');
-    expect(prompt.userPrompt).toContain('第一句 NPC 台词之前最多一条短旁白');
-    expect(prompt.userPrompt).toContain('玩家方案只用一句话承接');
-    expect(prompt.userPrompt).toContain('答复型回合的 narrativeText 第一段必须是被问 NPC 的台词');
-    expect(prompt.userPrompt).toContain('表情姿态与环境氛围合计最多一处');
-    expect(prompt.userPrompt).toContain('至少一半正文用于具体条件、账目、执行动作或可见后果');
-    expect(prompt.userPrompt).not.toContain('目光、眼神、视线、眼底或眸色');
+    expect(prompt.userPrompt).toContain('问话、谈判、汇报和请示回合');
+    expect(prompt.userPrompt).toContain('不要把正文压缩成干巴巴的问答纪要');
+    expect(prompt.userPrompt).toContain('治理、账目和军政回合');
+    expect(prompt.userPrompt).toContain('探索和战斗衔接回合');
     expect(prompt.userPrompt).toContain('没有逐字引号时，不得把它扩写成 `【主角名】` 直接台词');
-    expect(prompt.userPrompt).toContain('玩家只输入行动意图或概述时，禁止自行扩写 `【主角名】` 台词');
-    expect(prompt.userPrompt).not.toContain('正文推进顺序：场面先立住');
-    expect(prompt.userPrompt).not.toContain('每回合至少给出');
-    expect(prompt.userPrompt).toContain('写清关键互动、行动反馈、人物取舍和局面变化');
-    expect(prompt.userPrompt).toContain('行动尝试必须写出可观察反馈');
     expect(prompt.userPrompt).toContain('NPC 要保留自己的事务、节奏、顾虑和边界');
     expect(prompt.userPrompt).toContain('情绪变化必须有触发证据');
     expect(prompt.userPrompt).toContain('只写玩家当前能看见、听见或合理感知到的信息');
+    expect(prompt.userPrompt).toContain('不强迫所有旁白古雅');
     expect(prompt.userPrompt).toContain('对照“近期正文回放”检查重复模式');
     expect(prompt.userPrompt).toContain('不是词语黑名单');
     expect(prompt.userPrompt).toContain('回合结尾优先落在新局面、新反馈、新可见细节或可互动点上');
@@ -1001,10 +1170,10 @@ describe('composePrompt', () => {
     const prompt = composePrompt(worldBook, undefined, [], undefined, makeState(), '我观察陈衡的反应');
 
     expect(prompt.userPrompt).toContain('NARRATIVE_PROSE_OVERRIDE_SENTINEL');
-    expect(prompt.userPrompt).not.toContain('只选一至两种最适合当前因果的推进方式');
+    expect(prompt.userPrompt).not.toContain('先静默判断当前场景的主要功能');
   });
 
-  it('runs one silent prose review after output requirements and before the adult final reminder', () => {
+  it('runs one silent prose review after output requirements and before the single adult protocol', () => {
     const storage = new MemoryStorage();
     vi.stubGlobal('localStorage', storage);
 
@@ -1014,27 +1183,28 @@ describe('composePrompt', () => {
       prompt.stateWriterContext,
       prompt.adultIntimacyFinalReminder,
       prompt.narrativeProseFinalReview,
+      prompt.narrativeLengthFinalReminder,
     );
 
     expect(prompt.narrativeProseFinalReview).toContain('## 正文提交前静默终检');
     expect(prompt.narrativeProseFinalReview).toContain('同一次主正文生成');
     expect(prompt.narrativeProseFinalReview).toContain('不得新增第二次正文 API');
-    expect(prompt.narrativeProseFinalReview).toContain('整组删去，直接从答复、动作、阻力或账目开始');
-    expect(prompt.narrativeProseFinalReview).toContain('先概括近期已经使用过的反应方式');
-    expect(prompt.narrativeProseFinalReview).toContain('改写为近期未出现且能提供新信息的');
-    expect(prompt.narrativeProseFinalReview).toContain('删去仅用于增强程度的修辞性比较');
-    expect(prompt.narrativeProseFinalReview).toContain('只写气氛、沉默、表情或天气而没有新事实的旁白段落');
-    expect(prompt.narrativeProseFinalReview).toContain('答复型回合第一段不是被问 NPC 的台词时');
-    expect(prompt.narrativeProseFinalReview).toContain('表情姿态与环境氛围合计不得超过一处');
-    expect(prompt.narrativeProseFinalReview).not.toContain('目光、眼神、视线、眼底或眸色');
+    expect(prompt.narrativeProseFinalReview).toContain('空间与行动连续性');
+    expect(prompt.narrativeProseFinalReview).toContain('保留能让现场可理解、可感知的必要细节');
+    expect(prompt.narrativeProseFinalReview).toContain('关键场景至少应有明确空间锚点');
+    expect(prompt.narrativeProseFinalReview).toContain('治理与对话回合也应让数字、条件和执行阻力落到人物行动中');
     expect(prompt.narrativeProseFinalReview).toContain('若没有，narrativeText 中 `【主角名】` 台词段数量必须为 0');
     expect(prompt.narrativeProseFinalReview).toContain('不是词语黑名单');
     expect(runtimeMessage.indexOf(prompt.narrativeProseFinalReview))
       .toBeGreaterThan(runtimeMessage.indexOf('## 回合输出要求'));
     expect(runtimeMessage.indexOf(prompt.adultIntimacyFinalReminder))
+      .toBeGreaterThan(runtimeMessage.indexOf(prompt.narrativeLengthFinalReminder));
+    expect(runtimeMessage.indexOf(prompt.narrativeLengthFinalReminder))
       .toBeGreaterThan(runtimeMessage.indexOf(prompt.narrativeProseFinalReview));
     expect(runtimeMessage.endsWith(prompt.adultIntimacyFinalReminder)).toBe(true);
+    expect(runtimeMessage.split('## 成人亲密场景单一协议')).toHaveLength(2);
     expect(runtimeMessage.split('## 正文提交前静默终检')).toHaveLength(2);
+    expect(runtimeMessage.split('## 正文篇幅提交前检查')).toHaveLength(2);
   });
 
   it('uses prompt overrides for the prose final review at runtime', () => {
@@ -1182,53 +1352,34 @@ describe('composePrompt', () => {
     expect(prompt.stateWriterContext).toContain('既有孕期仍由引擎推进');
   });
 
-  it('injects direct realism guidance when the adult intimacy style setting selects it', () => {
+  it('ignores legacy adult style values and keeps the single adult protocol', () => {
     const storage = new MemoryStorage();
     vi.stubGlobal('localStorage', storage);
-    saveAdultIntimacyStyleToStorage('directRealism', storage);
+    storage.setItem('coc_v2_adult_intimacy_style', 'directRealism');
 
     const prompt = composePrompt(worldBook, undefined, [], undefined, makeState(), '我与成年伴侣独处');
 
-    expect(prompt.userPrompt).toContain('## 成人亲密描写指南');
-    expect(prompt.userPrompt).toContain('## 成人亲密描写风格：直白写实');
-    expect(prompt.userPrompt).toContain('动作、触感、呼吸、体温、身体反应和感官细节更直接');
-    expect(prompt.userPrompt).toContain('少修饰，不用诗化比喻、审美套话或含蓄代称替代具体动作与反应');
-    expect(prompt.userPrompt).toContain('直白写实是成人场景内的最高文体约束');
-    expect(prompt.userPrompt).toContain('禁止委婉语、含蓄代称与以景代事');
-    expect(prompt.userPrompt).toContain('肉棒、龟头、阴茎、小穴、阴蒂、乳头、蜜液、精液、穴口、臀缝');
-    expect(prompt.userPrompt).toContain('当前动作 → 接触部位 → 力度与节奏 → 摩擦、湿度与体液');
-    expect(prompt.userPrompt).toContain('禁止用“像、仿佛、如同、宛如、似”等比喻句作替代');
-    expect(prompt.userPrompt).toContain('先立当前近景、双方站位或姿势、衣物状态与正在发生的动作');
-    expect(prompt.userPrompt).toContain('每个动作必须引出对方可观察的身体、语言或情绪反馈');
-    expect(prompt.userPrompt).toContain('直接词表只在当前动作确实涉及对应部位时选用');
-    expect(prompt.userPrompt).toContain('## 直白写实最终复核');
-    expect(prompt.userPrompt).toContain('输出前静默逐句复查成人段落');
-    expect(prompt.userPrompt).toContain('年龄是角色事实和门禁依据，不是情色风格标签');
-    expect(prompt.userPrompt).toContain('正文可以在首次描写、身份辨识、年龄相关剧情或自然需要时写数字年龄、年龄段或成熟风格词');
-    expect(prompt.userPrompt).toContain('“三十多岁”“四十出头”“熟女”“熟透”等年龄或成熟描述词都允许，不设禁词');
-    expect(prompt.userPrompt).toContain('近期正文已经连续或高频使用同一年龄描述');
-    expect(prompt.userPrompt).toContain('若本回合是首次或自然使用，应予保留');
-    expect(prompt.userPrompt).toContain('静默对照已投喂的最近正文');
-    expect(prompt.userPrompt).toContain('若近期已经反复出现同一表达或同一动作骨架');
-    expect(prompt.userPrompt.indexOf('## 直白写实最终复核'))
+    expect(prompt.userPrompt).toContain('## 成人亲密场景单一协议');
+    expect(prompt.userPrompt).toContain('未进入成人场景时完全忽略本协议');
+    expect(prompt.userPrompt).not.toContain('## 成人亲密场景最终复核');
+    expect(prompt.userPrompt.indexOf('## 成人亲密场景单一协议'))
       .toBeGreaterThan(prompt.userPrompt.indexOf('地点 canonical 身份规则'));
+    expect(prompt.userPrompt.split('## 成人亲密场景单一协议')).toHaveLength(2);
+    expect(prompt.userPrompt).not.toContain('## 成人亲密描写风格：直白写实');
     expect(prompt.userPrompt).not.toContain('## 成人亲密描写风格：关系沉浸');
   });
 
   it('uses prompt overrides for adult intimacy guidance at runtime', () => {
     const storage = new MemoryStorage();
     vi.stubGlobal('localStorage', storage);
-    saveAdultIntimacyStyleToStorage('directRealism', storage);
     savePromptOverride('nsfw.adultIntimacy.commonProtocol', 'COMMON_ADULT_PROTOCOL_OVERRIDE_SENTINEL', storage);
-    savePromptOverride('nsfw.adultIntimacy.directRealism', 'DIRECT_REALISM_OVERRIDE_SENTINEL', storage);
 
     const prompt = composePrompt(worldBook, undefined, [], undefined, makeState(), '我与成年伴侣独处');
 
     expect(prompt.userPrompt).toContain('COMMON_ADULT_PROTOCOL_OVERRIDE_SENTINEL');
-    expect(prompt.userPrompt).toContain('DIRECT_REALISM_OVERRIDE_SENTINEL');
-    expect(prompt.userPrompt).not.toContain('动作、触感、呼吸、体温、身体反应和感官细节更直接');
-    expect(prompt.userPrompt).toContain('年龄复核');
-    expect(prompt.userPrompt).toContain('年龄是角色事实和门禁依据，不是情色风格标签');
+    expect(prompt.userPrompt).not.toContain('未进入成人场景时完全忽略本协议');
+    expect(prompt.userPrompt).not.toContain('## 成人亲密场景最终复核');
+    expect(prompt.userPrompt.split('COMMON_ADULT_PROTOCOL_OVERRIDE_SENTINEL')).toHaveLength(2);
   });
 
   it('projects player and relevant NPC unique arts into prompt context', () => {
@@ -1655,8 +1806,16 @@ describe('composePrompt', () => {
 
     expect(prompt.userPrompt).toContain('当前地点：市镇');
     expect(prompt.userPrompt).toContain('在场人物：陈衡');
+    expect(prompt.userPrompt).toContain('往来度：12');
     expect(prompt.userPrompt).toContain('陈衡亲眼见到主角救下伤者。');
     expect(prompt.userPrompt).not.toContain('这条远方记忆不应进入当前 prompt。');
+    expect(prompt.stateWriterContext).toContain('contactLevel: 12');
+    expect(prompt.stateWriterContext).toContain('relationToPlayer: 刚刚见过主角救人。');
+    expect(prompt.stateWriterContext).toContain('recentAttitude: 好奇');
+    expect(prompt.stateWriterContext).toContain('payload.command.action=updateNpcRelationship');
+    expect(prompt.stateWriterContext).toContain('contactDelta 只能是 1—10 的整数');
+    expect(prompt.stateWriterContext).toContain('往来度表示牵连深度、互动频率和熟悉程度，不等于好感');
+    expect(prompt.stateWriterContext).toContain('不得扫描正文或按关键词由本地自动增加');
   });
 
   it('背包只投喂当前相关物品，不把全部本地物品塞入主 prompt', () => {
@@ -2195,7 +2354,7 @@ describe('composePrompt', () => {
     expect(prompt.stateWriterContext).toContain('payload.type=resourceChanged');
     expect(prompt.stateWriterContext).toContain("mode=delta");
     expect(prompt.stateWriterContext).toContain("mode=absolute");
-    expect(prompt.stateWriterContext).toContain('只操作 playerResources 的通用键');
+    expect(prompt.stateWriterContext).toContain('只操作 playerResources 的非标准通用键');
     expect(prompt.stateWriterContext).toContain('不替代 updateResourceLedger');
     expect(prompt.stateWriterContext).toContain('没有明确非空 resource 键时不得输出 resourceChanged');
     expect(prompt.stateWriterContext).toContain('payload.type=relationshipChange');
@@ -2222,6 +2381,9 @@ describe('composePrompt', () => {
     expect(prompt.userPrompt).toContain('plotPlanSuggestions');
     expect(prompt.userPrompt).toContain('routeWriteSuggestions');
     expect(prompt.userPrompt).toContain('writeback: 结构化写回对象');
+    expect(prompt.userPrompt).toContain('writeback.playerRecoveryKind');
+    expect(prompt.userPrompt).toContain('"none"、"rest"、"treatment"');
+    expect(prompt.userPrompt).toContain('不输出生命、体力、恢复量或休息分钟数');
   });
 
   it('用通用世界书/时代包协议描述输出，不把三国写死进引擎 prompt', () => {
@@ -2311,7 +2473,8 @@ describe('composePrompt', () => {
     expect(prompt.userPrompt).toContain('outcomeSummary');
     expect(prompt.userPrompt).toContain('affectedForceIds');
     expect(prompt.userPrompt).toContain('experienceReward');
-    expect(prompt.stateWriterContext).toContain('第一次 action=complete');
+    expect(prompt.stateWriterContext).toContain('事项首次完成时由本地按 severity 自动发放阅历');
+    expect(prompt.stateWriterContext).toContain('minor=当前等级升级门槛的15%');
     expect(prompt.stateWriterContext).toContain('不得直接伪造 level/xp/growthPoints');
   });
 
@@ -2751,12 +2914,31 @@ describe('composePrompt', () => {
     expect(prompt.stateWriterContext).toContain('traits[].source 不得省略或写空字符串');
     expect(prompt.stateWriterContext).toContain('traits[].rarity');
     expect(prompt.stateWriterContext).toContain('npcProfileSuggestions[].uniqueArts');
+    expect(prompt.stateWriterContext).toContain('51—59=white普通');
+    expect(prompt.stateWriterContext).toContain('90—94=orange传说');
+    expect(prompt.stateWriterContext).toContain('95及以上=red绝世');
+    expect(prompt.stateWriterContext).toContain('每个达到 80 的额外突出属性');
+    expect(prompt.stateWriterContext).toContain('不得每回合重生成、改名、换 id、删除或降级');
+    expect(prompt.stateWriterContext).toContain('white/green/blue/purple/orange/red 六档');
     expect(prompt.stateWriterContext).toContain('npcProfileSuggestions[].equipment');
     expect(prompt.stateWriterContext).toContain('npcProfileSuggestions[].inventory');
     expect(prompt.stateWriterContext).toContain('重要 NPC 行装');
-    expect(prompt.stateWriterContext).toContain('white/green/blue/red/gold');
-    expect(prompt.stateWriterContext).toContain('必须提供明确年龄');
-    expect(prompt.stateWriterContext).toContain('不得生成“年龄未知”的 NPC');
+    expect(prompt.stateWriterContext).toContain('persistenceReason');
+    expect(prompt.stateWriterContext).toContain('persistenceEvidence');
+    expect(prompt.stateWriterContext).toContain('一次性场景人物即使临时有姓名');
+    expect(prompt.stateWriterContext).toContain('出场、发话、发令、参战或被玩家当面处理只证明其存在于本场');
+    expect(prompt.stateWriterContext).toContain('recurring_contact');
+    expect(prompt.stateWriterContext).toContain('player_committed_relationship');
+    expect(prompt.stateWriterContext).toContain('必须按本回合结束后的身份裁定');
+    expect(prompt.stateWriterContext).toContain('实际完成招募、收留、正式任命');
+    expect(prompt.stateWriterContext).toContain('sex 只能逐字写“男”“女”“其他”');
+    expect(prompt.stateWriterContext).toContain('contactLevel 必须是大于等于 0 的有限数字');
+    expect(prompt.stateWriterContext).toContain('uniqueArts[].level 必须是 1—10 的整数');
+    expect(prompt.stateWriterContext).toContain('行装稳定身份与槽位不变量');
+    expect(prompt.stateWriterContext).toContain('weapon/armor/mount 各最多装备 1 件');
+    expect(prompt.stateWriterContext).toContain('white/green/blue/purple/orange/red');
+    expect(prompt.stateWriterContext).toContain('必须提供明确的当前 age 与完整 birthDate');
+    expect(prompt.stateWriterContext).toContain('不得生成“年龄未知”或只有出生年份的 NPC');
   });
 
   it('将成年女性档案写回协议适配为 updateNpcFemaleProfile', () => {
@@ -2849,7 +3031,6 @@ describe('composePrompt', () => {
     expect(schema).toContain('"firstNightPartner"');
     expect(schema).toContain('"firstNightTime"');
     expect(schema).toContain('"firstNightDescription"');
-    expect(schema).toContain('正文描写');
     expect(schema).toContain('后续正文与文生图锚点');
     expect(schema).toContain('稳定档案真值');
   });
@@ -2979,7 +3160,8 @@ describe('composePrompt', () => {
     const stateWriterLine = getStateWriterNpcLine(prompt.stateWriterContext, 'npc_lady_he');
 
     expect(prompt.narrativeContext).toContain('成人私密档案');
-    expect(prompt.narrativeContext).toContain('何氏私密摘要锚点');
+    expect(prompt.narrativeContext).toContain('只取事实，不复述原句或沿用其中修辞');
+    expect(prompt.narrativeContext).not.toContain('何氏私密摘要锚点');
     expect(prompt.narrativeContext).toContain('何氏胸部私密锚点');
     expect(prompt.narrativeContext).toContain('何氏小穴私密锚点');
     expect(prompt.narrativeContext).toContain('何氏子宫状态锚点');
@@ -2997,7 +3179,8 @@ describe('composePrompt', () => {
     const stateWriterLine = getStateWriterNpcLine(prompt.stateWriterContext, 'npc_lady_he');
 
     expect(prompt.narrativeContext).toContain('成人私密档案');
-    expect(prompt.narrativeContext).toContain('何氏私密摘要锚点');
+    expect(prompt.narrativeContext).not.toContain('何氏私密摘要锚点');
+    expect(prompt.narrativeContext).toContain('何氏胸部私密锚点');
     expect(stateWriterLine).toContain('何氏私密摘要锚点');
   });
 
@@ -3033,7 +3216,8 @@ describe('composePrompt', () => {
     const prompt = composePrompt(worldBook, undefined, [], undefined, state, '我继续安抚她，让这一段私密场景自然延续');
 
     expect(prompt.narrativeContext).toContain('成人私密档案');
-    expect(prompt.narrativeContext).toContain('何氏私密摘要锚点');
+    expect(prompt.narrativeContext).not.toContain('何氏私密摘要锚点');
+    expect(prompt.narrativeContext).toContain('何氏边界锚点');
     expect(getStateWriterNpcLine(prompt.stateWriterContext, 'npc_lady_he')).toContain('何氏边界锚点');
   });
 
@@ -3042,7 +3226,8 @@ describe('composePrompt', () => {
 
     const prompt = composePrompt(worldBook, undefined, [], undefined, state, '我与何氏入内室，确认只有彼此后继续成人亲密互动');
 
-    expect(prompt.narrativeContext).toContain('何氏私密摘要锚点');
+    expect(prompt.narrativeContext).not.toContain('何氏私密摘要锚点');
+    expect(prompt.narrativeContext).toContain('何氏胸部私密锚点');
     expect(prompt.narrativeContext).not.toContain('杜氏私密摘要不应投喂');
     expect(prompt.narrativeContext).not.toContain('杜氏胸部私密锚点不应投喂');
     expect(getStateWriterNpcLine(prompt.stateWriterContext, 'npc_lady_du')).not.toContain('杜氏私密摘要不应投喂');
@@ -3053,7 +3238,7 @@ describe('composePrompt', () => {
 
     const prompt = composePrompt(worldBook, undefined, [], undefined, state, '我让何氏在厅中旁听政务');
 
-    expect(prompt.userPrompt).toContain('## 成人亲密描写指南');
+    expect(prompt.userPrompt).toContain('## 成人亲密场景单一协议');
     expect(prompt.stateWriterContext).toContain('payload.command.action=updateNpcFemaleProfile');
     expect(prompt.stateWriterContext).toContain('adultPrivateProfile.summary');
     expect(prompt.stateWriterContext).toContain('payload.command.action=upsertHeroineThread');
@@ -3071,7 +3256,8 @@ describe('composePrompt', () => {
     const prompt = composePrompt(worldBook, undefined, [], undefined, state, '我与何氏入内室，继续成人亲密互动');
 
     expect(prompt.narrativeContext).toContain('何氏公开关系档案锚点。');
-    expect(prompt.narrativeContext).toContain('何氏私密摘要锚点');
+    expect(prompt.narrativeContext).not.toContain('何氏私密摘要锚点');
+    expect(prompt.narrativeContext).toContain('何氏胸部私密锚点');
     expect(getStateWriterNpcLine(prompt.stateWriterContext, 'npc_lady_he')).toContain('何氏私密摘要锚点');
   });
 
@@ -3182,6 +3368,7 @@ describe('composePrompt', () => {
     expect(prompt.narrativeContext).toContain('军职：无');
     expect(prompt.narrativeContext).toContain('爵位/封号：无');
     expect(prompt.narrativeContext).toContain('身份摘要：寒门士子出身');
+    expect(prompt.narrativeContext).toContain('常规随身护卫资格：未归档（不得按身份名称由本地猜测）');
     expect(prompt.narrativeContext).toContain('在场人物：陈衡（字伯衡，别称：市井豪侠，常用称呼：陈首领，当前身份：游侠首领，所属势力：市镇游侠');
     expect(prompt.narrativeContext).toContain('身份摘要：陈衡是市镇游侠首领');
     expect(prompt.stateWriterContext).toContain('updateCharacterIdentity');
@@ -3193,6 +3380,8 @@ describe('composePrompt', () => {
     expect(prompt.stateWriterContext).toContain('currentIdentity 发生变化');
     expect(prompt.stateWriterContext).toContain('currentIdentityDescription');
     expect(prompt.stateWriterContext).toContain('不得沿用旧身份说明');
+    expect(prompt.stateWriterContext).toContain('personalEscortEntitlement 是主角长期档案真值');
+    expect(prompt.stateWriterContext).toContain('本回合独行与否只写 encounterStartIntent.escortAvailability');
   });
 
   it('uses caller-provided retrieved memories instead of recomputing local retrieval', () => {
@@ -3239,7 +3428,7 @@ describe('composePrompt', () => {
         tokens: ['北军符节'],
         importantSupplies: ['箭矢三箱'],
       },
-      playerResources: { 粮饷: 36, 粮草: 50 },
+      playerResources: { 粮饷: 36, 军需券: 50 },
       factions: [
         {
           factionId: 'faction_local_guard',
@@ -3449,10 +3638,12 @@ describe('composePrompt', () => {
     const prompt = composePrompt(worldBook, undefined, [], undefined, state, '我查看营中粮草');
 
     expect(prompt.narrativeContext).toContain('资源账本');
-    expect(prompt.narrativeContext).toContain('粮草300');
-    expect(prompt.narrativeContext).toContain('军械40');
-    expect(prompt.narrativeContext).toContain('可征召人手80');
-    expect(prompt.narrativeContext).toContain('玩家资源：粮饷36、粮草50');
+    expect(prompt.narrativeContext).toContain('钱财120贯');
+    expect(prompt.narrativeContext).toContain('粮草300石');
+    expect(prompt.narrativeContext).toContain('马匹12匹');
+    expect(prompt.narrativeContext).toContain('军械40件');
+    expect(prompt.narrativeContext).toContain('可征召人手80人');
+    expect(prompt.narrativeContext).toContain('玩家资源：粮饷36、军需券50');
     expect(prompt.narrativeContext).toContain('势力账本');
     expect(prompt.narrativeContext).toContain('factionId=faction_local_guard');
     expect(prompt.narrativeContext).toContain('市镇守卒');
@@ -3514,21 +3705,22 @@ describe('composePrompt', () => {
     expect(prompt.narrativeContext).toContain('households+6');
     expect(prompt.narrativeContext).toContain('内政报告');
     expect(prompt.narrativeContext).toContain('reportId=domestic_luanshi_y1');
-    expect(prompt.narrativeContext).toContain('income=money=30/grain=260/arms=4/recruits=20');
-    expect(prompt.narrativeContext).toContain('net=money=18/grain=180/arms=3/recruits=20');
+    expect(prompt.narrativeContext).toContain('income=money=30贯/grain=260石/arms=4件/recruits=20人');
+    expect(prompt.narrativeContext).toContain('net=money=18贯/grain=180石/arms=3件/recruits=20人');
     expect(prompt.stateWriterContext).toContain('payload.command.action=updateResourceLedger');
     expect(prompt.stateWriterContext).toContain('arms、recruits');
     expect(prompt.stateWriterContext).toContain('weapons/documents/tokens/importantSupplies 必须是字符串数组');
     expect(prompt.stateWriterContext).toContain('["箭矢三箱"]');
-    expect(prompt.stateWriterContext).toContain('playerResources 只能');
+    expect(prompt.stateWriterContext).toContain('playerResources 只用于不属于标准字段');
     expect(prompt.stateWriterContext).toContain('备注、来源、说明');
     expect(prompt.stateWriterContext).toContain('领取军饷粮草、缴获粮草军械、豪族捐赠钱粮');
     expect(prompt.stateWriterContext).toContain('payload.command.action=upsertHoldingLedger');
     expect(prompt.stateWriterContext).toContain('稳定 holdingId');
     expect(prompt.stateWriterContext).toContain('已有领地再次更新时必须复用原 holdingId');
     expect(prompt.stateWriterContext).toContain('不得用同一 locationId 另造 holding_xxx 新条目');
-    expect(prompt.stateWriterContext).toContain('scaleLevel 只能是 1-5');
-    expect(prompt.stateWriterContext).toContain('county/commandery/city/fort/pass/camp/estate/port/village/other');
+    expect(prompt.stateWriterContext).toContain('city 最高 5');
+    expect(prompt.stateWriterContext).toContain('county/city/fort/pass/camp/estate/port/village/other');
+    expect(prompt.stateWriterContext).toContain('禁止用 commandery 新建领地');
     expect(prompt.stateWriterContext).toContain('controlled/contested/temporary/lost/archived');
     expect(prompt.stateWriterContext).toContain('默认守城士卒不自动写入部队账本');
     expect(prompt.stateWriterContext).toContain('siege.status');
@@ -3556,9 +3748,14 @@ describe('composePrompt', () => {
     expect(prompt.stateWriterContext).toContain('projectHighlights');
     expect(prompt.stateWriterContext).toContain('payload.command.action=upsertPrivateAsset');
     expect(prompt.stateWriterContext).toContain('payload.command.action=upsertPrivateAssetProject');
+    expect(prompt.stateWriterContext).toContain('turnSummary.privateAssetAcquisitions');
+    expect(prompt.stateWriterContext).toContain('产权转让，并使玩家取得可长期经营');
+    expect(prompt.stateWriterContext).toContain('谈判、看契书、代管、驻守、租用、口头许诺');
     expect(prompt.stateWriterContext).toContain('updatedAt 是引擎管理的技术时间戳');
     expect(prompt.stateWriterContext).toContain('空值由引擎按当前游戏时间补齐');
-    expect(prompt.stateWriterContext).toContain('money、grain、horses、arms、recruits');
+    expect(prompt.stateWriterContext).toContain('moneyGuan、previousMoneyGuan、moneyDeltaGuan');
+    expect(prompt.stateWriterContext).toContain('当前10000贯、本回合收入50贯');
+    expect(prompt.stateWriterContext).toContain('旧字段 money 已废弃');
     expect(prompt.stateWriterContext).toContain('本地九月年度结算报告无需模型生成');
     expect(prompt.stateWriterContext).toContain('部队粮草、军饷、马匹、军械维持由本地按月扣除');
     expect(prompt.stateWriterContext).toContain('payload.command.action=upsertFactionLedger');
@@ -3572,6 +3769,14 @@ describe('composePrompt', () => {
     expect(prompt.stateWriterContext).toContain('实际主事');
     expect(prompt.stateWriterContext).toContain('已知势力范围');
     expect(prompt.stateWriterContext).toContain('recentActions 不得省略');
+    expect(prompt.stateWriterContext).toContain('payload.command.action=recordFactionRecentAction');
+    expect(prompt.stateWriterContext).toContain('writeback.factionRecentActionSuggestions');
+    expect(prompt.stateWriterContext).toContain('首选写回数组');
+    expect(prompt.stateWriterContext).toContain('势力近期动作同回合闭环');
+    expect(prompt.stateWriterContext).toContain('玩家以已有势力成员、首领、代表身份');
+    expect(prompt.stateWriterContext).toContain('势力传闻动作');
+    expect(prompt.stateWriterContext).toContain('传闻写 knownLevel=听闻');
+    expect(prompt.stateWriterContext).toContain('本地按明确来源记录逐条时间、精确去重并保留最近 200 条');
     expect(prompt.stateWriterContext).toContain('同一行动主体不得因别名、官署名、头衔变化另建势力');
     expect(prompt.stateWriterContext).toContain('抽象占位势力');
     expect(prompt.stateWriterContext).toContain('营、曲、残部、亲兵、前锋');
@@ -3579,10 +3784,10 @@ describe('composePrompt', () => {
     expect(prompt.stateWriterContext).toContain('payload.command.action=upsertTroopLedger');
     expect(prompt.stateWriterContext).toContain('relationToPlayer 必须写简短关系文本');
     expect(prompt.stateWriterContext).toContain('不得写数字评分');
-    expect(prompt.stateWriterContext).toContain('玩家亲自统领');
-    expect(prompt.stateWriterContext).toContain('leaderNpcId 写 player');
-    expect(prompt.stateWriterContext).toContain('副将、军侯、带兵副手');
-    expect(prompt.stateWriterContext).toContain('不得把副手写成主将');
+    expect(prompt.stateWriterContext).toContain('leaderNpcId 记录实际带兵将领');
+    expect(prompt.stateWriterContext).toContain('deputyNpcIds（最多两名）');
+    expect(prompt.stateWriterContext).toContain('军师写 strategistNpcId');
+    expect(prompt.stateWriterContext).toContain('不得按姓名猜测或重复任职');
     expect(prompt.stateWriterContext).toContain('factionId 指向真实归属势力');
     expect(prompt.stateWriterContext).toContain('morale/training');
     expect(prompt.stateWriterContext).toContain('0-100');
@@ -3614,8 +3819,15 @@ describe('composePrompt', () => {
     expect(prompt.stateWriterContext).toContain('不得沿用上一趟行军的路线或时间');
     expect(prompt.stateWriterContext).toContain('mergedIntoTroopId');
     expect(prompt.stateWriterContext).toContain('lifecycleStatus=destroyed');
+    expect(prompt.stateWriterContext).toContain('战败溃散时写 lifecycleStatus=routed');
+    expect(prompt.stateWriterContext).toContain('不得把同一 troopId 改回 active/unknown');
+    expect(prompt.stateWriterContext).toContain('新建制写 mergedFromTroopIds');
     expect(prompt.stateWriterContext).toContain('终态旧建制只保留历史');
     expect(prompt.stateWriterContext).toContain('不得继续计入当前兵力');
+    expect(prompt.stateWriterContext).toContain('War V2 参战资格');
+    expect(prompt.stateWriterContext).toContain('只能引用 lifecycleStatus=active/unknown');
+    expect(prompt.stateWriterContext).toContain('追击、收拢、招降、押解和清剿零散溃兵继续开放剧情');
+    expect(prompt.stateWriterContext).toContain('不得为了强行开战复活旧 troopId');
     expect(prompt.stateWriterContext).toContain('payload.command.action=upsertConflictRecord');
     expect(prompt.stateWriterContext).toContain('sourceConflictIds');
     expect(prompt.stateWriterContext).toContain('relatedConflictIds');
@@ -3629,6 +3841,11 @@ describe('composePrompt', () => {
     expect(prompt.stateWriterContext).toContain('judgement.method=warJudgementV1');
     expect(prompt.stateWriterContext).toContain('scoreBreakdown');
     expect(prompt.stateWriterContext).toContain('updateCharacterUniqueArts');
+    expect(prompt.stateWriterContext).toContain('uniqueArts 是增量候选列表，不是全量替换');
+    expect(prompt.stateWriterContext).toContain('主角与 NPC 绝艺都按稳定 id 合并');
+    expect(prompt.stateWriterContext).toContain('任何首次进入该角色档案的新绝艺还必须包含 acquisition');
+    expect(prompt.stateWriterContext).toContain('opening/background/training/teaching/manual/event/achievement');
+    expect(prompt.stateWriterContext).toContain('玩家自称、要求、假设或尚未执行的计划不能作为 acquisition');
     expect(prompt.stateWriterContext).toContain('relationToPlayer/recentAttitude 必须写自然中文短句');
     expect(prompt.stateWriterContext).toContain('不得写 neutral/hostile/submissive');
     expect(prompt.stateWriterContext).toContain('personalCombat/warfare/strategy/social/governance/survival/craft/other');
@@ -3841,6 +4058,34 @@ describe('composePrompt', () => {
     expect(prompt.stateWriterContext).toContain('[[判定:combat:combatId]]');
   });
 
+  it('publishes the X/Y ordinary judgement contract and current-save difficulty', () => {
+    const state = {
+      ...makeState(),
+      gameDifficulty: 'hard' as const,
+    };
+    const prompt = composePrompt(
+      worldBook,
+      undefined,
+      [],
+      undefined,
+      state,
+      '我趁守卫换班时潜入粮仓查找账册',
+    );
+
+    expect(prompt.userPrompt).toContain('"difficulty": 55');
+    expect(prompt.userPrompt).toContain('"total": 62');
+    expect(prompt.userPrompt).toContain('当前存档难度为 hard/困难/Y+5');
+    expect(prompt.userPrompt).toContain('使用 X 对 Y 差值制，不掷 d100');
+    expect(prompt.userPrompt).toContain('本回合固定挑战最终 Y 表为：明显有利 40、常规挑战 55、明显阻力 70、高风险 85、极端条件 100');
+    expect(prompt.userPrompt).toContain('difficulty 必须填写已经应用本局修正后的“最终 Y”');
+    expect(prompt.userPrompt).toContain('X=60，未修正基准Y=50，困难+5，最终Y=55，差值=5，因此成功');
+    expect(prompt.userPrompt).toContain('summary 是判定合同字段，不是自由叙事');
+    expect(prompt.userPrompt).toContain('标准难度也必须明确写“标准0”');
+    expect(prompt.userPrompt).toContain('差值 >=20 为大成功；5—19 为成功；0—4 为勉强成功');
+    expect(prompt.userPrompt).not.toContain('v1-local-d100');
+    expect(prompt.userPrompt).toContain('不输出 presetRoll、effectiveTarget、outcome');
+  });
+
   it('documents player loadout partial writeback boundaries', () => {
     const prompt = composePrompt(worldBook, undefined, [], undefined, makeState(), '我收起金疮药并换上偃月刀');
 
@@ -3861,6 +4106,10 @@ describe('composePrompt', () => {
     expect(prompt.stateWriterContext).toContain('仅在正文中提到、看见或回忆既有物品');
     expect(prompt.stateWriterContext).toContain('不得再次 upsert');
     expect(prompt.stateWriterContext).toContain('购买成立时必须同时写入物品获得与负数 personalMoneyDelta');
+    expect(prompt.stateWriterContext).toContain('personalMoney 与 personalMoneyDelta 的底层单位均为钱');
+    expect(prompt.stateWriterContext).toContain('黄金不是 personalMoney 的高位单位');
+    expect(prompt.stateWriterContext).toContain('金饼、马蹄金');
+    expect(prompt.stateWriterContext).toContain('不得自行折成贯钱');
   });
 
   it('documents narrow NPC presence writeback and strict physical presence semantics', () => {

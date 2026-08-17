@@ -82,6 +82,23 @@ describe('TurnRollback', () => {
     expect(after.player.name).toBe('被错误改动');
   });
 
+  it('preserves the current narrative perspective when rolling story state back', () => {
+    const before = makeState(1);
+    before.narrativePerspective = 'second_person';
+    const current = makeState(2);
+    current.narrativePerspective = 'third_person';
+    const snapshot = createTurnRollbackSnapshot({
+      beforeState: before,
+      actionText: '巡视营寨',
+      createdAt: '2026-08-01T15:00:00.000Z',
+    });
+
+    const restored = restoreTurnRollbackSnapshot(snapshot, current);
+
+    expect(restored.state.turnLog).toHaveLength(1);
+    expect(restored.state.narrativePerspective).toBe('third_person');
+  });
+
   it('normalizes historical state when a rollback snapshot bypasses the storage reader', () => {
     const before = makeState(1);
     before.memoryArchive = undefined;

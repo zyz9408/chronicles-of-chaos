@@ -1,4 +1,5 @@
 import type {
+  NarratorFactionRecentActionSuggestion,
   NarratorLocationWriteSuggestion,
   NarratorNpcMemorySuggestion,
   NarratorPlotPlanSuggestion,
@@ -45,6 +46,10 @@ const plotConflictFields: ReadonlyArray<keyof NarratorPlotPlanSuggestion> = [
 export function mergeRepairWritebackProtocol(
   original: NarratorWritebackProtocol | undefined,
   repaired: NarratorWritebackProtocol | undefined,
+  options: {
+    replaceLocationIds?: ReadonlySet<string>;
+    replaceRouteIds?: ReadonlySet<string>;
+  } = {},
 ): NarratorWritebackProtocol {
   const base = normalizeWriteback(original);
   const next = normalizeWriteback(repaired);
@@ -76,6 +81,7 @@ export function mergeRepairWritebackProtocol(
         stableId: (location) => normalizeStableId(location.locationId),
         semanticKey: getLocationSemanticKey,
       },
+      options.replaceLocationIds,
     ),
     routeWriteSuggestions: mergeRepairItems(
       base.routeWriteSuggestions,
@@ -84,6 +90,7 @@ export function mergeRepairWritebackProtocol(
         stableId: (route) => normalizeStableId(route.routeId),
         semanticKey: getRouteSemanticKey,
       },
+      options.replaceRouteIds,
     ),
     questChanges: mergeRepairItems(
       base.questChanges,
@@ -113,8 +120,12 @@ export function mergeRepairWritebackProtocol(
       },
     ),
     worldEventSummary: mergeWorldEventSummary(base.worldEventSummary, next.worldEventSummary),
+    // Recovery semantics are owned by the main narrator. Auxiliary repair may
+    // not reinterpret or replace whether the player actually rested.
+    playerRecoveryKind: base.playerRecoveryKind,
     // Only the main narrator may start a rules encounter. Auxiliary repair may
     // enrich semantic projections, but must never invent or replace authority.
+    encounterTransitionDecision: base.encounterTransitionDecision ?? null,
     encounterStartIntent: base.encounterStartIntent ?? null,
     semanticProjections: mergeRepairItems(
       base.semanticProjections ?? [],
@@ -122,6 +133,14 @@ export function mergeRepairWritebackProtocol(
       {
         stableId: (projection) => normalizeStableId(projection.sourceId),
         semanticKey: (projection) => canonicalStructuralKey(projection),
+      },
+    ),
+    factionRecentActionSuggestions: mergeRepairItems(
+      base.factionRecentActionSuggestions ?? [],
+      next.factionRecentActionSuggestions ?? [],
+      {
+        stableId: () => undefined,
+        semanticKey: getFactionRecentActionSemanticKey,
       },
     ),
     debugNotes: mergeDebugNotes(base.debugNotes, next.debugNotes),
@@ -132,6 +151,7 @@ function mergeRepairItems<T extends object>(
   base: T[],
   next: T[],
   identity: RepairIdentity<T>,
+  replaceStableIds: ReadonlySet<string> | undefined = undefined,
 ): T[] {
   const merged = base.map((item) => cloneDefined(item));
   const idIndex = new Map<string, number>();
@@ -165,7 +185,9 @@ function mergeRepairItems<T extends object>(
     }
 
     if (duplicateIndex !== undefined) {
-      merged[duplicateIndex] = mergePreservingOriginal(merged[duplicateIndex], candidate);
+      merged[duplicateIndex] = stableId && replaceStableIds?.has(stableId)
+        ? cloneDefined(candidate)
+        : mergePreservingOriginal(merged[duplicateIndex], candidate);
       indexRepairItem(merged[duplicateIndex], duplicateIndex, identity, idIndex, semanticIndexes);
       continue;
     }
@@ -193,6 +215,14 @@ function indexRepairItem<T extends object>(
   const indexes = semanticIndexes.get(semanticKey) ?? [];
   if (!indexes.includes(index)) indexes.push(index);
   semanticIndexes.set(semanticKey, indexes);
+}
+
+function getFactionRecentActionSemanticKey(value: NarratorFactionRecentActionSuggestion): string {
+  return canonicalStructuralKey({
+    factionId: value.factionId.trim(),
+    summary: value.summary.trim(),
+    knownLevel: value.knownLevel,
+  });
 }
 
 function getNpcMemoryStableId(memory: NarratorNpcMemorySuggestion): string | undefined {
@@ -418,6 +448,7 @@ function normalizeWriteback(writeback: NarratorWritebackProtocol | undefined): N
     protagonistMemory: writeback?.protagonistMemory ?? null,
     npcProfileSuggestions: [...(writeback?.npcProfileSuggestions ?? [])],
     npcMemorySuggestions: [...(writeback?.npcMemorySuggestions ?? [])],
+    factionRecentActionSuggestions: [...(writeback?.factionRecentActionSuggestions ?? [])],
     locationWriteSuggestions: [...(writeback?.locationWriteSuggestions ?? [])],
     routeWriteSuggestions: [...(writeback?.routeWriteSuggestions ?? [])],
     questChanges: [...(writeback?.questChanges ?? [])],
@@ -425,6 +456,8 @@ function normalizeWriteback(writeback: NarratorWritebackProtocol | undefined): N
     plotPlanSuggestions: [...(writeback?.plotPlanSuggestions ?? [])],
     worldEventUpdates: [...(writeback?.worldEventUpdates ?? [])],
     worldEventSummary: writeback?.worldEventSummary ?? null,
+    playerRecoveryKind: writeback?.playerRecoveryKind,
+    encounterTransitionDecision: writeback?.encounterTransitionDecision ?? null,
     encounterStartIntent: writeback?.encounterStartIntent ?? null,
     semanticProjections: [...(writeback?.semanticProjections ?? [])],
     debugNotes: [...(writeback?.debugNotes ?? [])],

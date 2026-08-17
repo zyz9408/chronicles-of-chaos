@@ -261,10 +261,7 @@
 
 /* Suggested Actions */
 .processing-stage-box {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
+  display: block;
   margin-bottom: 0.55rem;
   padding: 0.52rem 0.75rem;
   border: 1px solid rgba(184, 138, 42, 0.35);
@@ -278,7 +275,31 @@
   font-weight: 700;
 }
 
-@media (max-width: 720px) {
+.turn-processing-trace-compact > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.turn-processing-trace-compact > summary::-webkit-details-marker {
+  display: none;
+}
+
+.turn-processing-trace-compact > summary::after {
+  content: '展开';
+  flex: none;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.turn-processing-trace-compact[open] > summary::after {
+  content: '收起';
+}
+
+@media (max-width: 760px) {
   .memory-summary-pending-notice {
     align-items: stretch;
     flex-direction: column;
@@ -309,6 +330,72 @@
 
 .processing-stage-box small {
   color: var(--text-muted);
+}
+
+.turn-processing-trace {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.turn-processing-trace-note,
+.turn-processing-trace-empty {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.turn-processing-trace-list {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0.7rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.turn-processing-trace:not(.turn-processing-trace-compact) .turn-processing-trace-list {
+  margin-top: 0;
+}
+
+.turn-processing-trace-list li {
+  display: grid;
+  grid-template-columns: 0.65rem minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: start;
+}
+
+.turn-processing-trace-dot {
+  width: 0.52rem;
+  height: 0.52rem;
+  margin-top: 0.34rem;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0.65rem rgba(242, 214, 111, 0.45);
+}
+
+.turn-processing-trace-list li[data-status='failed'] .turn-processing-trace-dot {
+  background: #d65b54;
+  box-shadow: 0 0 0.65rem rgba(214, 91, 84, 0.5);
+}
+
+.turn-processing-trace-list li[data-status='skipped'] .turn-processing-trace-dot {
+  background: var(--text-muted);
+  box-shadow: none;
+}
+
+.turn-processing-trace-list li > div {
+  min-width: 0;
+}
+
+.turn-processing-trace-list strong,
+.turn-processing-trace-list small {
+  display: block;
+}
+
+.turn-processing-trace-list p {
+  margin: 0.24rem 0 0;
+  color: #df8d87;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
 }
 
 .action-option-row {

@@ -6,7 +6,10 @@ import type {
   PrivateAssetProjectEntry,
   RuntimeState,
 } from '../engine/types';
-import { calculateHoldingOutputProjection } from '../engine/holdings/HoldingAnnualSettlement';
+import {
+  calculateHoldingOutputProjection,
+  calculatePrivateAssetAnnualIncome,
+} from '../engine/holdings/HoldingAnnualSettlement';
 import {
   projectHoldingSiegeSupply,
   type HoldingSiegeSupplyCondition,
@@ -18,6 +21,10 @@ import {
   holdingHasLandAdministration,
   resolveHoldingCivilAdministrationScope,
 } from '../engine/holdings/HoldingCivilAdministration';
+import {
+  HOLDING_CIVIL_SCALE_LABELS,
+  resolveHoldingCivilScaleLevel,
+} from '../engine/holdings/HoldingCapacityPolicy';
 
 export interface HoldingPanelRosterItem {
   holdingId: string;
@@ -118,7 +125,7 @@ export interface HoldingPanelModel {
 }
 
 const HOLDING_TYPE_LABELS: Record<HoldingLedgerEntry['type'], string> = {
-  county: '县邑',
+  county: '县城',
   commandery: '郡国',
   city: '城池',
   fort: '堡垒',
@@ -214,7 +221,7 @@ const SCORE_ROW_CONFIG: Array<{
 }> = [
   { key: 'agriculture', label: '农桑', dangerLow: true },
   { key: 'commerce', label: '商税', dangerLow: true },
-  { key: 'population', label: '户口', dangerLow: true },
+  { key: 'population', label: '人口状况', dangerLow: true },
   { key: 'publicOrder', label: '治安', dangerLow: true },
   { key: 'popularSupport', label: '民心', dangerLow: true },
   { key: 'defense', label: '防务', dangerLow: true },
@@ -257,6 +264,7 @@ export function buildHoldingPanelModel(runtimeState: RuntimeState, selectedHoldi
       '状态',
       '规模',
       '民政范围',
+      '民政规模',
       '地点',
       '所属势力',
       '名义归属',
@@ -353,6 +361,7 @@ function buildResourceRows(runtimeState: RuntimeState): HoldingPanelResourceRow[
 
 function buildDetailRows(runtimeState: RuntimeState, holding: HoldingLedgerEntry): HoldingPanelDetailRow[] {
   const civilScope = resolveHoldingCivilAdministrationScope(holding);
+  const civilScaleLevel = resolveHoldingCivilScaleLevel(holding, civilScope);
   const hasHouseholdAdministration = holdingHasHouseholdAdministration(holding);
   const hasLandAdministration = holdingHasLandAdministration(holding);
   const outputProjection = calculateHoldingOutputProjection(holding);
@@ -363,6 +372,9 @@ function buildDetailRows(runtimeState: RuntimeState, holding: HoldingLedgerEntry
     makeRow('状态', formatHoldingStatus(holding.status), undefined, holding.status === 'contested' ? 'warning' : holding.status === 'lost' ? 'danger' : 'normal'),
     makeRow('规模', `${holding.scaleLevel}级`),
     makeRow('民政范围', HOLDING_CIVIL_ADMINISTRATION_SCOPE_LABELS[civilScope]),
+    ...(civilScope !== 'none' ? [
+      makeRow('民政规模', `${civilScaleLevel}级 · ${HOLDING_CIVIL_SCALE_LABELS[civilScaleLevel]}`),
+    ] : []),
     makeRow('地点', resolveLocationName(runtimeState, holding.locationId)),
     makeRow('所属势力', resolveFactionName(runtimeState, holding.factionId)),
     makeRow('名义归属', holding.nominalAllegiance),
@@ -542,6 +554,7 @@ function toPrivateAssetItem(
       makeRow('工匠/仆役', asset.workers !== undefined ? `${asset.workers}人` : undefined),
       makeRow('工坊', asset.workshopScale !== undefined ? `${asset.workshopScale}级` : undefined),
       makeRow('马场', asset.ranchCapacity !== undefined ? `${asset.ranchCapacity}匹容量` : undefined),
+      makeRow('年度估产', formatPrivateAssetAnnualIncome(asset)),
       makeRow('来源', asset.sourceNote),
       makeRow('更新于', asset.updatedAt),
     ].filter((row): row is HoldingPanelDetailRow => row !== null),
@@ -683,6 +696,14 @@ function formatPrivateAssetScale(asset: PrivateAssetEntry): string {
     asset.ranchCapacity !== undefined ? `马场${asset.ranchCapacity}` : undefined,
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(' / ') : '规模未详';
+}
+
+function formatPrivateAssetAnnualIncome(asset: PrivateAssetEntry): string {
+  const income = calculatePrivateAssetAnnualIncome(asset);
+  const parts = (Object.keys(income) as (keyof DomesticReportResourceDelta)[])
+    .filter((key) => income[key] > 0)
+    .map((key) => `${RESOURCE_LABELS[key]} ${formatResourceValue(key, income[key])}`);
+  return parts.length > 0 ? parts.join('，') : '暂无可结算产出';
 }
 
 function formatProjectDelta(delta?: PrivateAssetProjectEntry['targetDelta']): string {

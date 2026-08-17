@@ -1,11 +1,13 @@
 import { strFromU8, unzipSync } from 'fflate';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RuntimeState, SaveData } from '../types';
 import type { SaveArchive } from './SaveManager';
+import { startHoldingGovernanceProject } from '../holdings/HoldingGovernanceProjects';
 import {
   createPortableSaveZip,
   parsePortableSaveZip,
   PORTABLE_SAVE_ZIP_FORMAT,
+  readSaveArchiveFile,
 } from './SaveArchiveZip';
 
 function makeState(name: string, turnCount: number): RuntimeState {
@@ -56,6 +58,10 @@ function makeSave(id: string, kind: 'manual' | 'auto', name: string): SaveData {
 }
 
 describe('SaveArchiveZip', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('writes separate save files, rollback files, a manifest, and image placeholders', async () => {
     const manual = makeSave('manual-1', 'manual', '刘平');
     const auto = makeSave('auto-1', 'auto', '刘平');
@@ -95,5 +101,140 @@ describe('SaveArchiveZip', () => {
     ]));
 
     await expect(parsePortableSaveZip(bytes)).resolves.toEqual(archive);
+  });
+
+  it('preserves unique-art progress evidence and holding-governance projects', async () => {
+    const save = makeSave('manual-governance', 'manual', '刘平');
+    save.runtimeState.player.uniqueArts = [{
+      id: 'art_governance_test',
+      name: '屯田经略',
+      rarity: 'purple',
+      domain: 'governance',
+      level: 3,
+      maxLevel: 10,
+      progress: 45,
+      bankedProgress: 6,
+      description: '统筹屯田、田册与民户。',
+      effectSummary: '用于结构化领地治理。',
+      source: 'background',
+      acquisition: {
+        kind: 'background',
+        occurredAt: '公元184年03月01日',
+        sourceRefId: 'background:governance-test',
+        summary: '开局前已有的屯田经验。',
+      },
+      progressHistory: [{
+        eventId: 'progress:governance-test',
+        source: 'actual_use',
+        intensity: 'normal',
+        occurredAt: '公元184年03月02日',
+        sourceRefId: 'turn:2:governance-test',
+        summary: '在屯田营中实际清点田册。',
+        awardedProgress: 7,
+        levelBefore: 3,
+        progressBefore: 38,
+        levelAfter: 3,
+        progressAfter: 45,
+        levelledUp: false,
+        appliedTurnKey: '2:公元184年03月02日',
+      }],
+    }];
+    save.runtimeState.holdings = [{
+      holdingId: 'holding_governance_test',
+      name: '樊城屯田营',
+      type: 'camp',
+      status: 'controlled',
+      summary: '兼辖田亩民户的军屯。',
+      civilAdministrationScope: 'mixed',
+      scaleLevel: 1,
+      agriculture: 30,
+      commerce: 10,
+      population: 1_000,
+      publicOrder: 55,
+      popularSupport: 50,
+      defense: 45,
+      recruitPotential: 20,
+      armory: 25,
+      horseSupply: 5,
+      corruption: 20,
+      farmlandMu: 2_500,
+      registeredHouseholds: 300,
+      updatedAt: save.runtimeState.currentDate,
+    }];
+    save.runtimeState.resources = {
+      money: 2_000,
+      grain: 2_000,
+      horses: 0,
+      arms: 0,
+      recruits: 0,
+      weapons: [],
+      documents: [],
+      tokens: [],
+      importantSupplies: [],
+    };
+    const started = startHoldingGovernanceProject(save.runtimeState, {
+      holdingId: 'holding_governance_test',
+      type: 'land_survey',
+      host: { actorType: 'player', actorId: 'player' },
+      projectId: 'governance:portable-save-test',
+    });
+    expect(started.ok).toBe(true);
+    save.runtimeState = started.state;
+
+    const archive: SaveArchive = {
+      schema: 'coc.v2.saves',
+      version: 2,
+      exportedAt: '2026-08-01T00:00:00.000Z',
+      lastSaveId: save.id,
+      saves: [save],
+      turnSnapshots: [],
+    };
+    const parsed = await parsePortableSaveZip(await createPortableSaveZip(archive));
+
+    expect(parsed.saves[0].runtimeState.player.uniqueArts?.[0]).toMatchObject({
+      id: 'art_governance_test',
+      progress: 45,
+      bankedProgress: 6,
+      acquisition: { sourceRefId: 'background:governance-test' },
+      progressHistory: [expect.objectContaining({ eventId: 'progress:governance-test' })],
+    });
+    expect(parsed.saves[0].runtimeState.holdingGovernanceProjects?.[0]).toMatchObject({
+      projectId: 'governance:portable-save-test',
+      status: 'active',
+      holdingId: 'holding_governance_test',
+      host: { actorType: 'player', actorId: 'player' },
+    });
+  });
+
+  it('reads a desktop ZIP through FileReader when mobile File.arrayBuffer is unavailable', async () => {
+    const save = makeSave('mobile-file-reader', 'manual', '跨端角色');
+    const archive: SaveArchive = {
+      schema: 'coc.v2.saves',
+      version: 2,
+      exportedAt: '2026-08-02T00:00:00.000Z',
+      lastSaveId: save.id,
+      saves: [save],
+      turnSnapshots: [],
+    };
+    const bytes = await createPortableSaveZip(archive);
+
+    class CompatibleFileReader {
+      result: string | ArrayBuffer | null = null;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onabort: (() => void) | null = null;
+
+      readAsArrayBuffer(): void {
+        const buffer = new ArrayBuffer(bytes.byteLength);
+        new Uint8Array(buffer).set(bytes);
+        this.result = buffer;
+        this.onload?.();
+      }
+    }
+
+    vi.stubGlobal('FileReader', CompatibleFileReader);
+    const mobileFile = { arrayBuffer: undefined } as unknown as File;
+
+    await expect(readSaveArchiveFile(mobileFile)).resolves.toEqual(archive);
   });
 });

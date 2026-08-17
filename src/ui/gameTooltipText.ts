@@ -1,12 +1,29 @@
-import type { CharacterCheckHook, CharacterEquipmentItem, CharacterTrait, CharacterTraitRarity, CharacterUniqueArt } from '../engine/types';
+import type {
+  CharacterCheckHook,
+  CharacterEquipmentItem,
+  CharacterTrait,
+  CharacterTraitRarity,
+  CharacterUniqueArt,
+  CharacterUniqueArtRarity,
+} from '../engine/types';
+import {
+  CHARACTER_UNIQUE_ART_RARITY_LABELS,
+  normalizeUniqueArtRarity,
+} from '../engine/character/NpcUniqueArtPolicy';
+import { normalizeCharacterTraitRarity } from '../engine/character/TraitRarity';
 
 function hasText(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
-const traitRarityValues: CharacterTraitRarity[] = ['white', 'green', 'blue', 'red', 'gold'];
-const traitRaritySet = new Set<string>(traitRarityValues);
 const equipmentQualityLabels: Record<string, string> = {
+  white: '白',
+  green: '绿',
+  blue: '蓝',
+  purple: '紫',
+  orange: '橙',
+  red: '红',
+  gold: '金',
   normal: '普通',
   common: '普通',
   standard: '普通',
@@ -17,9 +34,16 @@ export const TRAIT_RARITY_LABELS: Record<CharacterTraitRarity, string> = {
   white: '白',
   green: '绿',
   blue: '蓝',
+  purple: '紫',
+  orange: '橙',
   red: '红',
-  gold: '金',
 };
+
+export const UNIQUE_ART_RARITY_LABELS: Record<CharacterUniqueArtRarity, string> = {
+  ...CHARACTER_UNIQUE_ART_RARITY_LABELS,
+};
+
+export { normalizeUniqueArtRarity };
 
 export const UNIQUE_ART_DOMAIN_LABELS: Record<string, string> = {
   personalCombat: '个人战',
@@ -78,8 +102,9 @@ export const TRAIT_RARITY_DESCRIPTIONS: Record<CharacterTraitRarity, string> = {
   white: '普通特质，主要提供人物气质、习惯和叙事参考。',
   green: '较明显特质，相关场景中更容易被模型采纳。',
   blue: '强特质，常会影响选择、交涉、战斗或判定倾向。',
-  red: '危险或压迫性强特质，会明显改变他人反应与局势风险。',
-  gold: '核心传奇级特质，属于人物定位级能力，关键场景优先作为叙事依据。',
+  purple: '珍贵特质，在对应领域有稳定而显著的叙事与判定权重。',
+  orange: '传说特质，会明显改变他人反应、局势走向或关键判定。',
+  red: '绝世特质，属于人物定位级能力，关键场景优先作为叙事依据。',
 };
 
 export const TRAIT_RARITY_LEGEND_TITLE = [
@@ -87,25 +112,22 @@ export const TRAIT_RARITY_LEGEND_TITLE = [
   `白：${TRAIT_RARITY_DESCRIPTIONS.white}`,
   `绿：${TRAIT_RARITY_DESCRIPTIONS.green}`,
   `蓝：${TRAIT_RARITY_DESCRIPTIONS.blue}`,
+  `紫：${TRAIT_RARITY_DESCRIPTIONS.purple}`,
+  `橙：${TRAIT_RARITY_DESCRIPTIONS.orange}`,
   `红：${TRAIT_RARITY_DESCRIPTIONS.red}`,
-  `金：${TRAIT_RARITY_DESCRIPTIONS.gold}`,
   '颜色越高代表叙事权重越高，更容易在对应场景中影响模型写法和轻量判定。',
   '它不等于固定数值加成；具体效果仍由正文、promptHint、判定钩子和剧情语境共同决定。',
 ].join('\n');
 
 export function normalizeTraitRarity(value?: string | null): CharacterTraitRarity {
-  if (!hasText(value)) return 'white';
-  const normalized = value.trim().toLocaleLowerCase();
-  return traitRaritySet.has(normalized) ? (normalized as CharacterTraitRarity) : 'white';
+  return normalizeCharacterTraitRarity(value) ?? 'white';
 }
 
 export function formatEquipmentQualityLabel(value?: string | null): string {
   if (!hasText(value)) return '';
   const quality = value.trim();
   const normalized = quality.toLocaleLowerCase();
-  return traitRaritySet.has(normalized)
-    ? TRAIT_RARITY_LABELS[normalized as CharacterTraitRarity]
-    : equipmentQualityLabels[normalized] ?? quality;
+  return equipmentQualityLabels[normalized] ?? quality;
 }
 
 export function formatUniqueArtDomainLabel(value?: string | null): string {
@@ -155,11 +177,11 @@ export function buildTraitTooltipTitle(trait: CharacterTrait): string {
 
 export function buildUniqueArtTooltipTitle(art: CharacterUniqueArt): string {
   const name = hasText(art.name) ? art.name.trim() : '未命名绝艺';
-  const rarity = normalizeTraitRarity(art.rarity);
+  const rarity = normalizeUniqueArtRarity(art.rarity);
   const levelText = art.maxLevel ? `Lv.${art.level} / ${art.maxLevel}` : `Lv.${art.level}`;
   const lines = [
     `${name}：${hasText(art.description) ? art.description.trim() : '暂无说明。'}`,
-    `品级：${TRAIT_RARITY_LABELS[rarity]}：${TRAIT_RARITY_DESCRIPTIONS[rarity]}`,
+    `品级：${UNIQUE_ART_RARITY_LABELS[rarity]}`,
     `领域：${formatUniqueArtDomainLabel(art.domain)}`,
     `等级：${levelText}`,
     `功效：${art.effectSummary}`,

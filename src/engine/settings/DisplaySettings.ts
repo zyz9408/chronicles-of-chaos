@@ -9,13 +9,16 @@ export const MIN_SNAPSHOT_DEPTH = 0;
 export const MAX_SNAPSHOT_DEPTH = 50;
 export const NPC_PRESENCE_HINTS_ENABLED_KEY = 'coc_v2_npc_presence_hints_enabled';
 export const GAME_NARRATIVE_LENGTH_KEY = 'coc_v2_narrative_length';
+export const GAME_NARRATIVE_LENGTH_RETRY_ENABLED_KEY = 'coc_v2_narrative_length_retry_enabled';
 export const NARRATIVE_LENGTH_OPTIONS = ['compact', 'standard', 'rich', 'long'] as const;
 export type NarrativeLengthPreference = (typeof NARRATIVE_LENGTH_OPTIONS)[number];
 export const DEFAULT_NARRATIVE_LENGTH: NarrativeLengthPreference = 'standard';
+export const DEFAULT_NARRATIVE_LENGTH_RETRY_ENABLED = true;
+/** @deprecated 旧版本的二选一风格键只用于兼容迁移；运行时统一使用 adaptive。 */
 export const GAME_ADULT_INTIMACY_STYLE_KEY = 'coc_v2_adult_intimacy_style';
-export const ADULT_INTIMACY_STYLE_OPTIONS = ['relationshipImmersion', 'directRealism'] as const;
+export const ADULT_INTIMACY_STYLE_OPTIONS = ['adaptive'] as const;
 export type AdultIntimacyStylePreference = (typeof ADULT_INTIMACY_STYLE_OPTIONS)[number];
-export const DEFAULT_ADULT_INTIMACY_STYLE: AdultIntimacyStylePreference = 'relationshipImmersion';
+export const DEFAULT_ADULT_INTIMACY_STYLE: AdultIntimacyStylePreference = 'adaptive';
 export const GAME_PREGNANCY_MODE_KEY = 'coc_v2_pregnancy_mode';
 export const PREGNANCY_MODE_OPTIONS = ['off', 'low', 'standard', 'high'] as const;
 export type PregnancyModePreference = (typeof PREGNANCY_MODE_OPTIONS)[number];
@@ -33,6 +36,10 @@ export const GAME_MOTION_PREFERENCE_KEY = 'coc_v2_motion_preference';
 export const MOTION_PREFERENCE_OPTIONS = ['system', 'reduced'] as const;
 export type MotionPreference = (typeof MOTION_PREFERENCE_OPTIONS)[number];
 export const DEFAULT_MOTION_PREFERENCE: MotionPreference = 'system';
+export const GAME_COLOR_THEME_KEY = 'coc_v2_color_theme';
+export const COLOR_THEME_OPTIONS = ['dark', 'light'] as const;
+export type ColorThemePreference = (typeof COLOR_THEME_OPTIONS)[number];
+export const DEFAULT_COLOR_THEME: ColorThemePreference = 'dark';
 
 type RenderDepthStorage = Pick<Storage, 'getItem' | 'setItem'>;
 
@@ -154,6 +161,35 @@ export function saveNarrativeLengthToStorage(
   return normalized;
 }
 
+export function loadNarrativeLengthRetryEnabledFromStorage(
+  storage?: RenderDepthStorage,
+): boolean {
+  const target = getDisplaySettingsStorage(storage);
+  if (!target) return DEFAULT_NARRATIVE_LENGTH_RETRY_ENABLED;
+
+  try {
+    const raw = target.getItem(GAME_NARRATIVE_LENGTH_RETRY_ENABLED_KEY);
+    return raw !== '0' && raw !== 'false';
+  } catch {
+    return DEFAULT_NARRATIVE_LENGTH_RETRY_ENABLED;
+  }
+}
+
+export function saveNarrativeLengthRetryEnabledToStorage(
+  enabled: boolean,
+  storage?: RenderDepthStorage,
+): boolean {
+  const target = getDisplaySettingsStorage(storage);
+  if (!target) return enabled;
+
+  try {
+    target.setItem(GAME_NARRATIVE_LENGTH_RETRY_ENABLED_KEY, enabled ? '1' : '0');
+  } catch {
+    // Game preferences are non-critical.
+  }
+  return enabled;
+}
+
 function getDisplaySettingsStorage(storage?: RenderDepthStorage): RenderDepthStorage | null {
   if (storage) return storage;
   if (typeof localStorage === 'undefined') return null;
@@ -161,9 +197,10 @@ function getDisplaySettingsStorage(storage?: RenderDepthStorage): RenderDepthSto
 }
 
 export function normalizeAdultIntimacyStyle(value: unknown): AdultIntimacyStylePreference {
-  return typeof value === 'string' && ADULT_INTIMACY_STYLE_OPTIONS.includes(value as AdultIntimacyStylePreference)
-    ? (value as AdultIntimacyStylePreference)
-    : DEFAULT_ADULT_INTIMACY_STYLE;
+  if (value === 'adaptive' || value === 'relationshipImmersion' || value === 'directRealism') {
+    return 'adaptive';
+  }
+  return DEFAULT_ADULT_INTIMACY_STYLE;
 }
 
 export function loadAdultIntimacyStyleFromStorage(
@@ -173,7 +210,9 @@ export function loadAdultIntimacyStyleFromStorage(
   if (!target) return DEFAULT_ADULT_INTIMACY_STYLE;
 
   try {
-    return normalizeAdultIntimacyStyle(target.getItem(GAME_ADULT_INTIMACY_STYLE_KEY));
+    const normalized = normalizeAdultIntimacyStyle(target.getItem(GAME_ADULT_INTIMACY_STYLE_KEY));
+    target.setItem(GAME_ADULT_INTIMACY_STYLE_KEY, normalized);
+    return normalized;
   } catch {
     return DEFAULT_ADULT_INTIMACY_STYLE;
   }
@@ -280,12 +319,41 @@ export function saveMotionPreferenceToStorage(value: unknown, storage?: RenderDe
   return normalized;
 }
 
+export function normalizeColorTheme(value: unknown): ColorThemePreference {
+  return typeof value === 'string' && COLOR_THEME_OPTIONS.includes(value as ColorThemePreference)
+    ? value as ColorThemePreference
+    : DEFAULT_COLOR_THEME;
+}
+
+export function loadColorThemeFromStorage(storage?: RenderDepthStorage): ColorThemePreference {
+  const target = getDisplaySettingsStorage(storage);
+  if (!target) return DEFAULT_COLOR_THEME;
+  try {
+    return normalizeColorTheme(target.getItem(GAME_COLOR_THEME_KEY));
+  } catch {
+    return DEFAULT_COLOR_THEME;
+  }
+}
+
+export function saveColorThemeToStorage(value: unknown, storage?: RenderDepthStorage): ColorThemePreference {
+  const normalized = normalizeColorTheme(value);
+  const target = getDisplaySettingsStorage(storage);
+  try {
+    target?.setItem(GAME_COLOR_THEME_KEY, normalized);
+  } catch {
+    // Theme preferences are local-only and non-critical.
+  }
+  applyDisplayPreferencesToDocument();
+  return normalized;
+}
+
 export function applyDisplayPreferencesToDocument(): void {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
   root.style.setProperty('--narrative-font-size', `${loadNarrativeFontSizeFromStorage()}px`);
   root.style.setProperty('--narrative-line-height', String(loadNarrativeLineHeightFromStorage()));
   root.dataset.cocMotion = loadMotionPreferenceFromStorage();
+  root.dataset.cocTheme = loadColorThemeFromStorage();
 }
 
 export function normalizePregnancyMode(value: unknown): PregnancyModePreference {

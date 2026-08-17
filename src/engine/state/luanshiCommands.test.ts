@@ -1,8 +1,9 @@
 ﻿import { describe, expect, it } from 'vitest';
-import type { RuntimeState } from '../types';
+import type { CharacterUniqueArt, RuntimeState } from '../types';
 import { ensureLuanShiState } from './createInitialRuntimeState';
 import { validateLuanShiCommand } from './luanshiCommands';
 import { applyLuanShiCommand } from './luanshiReducers';
+import { deriveNpcCurrentAge } from '../time/npcAge';
 
 function makeState(): RuntimeState {
   return ensureLuanShiState({
@@ -69,7 +70,7 @@ function makeState(): RuntimeState {
   });
 }
 
-function makeUniqueArt(overrides: Record<string, unknown> = {}) {
+function makeUniqueArt(overrides: Partial<CharacterUniqueArt> = {}): CharacterUniqueArt {
   return {
     id: 'art_border_scouting',
     name: 'Border Scouting',
@@ -81,6 +82,12 @@ function makeUniqueArt(overrides: Record<string, unknown> = {}) {
     description: 'Reads terrain, patrol habits, and hidden tracks in borderland marches.',
     effectSummary: 'Improves route reading, ambush avoidance, and pursuit checks.',
     source: 'opening',
+    acquisition: {
+      kind: 'opening',
+      occurredAt: 'opening-date',
+      sourceRefId: 'opening:test-chaos-world',
+      summary: 'The opening identity establishes long-term border scouting experience.',
+    },
     promptHint: 'Use as a long-term survival and scouting edge, not as an automatic success.',
     checkHooks: [
       {
@@ -99,6 +106,8 @@ function makeNpcProfileUpsertCommand(overrides: Record<string, unknown> = {}) {
     action: 'upsertNpcProfile',
     npcId: 'npc_gate_guard',
     name: '门候',
+    persistenceReason: 'active_system_role',
+    persistenceEvidence: '本回合已确认其长期负责洛阳城门守备。',
     sex: '男',
     age: 36,
     role: '洛阳城门守军',
@@ -127,6 +136,71 @@ function makeNpcProfileUpsertCommand(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateLuanShiCommand', () => {
+  it('validates and applies a narrow NPC relationship update against a stable NPC id', () => {
+    const state = makeState();
+    const command = {
+      action: 'updateNpcRelationship',
+      npcId: 'npc_chen_heng',
+      contactDelta: 6,
+      relationToPlayer: '共同经历险境，彼此已有可靠交情。',
+      recentAttitude: '信任并愿意继续合作',
+      summary: '两人共同脱离伏击并坦诚交换了重要情报。',
+    } as any;
+
+    expect(validateLuanShiCommand(state, command)).toEqual({
+      valid: true,
+      errors: [],
+      warnings: [],
+    });
+
+    const next = applyLuanShiCommand(state, command);
+    expect(next.npcs.find((npc) => npc.npcId === 'npc_chen_heng')).toMatchObject({
+      contactLevel: 16,
+      relationToPlayer: '共同经历险境，彼此已有可靠交情。',
+      recentAttitude: '信任并愿意继续合作',
+    });
+  });
+
+  it('rejects unsafe NPC relationship deltas and clamps an accepted update to 100', () => {
+    const state = makeState();
+
+    for (const contactDelta of [0, -1, 11, 1.5, Number.NaN]) {
+      expect(validateLuanShiCommand(state, {
+        action: 'updateNpcRelationship',
+        npcId: 'npc_chen_heng',
+        contactDelta,
+        summary: '测试。',
+      } as any).valid).toBe(false);
+    }
+    expect(validateLuanShiCommand(state, {
+      action: 'updateNpcRelationship',
+      npcId: 'npc_missing',
+      contactDelta: 1,
+      summary: '测试。',
+    } as any).valid).toBe(false);
+    expect(validateLuanShiCommand(state, {
+      action: 'updateNpcRelationship',
+      npcId: 'npc_chen_heng',
+      contactDelta: 1,
+      relationToPlayer: '   ',
+      summary: '测试。',
+    } as any).valid).toBe(false);
+
+    const highContactState = {
+      ...state,
+      npcs: state.npcs?.map((npc) => (
+        npc.npcId === 'npc_chen_heng' ? { ...npc, contactLevel: 96 } : npc
+      )),
+    } as RuntimeState;
+    const next = applyLuanShiCommand(highContactState, {
+      action: 'updateNpcRelationship',
+      npcId: 'npc_chen_heng',
+      contactDelta: 10,
+      summary: '共同承担了一次不可逆的重大后果。',
+    } as any);
+    expect(next.npcs.find((npc) => npc.npcId === 'npc_chen_heng')?.contactLevel).toBe(100);
+  });
+
   it('validates narrow NPC presence updates without requiring a full profile rewrite', () => {
     const state = makeState();
 
@@ -252,6 +326,21 @@ describe('validateLuanShiCommand', () => {
 
     expect(result.valid).toBe(false);
     expect(result.errors.join('\n')).toContain('presentNpcIds 数组');
+  });
+
+  it('把缺失的回合事件地点与摘要报告为结构错误，而不是在 trim 时崩溃', () => {
+    const command = {
+      action: 'recordTurnEvent',
+      eventId: 'evt_missing_required_text',
+      visibility: '在场可知',
+    } as any;
+
+    expect(() => validateLuanShiCommand(makeState(), command)).not.toThrow();
+
+    const result = validateLuanShiCommand(makeState(), command);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain('recordTurnEvent 必须包含 locationId。');
+    expect(result.errors).toContain('recordTurnEvent 必须包含 summary。');
   });
 
   it('允许给在场 NPC 写入亲历记忆', () => {
@@ -549,6 +638,11 @@ describe('validateLuanShiCommand', () => {
       currentIdentityDescription: '统带百余残兵的基层军官，名义上仍属洛阳北军残部。',
       militaryTitle: '军侯',
       identitySummary: '主角由泛称军中将校被细化为洛阳乱局中的北军军侯。',
+      personalEscortEntitlement: {
+        status: 'customary',
+        bases: ['military_command'],
+        updatedAt: '乱世元年2月',
+      },
     } as any);
 
     expect(next.player.commonAddress).toBe('刘军侯');
@@ -566,7 +660,14 @@ describe('validateLuanShiCommand', () => {
       characterType: 'player',
       characterName: '主角',
       currentIdentity: '北军别部司马',
+      currentIdentityDescription: '统领一曲北军步卒的基层带兵武官。',
       militaryTitle: '别部司马',
+      identitySummary: '主角受命担任北军别部司马。',
+      personalEscortEntitlement: {
+        status: 'customary',
+        bases: ['military_command'],
+        updatedAt: '乱世元年2月',
+      },
     } as any;
 
     const validation = validateLuanShiCommand(makeState(), command);
@@ -575,6 +676,74 @@ describe('validateLuanShiCommand', () => {
     const next = applyLuanShiCommand(makeState(), command);
     expect(next.player.currentIdentity).toBe('北军别部司马');
     expect(next.player.militaryTitle).toBe('别部司马');
+  });
+
+  it('只允许把闭集的长期护卫资格写入主角档案', () => {
+    const command = {
+      action: 'updateCharacterIdentity',
+      characterType: 'player',
+      characterName: '主角',
+      personalEscortEntitlement: {
+        status: 'customary',
+        bases: ['official_position', 'explicit_retinue'],
+        updatedAt: '乱世元年2月',
+      },
+    } as any;
+    expect(validateLuanShiCommand(makeState(), command)).toMatchObject({ valid: true, errors: [] });
+    const next = applyLuanShiCommand(makeState(), command);
+    expect(next.player.personalEscortEntitlement).toEqual(command.personalEscortEntitlement);
+
+    const invalid = validateLuanShiCommand(makeState(), {
+      ...command,
+      personalEscortEntitlement: {
+        status: 'customary',
+        bases: ['身份看起来很高'],
+        updatedAt: '乱世元年2月',
+      },
+    });
+    expect(invalid.valid).toBe(false);
+    expect(invalid.errors.join('\n')).toContain('包含未知依据');
+
+    const npc = validateLuanShiCommand(makeState(), {
+      ...command,
+      characterType: 'npc',
+      characterId: 'npc_chen_heng',
+      characterName: '陈衡',
+    });
+    expect(npc.valid).toBe(false);
+    expect(npc.errors.join('\n')).toContain('只允许写入当前玩家');
+  });
+
+  it('拒绝缺少主身份快照或配套档案的部分身份更新', () => {
+    const missingCurrentIdentity = validateLuanShiCommand(makeState(), {
+      action: 'updateCharacterIdentity',
+      characterType: 'player',
+      characterName: '主角',
+      militaryTitle: '军侯',
+      personalEscortEntitlement: {
+        status: 'customary',
+        bases: ['military_command'],
+        updatedAt: '乱世元年2月',
+      },
+    } as any);
+    expect(missingCurrentIdentity.valid).toBe(false);
+    expect(missingCurrentIdentity.errors.join('\n')).toContain('必须显式包含 currentIdentity');
+
+    const missingIdentityArchive = validateLuanShiCommand(makeState(), {
+      action: 'updateCharacterIdentity',
+      characterType: 'player',
+      characterName: '主角',
+      currentIdentity: '北军军侯',
+      militaryTitle: '军侯',
+      personalEscortEntitlement: {
+        status: 'customary',
+        bases: ['military_command'],
+        updatedAt: '乱世元年2月',
+      },
+    } as any);
+    expect(missingIdentityArchive.valid).toBe(false);
+    expect(missingIdentityArchive.errors.join('\n')).toContain('currentIdentityDescription');
+    expect(missingIdentityArchive.errors.join('\n')).toContain('identitySummary');
   });
 
   it('允许结构化写回 NPC 身份档案并保留人物归属', () => {
@@ -587,6 +756,7 @@ describe('validateLuanShiCommand', () => {
       commonAddress: '陈首领',
       birthOrigin: '郡县土族旁支',
       currentIdentity: '游侠首领',
+      currentIdentityDescription: '统领市镇一带游侠，尚未正式依附诸侯。',
       factionName: '市镇游侠',
       allegianceTarget: '自身',
       identitySummary: '陈衡是市镇一带游侠的首领，暂未正式投靠任何势力。',
@@ -651,6 +821,64 @@ describe('validateLuanShiCommand', () => {
     expect(result.errors).toEqual([]);
   });
 
+  it('拒绝全量行装中的重复稳定 ID、重复非宝物槽和错位跨列表镜像', () => {
+    const result = validateLuanShiCommand(makeState(), {
+      action: 'updatePlayerLoadout',
+      characterId: 'player',
+      equipment: [
+        {
+          id: 'eq_duplicate',
+          slot: 'weapon',
+          name: '长刀',
+          quality: '精良',
+          description: '第一件武器。',
+        },
+        {
+          id: 'eq_duplicate',
+          slot: 'weapon',
+          name: '强弓',
+          quality: '精良',
+          description: '第二件武器。',
+        },
+      ],
+      inventory: [
+        { id: 'eq_duplicate', name: '长刀', quantity: 1, category: 'equipment', equipSlot: 'weapon' },
+        { id: 'eq_duplicate', name: '强弓', quantity: 1, category: 'equipment', equipSlot: 'weapon' },
+      ],
+    } as any);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('\n')).toContain('重复：eq_duplicate');
+    expect(result.errors.join('\n')).toContain('weapon 槽位最多只能有 1 件装备');
+    expect(result.errors.join('\n')).toContain('名称或装备槽不一致');
+  });
+
+  it('拒绝 NPC 全量档案中的重复装备槽', () => {
+    const result = validateLuanShiCommand(makeState(), makeNpcProfileUpsertCommand({
+      npcId: 'npc_duplicate_weapon',
+      name: '重复武器测试者',
+      equipment: [
+        {
+          id: 'eq_first_weapon',
+          slot: 'weapon',
+          name: '环首刀',
+          quality: '普通',
+          description: '第一把武器。',
+        },
+        {
+          id: 'eq_second_weapon',
+          slot: 'weapon',
+          name: '长矛',
+          quality: '普通',
+          description: '第二把武器。',
+        },
+      ],
+    }) as any);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('\n')).toContain('upsertNpcProfile.equipment 的 weapon 槽位最多只能有 1 件装备');
+  });
+
   it('允许个人钱财 delta 收支，并拒绝绝对值混用和透支', () => {
     const state = ensureLuanShiState({
       ...makeState(),
@@ -703,7 +931,7 @@ describe('validateLuanShiCommand', () => {
     },
   );
 
-  it('允许 LLM 写入自由品级和可装备背包物品', () => {
+  it('允许 LLM 写入统一六档品级和可装备背包物品', () => {
     const result = validateLuanShiCommand(makeState(), {
       action: 'updatePlayerLoadout',
       characterId: 'player',
@@ -712,7 +940,7 @@ describe('validateLuanShiCommand', () => {
           id: 'eq_imperial_blade',
           slot: 'weapon',
           name: '御赐环首刀',
-          quality: '御赐军制',
+          quality: 'orange',
           description: '刀身有官造铭文，适合军中身份展示。',
         },
       ],
@@ -723,7 +951,7 @@ describe('validateLuanShiCommand', () => {
           quantity: 1,
           category: 'equipment',
           equipSlot: 'weapon',
-          quality: '军中精造',
+          quality: 'blue',
           description: '可在需要远射时替换当前武器。',
         },
       ],
@@ -745,7 +973,7 @@ describe('validateLuanShiCommand', () => {
             id: 'eq_chen_heng_sabre',
             slot: 'weapon',
             name: '环首刀',
-            quality: '军中旧制',
+            quality: 'green',
             description: '陈衡随身携带的旧刀，近身格斗时可靠。',
             promptHint: '陈衡参与近战或威慑判定时，可作为小幅优势。',
             checkHooks: [{ scope: 'personalCombat.melee', modifier: 6, note: '旧刀顺手。' }],
@@ -868,6 +1096,44 @@ describe('validateLuanShiCommand', () => {
     expect(result.errors).toContain('updatePlayerLoadout.inventoryChanges[0].item.description 必须是字符串。');
   });
 
+  it('装备品级只接受统一六档并拒绝把来源标签当品级', () => {
+    const invalid = validateLuanShiCommand(makeState(), {
+      action: 'updatePlayerLoadout',
+      characterId: 'player',
+      equipmentChanges: [{
+        action: 'upsert',
+        item: {
+          id: 'eq_imperial_sabre',
+          slot: 'weapon',
+          name: '御赐环首刀',
+          quality: '国宝',
+          description: '御赐军器。',
+        },
+      }],
+    } as any);
+    const validCommand = {
+      action: 'updatePlayerLoadout',
+      characterId: 'player',
+      equipmentChanges: [{
+        action: 'upsert',
+        item: {
+          id: 'eq_imperial_sabre',
+          slot: 'weapon',
+          name: '御赐环首刀',
+          quality: '传说',
+          description: '御赐军器。',
+        },
+      }],
+    } as any;
+    const valid = validateLuanShiCommand(makeState(), validCommand);
+    const normalized = applyLuanShiCommand(makeState(), validCommand);
+
+    expect(invalid.valid).toBe(false);
+    expect(invalid.errors.join('\n')).toContain('不得使用御赐、国宝、家传等来源标签');
+    expect(valid.valid).toBe(true);
+    expect(normalized.player.equipment?.[0]?.quality).toBe('传说');
+  });
+
   it('拒绝 NPC 行装使用玩家专属的从背包装备动作', () => {
     const result = validateLuanShiCommand(makeState(), {
       action: 'updateNpcLoadout',
@@ -892,7 +1158,7 @@ describe('validateLuanShiCommand', () => {
             id: 'eq_chen_heng_sabre',
             slot: 'weapon',
             name: '环首刀',
-            quality: '军中旧制',
+            quality: 'green',
             description: '陈衡随身携带的旧刀。',
           },
         },
@@ -975,7 +1241,7 @@ describe('validateLuanShiCommand', () => {
         ? {
             ...npc,
             equipment: [
-              { id: 'eq_sabre', slot: 'weapon', name: '环首刀', quality: '军中旧制', description: '陈衡旧刀。' },
+              { id: 'eq_sabre', slot: 'weapon', name: '环首刀', quality: 'green', description: '陈衡旧刀。' },
             ],
             inventory: [{ id: 'item_dry_food', name: '干粮', quantity: 2, category: 'supply' }],
           }
@@ -1114,7 +1380,9 @@ describe('validateLuanShiCommand', () => {
     const base = makeState();
     const next = applyLuanShiCommand(base, {
       action: 'updateResourceLedger',
-      money: 7200,
+      previousMoneyGuan: 0,
+      moneyDeltaGuan: 7200,
+      moneyGuan: 7200,
       grain: 18000,
       arms: 350,
       playerResources: {
@@ -1135,7 +1403,7 @@ describe('validateLuanShiCommand', () => {
     expect(next.worldStateDelta.openingPersonalMoney).toBe(base.worldStateDelta.openingPersonalMoney);
   });
 
-  it('资源账本更新会清理旧存档中的个人钱财 shadow', () => {
+  it('资源账本更新会清理旧存档中的府库标准资源 shadow', () => {
     const base = ensureLuanShiState({
       ...makeState(),
       playerResources: {
@@ -1153,11 +1421,11 @@ describe('validateLuanShiCommand', () => {
     });
 
     expect(next.playerResources).toEqual({
-      粮草: 50,
       粮饷: 240,
     });
     expect(next.player.personalMoney).toBe(base.player.personalMoney);
     expect(next.resources).toEqual(base.resources);
+    expect(next.resources.grain).toBe(50);
   });
 
   it('用局部装备变更从背包装备物品且不覆盖其他物品', () => {
@@ -1286,6 +1554,8 @@ describe('validateLuanShiCommand', () => {
       action: 'upsertNpcProfile',
       npcId: 'npc_gate_guard',
       name: '门候',
+      persistenceReason: 'active_system_role',
+      persistenceEvidence: '本回合已确认其长期负责洛阳城门守备。',
       courtesyName: '',
       artName: '',
       aliases: ['守门军士'],
@@ -1479,6 +1749,8 @@ describe('validateLuanShiCommand', () => {
       action: 'upsertNpcProfile',
       npcId: 'npc_gate_guard',
       name: '门候',
+      persistenceReason: 'active_system_role',
+      persistenceEvidence: '本回合已确认其长期负责洛阳城门守备。',
       sex: '男',
       age: 36,
       role: '洛阳城门守军',
@@ -1549,7 +1821,7 @@ describe('validateLuanShiCommand', () => {
     expect(result.errors.join('\n')).toContain('upsertNpcProfile.age 必须是大于 0 的整数。');
   });
 
-  it('records the game date that anchors an upserted NPC age', () => {
+  it('persists a complete deterministic birthday for an upserted NPC age', () => {
     const next = applyLuanShiCommand(
       {
         ...makeState(),
@@ -1559,6 +1831,8 @@ describe('validateLuanShiCommand', () => {
         action: 'upsertNpcProfile',
         npcId: 'npc_gate_guard',
         name: '门候',
+        persistenceReason: 'active_system_role',
+        persistenceEvidence: '本回合已确认其长期负责洛阳城门守备。',
         sex: '男',
         age: 36,
         role: '洛阳城门守军',
@@ -1586,7 +1860,29 @@ describe('validateLuanShiCommand', () => {
     );
 
     const gateGuard = next.npcs.find((npc) => npc.npcId === 'npc_gate_guard') as any;
-    expect(gateGuard?.ageKnownAtDate).toBe('公元189年09月01日 08:00（辰时）');
+    expect(gateGuard?.birthDate).toMatch(/^公元\d+年\d{2}月\d{2}日$/);
+    expect(gateGuard?.ageKnownAtDate).toBeUndefined();
+    expect(deriveNpcCurrentAge(gateGuard, next.currentDate)).toBe(36);
+  });
+
+  it('rejects malformed birthdays and prevents an established birthday from drifting', () => {
+    const malformed = validateLuanShiCommand(
+      { ...makeState(), currentDate: '公元189年09月01日 08:00（辰时）' },
+      makeNpcProfileUpsertCommand({ birthDate: '公元153年13月01日' }) as any,
+    );
+    expect(malformed.valid).toBe(false);
+    expect(malformed.errors.join('\n')).toContain('完整日期');
+
+    const created = applyLuanShiCommand(
+      { ...makeState(), currentDate: '公元189年09月01日 08:00（辰时）' },
+      makeNpcProfileUpsertCommand({ birthDate: '公元153年08月18日' }) as any,
+    );
+    const drifted = validateLuanShiCommand(
+      created,
+      makeNpcProfileUpsertCommand({ birthDate: '公元152年08月18日' }) as any,
+    );
+    expect(drifted.valid).toBe(false);
+    expect(drifted.errors.join('\n')).toContain('已固定，不得改写');
   });
 
   it('更新已有 NPC 档案时保留原有记忆', () => {
@@ -1808,11 +2104,56 @@ describe('validateLuanShiCommand', () => {
     expect(next.worldStateDelta.openingUniqueArtsSummary).toBe('Opening AI judged one long-term art.');
   });
 
+  it('appends new player unique arts without replacing established arts', () => {
+    const state = makeState();
+    state.player.uniqueArts = [makeUniqueArt({
+      id: 'art_border_scouting',
+      name: 'Border Scouting',
+      domain: 'survival',
+      level: 2,
+    })];
+
+    const appended = applyLuanShiCommand(state, {
+      action: 'updateCharacterUniqueArts',
+      characterType: 'player',
+      characterId: 'player',
+      uniqueArts: [makeUniqueArt({
+        id: 'art_hidden_blade',
+        name: 'Hidden Blade',
+        domain: 'personalCombat',
+        level: 1,
+      })],
+      summary: 'The player learned a new art.',
+    } as any);
+
+    expect(appended.player.uniqueArts?.map((art) => art.id)).toEqual([
+      'art_border_scouting',
+      'art_hidden_blade',
+    ]);
+    expect(appended.worldStateDelta.openingUniqueArts).toEqual([
+      'Border Scouting',
+      'Hidden Blade',
+    ]);
+
+    const preserved = applyLuanShiCommand(appended, {
+      action: 'updateCharacterUniqueArts',
+      characterType: 'player',
+      characterId: 'player',
+      uniqueArts: [],
+    } as any);
+    expect(preserved.player.uniqueArts?.map((art) => art.id)).toEqual([
+      'art_border_scouting',
+      'art_hidden_blade',
+    ]);
+  });
+
   it('allows NPC profile upsert to include unique arts', () => {
     const result = validateLuanShiCommand(makeState(), {
       action: 'upsertNpcProfile',
       npcId: 'npc_lady_tan',
       name: 'Lady Tan',
+      persistenceReason: 'active_system_role',
+      persistenceEvidence: 'She has an established long-term role as the convoy strategist.',
       sex: '女',
       age: 26,
       role: 'Strategist',
@@ -1856,6 +2197,8 @@ describe('validateLuanShiCommand', () => {
       action: 'upsertNpcProfile',
       npcId: 'npc_lady_tan',
       name: 'Lady Tan',
+      persistenceReason: 'active_system_role',
+      persistenceEvidence: 'She has an established long-term role as the convoy strategist.',
       sex: '女',
       age: 26,
       role: 'Strategist',
@@ -2378,7 +2721,7 @@ describe('validateLuanShiCommand', () => {
       action: 'updateResourceLedger',
       playerResources: {
         [resourceKey]: 36,
-        粮草: 50,
+        粮饷: 50,
       },
     } as any);
 
@@ -2386,17 +2729,96 @@ describe('validateLuanShiCommand', () => {
     expect(result.errors.join('\n')).toContain('updatePlayerLoadout.personalMoneyDelta');
   });
 
+  it.each([
+    ['grain', 'grain'],
+    ['粮草', 'grain'],
+    ['军粮', 'grain'],
+    ['horses', 'horses'],
+    ['马匹', 'horses'],
+    ['arms', 'arms'],
+    ['军械', 'arms'],
+    ['recruits', 'recruits'],
+    ['可征召人手', 'recruits'],
+  ])('rejects canonical ledger shadow key %s and points to %s', (resourceKey, canonicalField) => {
+    const result = validateLuanShiCommand(makeState(), {
+      action: 'updateResourceLedger',
+      playerResources: {
+        [resourceKey]: 289,
+      },
+    } as any);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('\n')).toContain(`updateResourceLedger.${canonicalField === 'money' ? 'moneyGuan' : canonicalField}`);
+  });
+
+  it('requires an explicit guan-denominated public treasury reconciliation', () => {
+    const base = ensureLuanShiState(makeState());
+    const state = ensureLuanShiState({
+      ...base,
+      resources: {
+        ...base.resources,
+        money: 10000,
+      },
+    });
+
+    const ambiguousLegacy = validateLuanShiCommand(state, {
+      action: 'updateResourceLedger',
+      money: 10050000,
+      summary: '错误地把五十贯换算成五万钱后写入府库。',
+    } as any);
+    expect(ambiguousLegacy.valid).toBe(false);
+    expect(ambiguousLegacy.errors.join('\n')).toContain('updateResourceLedger.money 已废弃');
+
+    const missingReconciliation = validateLuanShiCommand(state, {
+      action: 'updateResourceLedger',
+      moneyGuan: 10050,
+      summary: '缺少前值和本回合变化量。',
+    } as any);
+    expect(missingReconciliation.valid).toBe(false);
+    expect(missingReconciliation.errors.join('\n')).toContain('previousMoneyGuan');
+    expect(missingReconciliation.errors.join('\n')).toContain('moneyDeltaGuan');
+
+    const mismatchedTotal = validateLuanShiCommand(state, {
+      action: 'updateResourceLedger',
+      previousMoneyGuan: 10000,
+      moneyDeltaGuan: 50,
+      moneyGuan: 10050000,
+    });
+    expect(mismatchedTotal.valid).toBe(false);
+    expect(mismatchedTotal.errors.join('\n')).toContain('previousMoneyGuan + moneyDeltaGuan');
+
+    expect(validateLuanShiCommand(state, {
+      action: 'updateResourceLedger',
+      previousMoneyGuan: 10000,
+      moneyDeltaGuan: 50,
+      moneyGuan: 10050,
+      summary: '原府库一万贯，收到五十贯后共一万零五十贯。',
+    })).toEqual({ valid: true, errors: [], warnings: [] });
+  });
+
+  it('rejects a summary-only resource update as an empty writeback', () => {
+    const result = validateLuanShiCommand(makeState(), {
+      action: 'updateResourceLedger',
+      summary: '获得粮草二百石。',
+    } as any);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('\n')).toContain('summary 不能单独构成资源写回');
+  });
+
   it('validates resource, faction, and troop ledger commands', () => {
     expect(validateLuanShiCommand(makeState(), {
       action: 'updateResourceLedger',
-      money: 120,
+      previousMoneyGuan: 0,
+      moneyDeltaGuan: 120,
+      moneyGuan: 120,
       grain: 300,
       horses: 12,
       weapons: ['环首刀x20'],
       documents: ['军令一封'],
       tokens: ['北军符节'],
       importantSupplies: ['箭矢三箱'],
-      playerResources: { 粮饷: 36, 粮草: 50 },
+      playerResources: { 粮饷: 36, 军需券: 50 },
     } as any).valid).toBe(true);
 
     expect(validateLuanShiCommand(makeState(), {
@@ -2435,6 +2857,7 @@ describe('validateLuanShiCommand', () => {
       lifecycleStatus: 'active',
       statusTags: ['断粮', '守门'],
       leaderNpcId: 'npc_chen_heng',
+      deputyNpcIds: ['npc_li_su'],
       locationId: 'loc_market_town',
       lastKnownLocationId: 'loc_market_town',
       lastKnownAt: '乱世元年2月',
@@ -2466,6 +2889,24 @@ describe('validateLuanShiCommand', () => {
       relationToPlayer: 'self',
       readiness: '\u5dee',
     } as any).valid).toBe(true);
+
+    const invalidOfficerRoles = validateLuanShiCommand(makeState(), {
+      action: 'upsertTroopLedger',
+      troopId: 'troop_bad_officers',
+      name: '重复任职部曲',
+      size: 80,
+      morale: 45,
+      training: 35,
+      supplies: 60,
+      task: '守门',
+      relationToPlayer: '己方',
+      leaderNpcId: 'npc_chen_heng',
+      deputyNpcIds: ['npc_chen_heng', 'npc_li_su', 'npc_missing'],
+    } as any);
+    expect(invalidOfficerRoles.valid).toBe(false);
+    expect(invalidOfficerRoles.errors.join('\n')).toContain('最多只能登记两名副将');
+    expect(invalidOfficerRoles.errors.join('\n')).toContain('不得重复任职');
+    expect(invalidOfficerRoles.errors.join('\n')).toContain('npc_missing');
 
     expect(validateLuanShiCommand(makeState(), {
       action: 'upsertTroopLedger',
@@ -2555,6 +2996,47 @@ describe('validateLuanShiCommand', () => {
       size: 0,
       lifecycleStatus: 'destroyed',
       destroyedInBattleId: 'battle_north_gate',
+    } as any).valid).toBe(true);
+
+    const routedState = applyLuanShiCommand(stateWithTroop, {
+      action: 'upsertTroopLedger',
+      troopId: 'troop_guard_1',
+      lifecycleStatus: 'routed',
+      lastBattleId: 'battle_north_gate',
+    } as any);
+    const invalidRoutedReactivation = validateLuanShiCommand(routedState, {
+      action: 'upsertTroopLedger',
+      troopId: 'troop_guard_1',
+      lifecycleStatus: 'active',
+    } as any);
+    expect(invalidRoutedReactivation.valid).toBe(false);
+    expect(invalidRoutedReactivation.errors.join('\n')).toContain('原 troopId');
+    expect(invalidRoutedReactivation.errors.join('\n')).toContain('新的 troopId');
+
+    expect(validateLuanShiCommand(routedState, {
+      action: 'upsertTroopLedger',
+      troopId: 'troop_guard_1',
+      lifecycleStatus: 'merged',
+      mergedIntoTroopId: 'troop_guard_reformed',
+    } as any).valid).toBe(true);
+
+    expect(validateLuanShiCommand(routedState, {
+      action: 'upsertTroopLedger',
+      troopId: 'troop_guard_reformed',
+      name: '北门新编营',
+      size: 50,
+      morale: 35,
+      training: 30,
+      supplies: 30,
+      task: '整训待命',
+      relationToPlayer: '你直接统领',
+      quality: '低',
+      readiness: '低',
+      fatigue: '高',
+      lifecycleStatus: 'active',
+      knownLevel: '亲历',
+      certainty: 'confirmed',
+      mergedFromTroopIds: ['troop_guard_1'],
     } as any).valid).toBe(true);
 
     const invalidSplitTroop = validateLuanShiCommand(stateWithTroop, {
@@ -3010,6 +3492,49 @@ describe('validateLuanShiCommand', () => {
     expect(concreteResult.errors).toEqual([]);
   });
 
+  it('accepts a structured recent action for an existing faction and rejects dangling or malformed records', () => {
+    const state = applyLuanShiCommand(makeState(), {
+      action: 'upsertFactionLedger',
+      factionId: 'faction_chenliu_command',
+      name: '陈留军府',
+      type: '军府',
+      summary: '陈留郡内的现有军事行动主体。',
+      stanceToPlayer: '观望',
+      knownLevel: '听闻',
+      recentActions: ['整顿郡兵'],
+    });
+
+    expect(validateLuanShiCommand(state, {
+      action: 'recordFactionRecentAction',
+      factionId: 'faction_chenliu_command',
+      summary: '派出斥候探查渡口',
+      knownLevel: '听闻',
+      observedAt: '公元189年09月02日 08:00（辰时）',
+      sourceNote: '商旅转述',
+    })).toMatchObject({ valid: true, errors: [] });
+
+    const missingFaction = validateLuanShiCommand(state, {
+      action: 'recordFactionRecentAction',
+      factionId: 'faction_missing',
+      summary: '调动兵马',
+      knownLevel: '听闻',
+    });
+    expect(missingFaction.valid).toBe(false);
+    expect(missingFaction.errors.join('\n')).toContain('不存在于当前势力账本');
+
+    const malformed = validateLuanShiCommand(state, {
+      action: 'recordFactionRecentAction',
+      factionId: 'faction_chenliu_command',
+      summary: ' ',
+      knownLevel: '全知',
+      observedAt: '',
+    } as any);
+    expect(malformed.valid).toBe(false);
+    expect(malformed.errors.join('\n')).toContain('summary');
+    expect(malformed.errors.join('\n')).toContain('knownLevel');
+    expect(malformed.errors.join('\n')).toContain('observedAt');
+  });
+
   it('rejects a troop intelligence source-confidence contradiction', () => {
     const result = validateLuanShiCommand(makeState(), {
       action: 'upsertTroopLedger',
@@ -3050,11 +3575,12 @@ describe('validateLuanShiCommand', () => {
   it('accepts a structured holding ledger writeback with stable ids and numeric stats', () => {
     const result = validateLuanShiCommand(makeState(), {
       action: 'upsertHoldingLedger',
-      holdingId: 'holding_yingchuan',
-      name: 'Yingchuan commandery',
-      type: 'commandery',
+      operation: 'create',
+      holdingId: 'holding_yangdi',
+      name: 'Yangdi county seat',
+      type: 'county',
       status: 'controlled',
-      summary: 'Player-controlled commandery used for holding tests.',
+      summary: 'Player-controlled county seat used for holding tests.',
       civilAdministrationScope: 'territorial',
       scaleLevel: 3,
       agriculture: 75,
@@ -3072,6 +3598,12 @@ describe('validateLuanShiCommand', () => {
       eliteControlledShare: 65,
       localEliteRelation: 35,
       actualController: 'player faction',
+      controlEvidence: {
+        kind: 'formal_handover',
+        occurredAt: '189-09-01',
+        sourceRefId: 'turn_event_yangdi_handover',
+        summary: 'The county seal, registers, and administrative authority were formally handed over.',
+      },
       garrisonTroopIds: ['troop_guard_1'],
       relatedNpcIds: ['npc_chen_heng'],
       riskNotes: ['border pressure'],
@@ -3086,6 +3618,264 @@ describe('validateLuanShiCommand', () => {
 
     expect(result.valid).toBe(true);
     expect(result.errors).toEqual([]);
+  });
+
+  it('rejects creating a holding from a mere wall-garrison fact without control evidence', () => {
+    const result = validateLuanShiCommand(makeState(), {
+      action: 'upsertHoldingLedger',
+      operation: 'create',
+      holdingId: 'holding_wall_post',
+      name: 'North wall post',
+      type: 'fort',
+      status: 'controlled',
+      summary: 'The player is stationed on this section of the city wall.',
+      civilAdministrationScope: 'none',
+      scaleLevel: 1,
+      agriculture: 0,
+      commerce: 0,
+      population: 0,
+      publicOrder: 0,
+      popularSupport: 0,
+      defense: 50,
+      recruitPotential: 0,
+      armory: 20,
+      horseSupply: 0,
+      updatedAt: '189-09-01',
+    } as any);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('\n')).toContain('controlEvidence');
+    expect(result.errors.join('\n')).toContain('驻守、守城、经过或位于城墙不构成领地控制');
+  });
+
+  it('rejects commandery regions as new holdings while preserving exact legacy updates', () => {
+    const command = {
+      action: 'upsertHoldingLedger',
+      holdingId: 'holding_legacy_commandery',
+      name: 'Legacy commandery record',
+      type: 'commandery',
+      status: 'controlled',
+      summary: 'A legacy regional record awaiting a concrete-place migration.',
+      civilAdministrationScope: 'territorial',
+      scaleLevel: 3,
+      agriculture: 50,
+      commerce: 50,
+      population: 50,
+      publicOrder: 50,
+      popularSupport: 50,
+      defense: 50,
+      recruitPotential: 50,
+      armory: 50,
+      horseSupply: 50,
+      corruption: 20,
+      farmlandMu: 12_000,
+      registeredHouseholds: 1_800,
+      updatedAt: '189-09-01',
+    } as const;
+
+    const rejected = validateLuanShiCommand(makeState(), command);
+    expect(rejected.valid).toBe(false);
+    expect(rejected.errors.join('\n')).toContain('区域层级');
+
+    const legacyState = makeState();
+    legacyState.holdings = [{ ...command, action: undefined } as any];
+    const accepted = validateLuanShiCommand(legacyState, command);
+    expect(accepted.valid).toBe(true);
+  });
+
+  it('rejects holding scale and cadastral values beyond the type capacity', () => {
+    const result = validateLuanShiCommand(makeState(), {
+      action: 'upsertHoldingLedger',
+      holdingId: 'holding_overgrown_village',
+      name: 'Overgrown village',
+      type: 'village',
+      status: 'controlled',
+      summary: 'Invalid village scale and cadastral totals.',
+      civilAdministrationScope: 'territorial',
+      scaleLevel: 3,
+      agriculture: 50,
+      commerce: 30,
+      population: 50,
+      publicOrder: 50,
+      popularSupport: 50,
+      defense: 20,
+      recruitPotential: 40,
+      armory: 10,
+      horseSupply: 5,
+      corruption: 20,
+      farmlandMu: 100_000,
+      registeredHouseholds: 20_000,
+      updatedAt: '189-09-01',
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('\n')).toContain('最高规模 2');
+    expect(result.errors.join('\n')).toContain('farmlandMu');
+    expect(result.errors.join('\n')).toContain('registeredHouseholds');
+  });
+
+  it('rejects a new unique art without acquisition evidence', () => {
+    const result = validateLuanShiCommand(makeState(), {
+      action: 'updateCharacterUniqueArts',
+      characterType: 'player',
+      characterId: 'player',
+      uniqueArts: [makeUniqueArt({ acquisition: undefined })],
+    } as any);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain(
+      'updateCharacterUniqueArts.uniqueArts[0].acquisition is required for a new unique art.',
+    );
+  });
+
+  it('rejects direct level/progress changes for an established unique art', () => {
+    const state = makeState();
+    state.player.uniqueArts = [makeUniqueArt({ level: 2, progress: 35 }) as any];
+    const result = validateLuanShiCommand(state, {
+      action: 'updateCharacterUniqueArts',
+      characterType: 'player',
+      characterId: 'player',
+      uniqueArts: [makeUniqueArt({ level: 3, progress: 10, acquisition: undefined })],
+    } as any);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('\n')).toContain('recordCharacterUniqueArtProgress');
+  });
+
+  it('records established unique art progress through the narrow local command', () => {
+    const state = makeState();
+    state.player.uniqueArts = [makeUniqueArt({ level: 2, progress: 35 }) as any];
+    const command = {
+      action: 'recordCharacterUniqueArtProgress',
+      characterType: 'player',
+      characterId: 'player',
+      artId: 'art_border_scouting',
+      eventId: 'art-progress:turn-7:scouting',
+      source: 'actual_use',
+      intensity: 'normal',
+      occurredAt: state.currentDate,
+      sourceRefId: 'turn-event:turn-7:scouting',
+      summary: 'The player successfully used the established scouting art during the march.',
+    } as const;
+
+    const validation = validateLuanShiCommand(state, command);
+    expect(validation.valid).toBe(true);
+    const once = applyLuanShiCommand(state, command);
+    const twice = applyLuanShiCommand(once, command);
+    expect(once.player.uniqueArts?.[0]).toMatchObject({
+      level: 2,
+      progress: 42,
+      progressHistory: [expect.objectContaining({
+        eventId: 'art-progress:turn-7:scouting',
+        awardedProgress: 7,
+        levelledUp: false,
+      })],
+    });
+    expect(twice.player.uniqueArts).toEqual(once.player.uniqueArts);
+  });
+
+  it('forces an in-game acquired unique art to start at level 1 and zero progress', () => {
+    const art = makeUniqueArt({
+      id: 'art_new_teaching',
+      name: 'New Teaching',
+      level: 3,
+      progress: 40,
+      acquisition: {
+        kind: 'teaching',
+        occurredAt: '189-09-01 09:00',
+        sourceRefId: 'turn-event:teaching-1',
+        summary: 'An instructor completed the first teaching scene.',
+        instructorNpcId: 'npc_chen_heng',
+      },
+    });
+    const validation = validateLuanShiCommand(makeState(), {
+      action: 'updateCharacterUniqueArts',
+      characterType: 'player',
+      characterId: 'player',
+      uniqueArts: [art],
+    });
+    expect(validation.valid).toBe(false);
+    expect(validation.errors.join('\n')).toContain('level must be 1');
+    expect(validation.errors.join('\n')).toContain('progress must be 0');
+  });
+
+  it('does not let one instruction source farm progress under new event ids', () => {
+    const state = makeState();
+    state.player.uniqueArts = [makeUniqueArt({
+      level: 1,
+      progress: 0,
+      acquisition: {
+        kind: 'teaching',
+        occurredAt: '189-09-01 08:00',
+        sourceRefId: 'turn-event:teaching-1',
+        summary: 'The art was first acquired from this teaching.',
+        instructorNpcId: 'npc_chen_heng',
+      },
+    })];
+    const first = applyLuanShiCommand(state, {
+      action: 'recordCharacterUniqueArtProgress',
+      characterType: 'player',
+      characterId: 'player',
+      artId: 'art_border_scouting',
+      eventId: 'progress:teaching-reused-1',
+      source: 'instruction_or_manual',
+      intensity: 'major',
+      occurredAt: '189-09-01 09:00',
+      sourceRefId: 'turn-event:teaching-1',
+      summary: 'Attempts to reuse the acquisition scene.',
+      instructorNpcId: 'npc_chen_heng',
+    });
+    expect(first.player.uniqueArts).toEqual(state.player.uniqueArts);
+
+    const validSource = applyLuanShiCommand(state, {
+      action: 'recordCharacterUniqueArtProgress',
+      characterType: 'player',
+      characterId: 'player',
+      artId: 'art_border_scouting',
+      eventId: 'progress:teaching-2',
+      source: 'instruction_or_manual',
+      intensity: 'normal',
+      occurredAt: '189-09-02 09:00',
+      sourceRefId: 'turn-event:teaching-2',
+      summary: 'A distinct later lesson was completed.',
+      instructorNpcId: 'npc_chen_heng',
+    });
+    const replayUnderNewId = applyLuanShiCommand(validSource, {
+      action: 'recordCharacterUniqueArtProgress',
+      characterType: 'player',
+      characterId: 'player',
+      artId: 'art_border_scouting',
+      eventId: 'progress:teaching-2-forged-retry',
+      source: 'instruction_or_manual',
+      intensity: 'major',
+      occurredAt: '189-09-02 09:05',
+      sourceRefId: 'turn-event:teaching-2',
+      summary: 'The same lesson is resubmitted under another event id.',
+      instructorNpcId: 'npc_chen_heng',
+    });
+    expect(replayUnderNewId.player.uniqueArts).toEqual(validSource.player.uniqueArts);
+  });
+
+  it('rejects replacing an established unique art acquisition source', () => {
+    const state = makeState();
+    state.player.uniqueArts = [makeUniqueArt() as any];
+    const result = validateLuanShiCommand(state, {
+      action: 'updateCharacterUniqueArts',
+      characterType: 'player',
+      characterId: 'player',
+      uniqueArts: [makeUniqueArt({
+        level: 3,
+        acquisition: {
+          kind: 'event',
+          occurredAt: 'later-date',
+          sourceRefId: 'turn:invented-source',
+          summary: 'An incompatible replacement source.',
+        },
+      })],
+    } as any);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('\n')).toContain('cannot replace an established acquisition source');
   });
 
   it('requires an explicit civil administration scope for new holding writebacks', () => {
@@ -3149,6 +3939,7 @@ describe('validateLuanShiCommand', () => {
   it('accepts a non-revenue military facility only when corruption is omitted', () => {
     const result = validateLuanShiCommand(makeState(), {
       action: 'upsertHoldingLedger',
+      operation: 'create',
       holdingId: 'holding_plain_camp',
       name: '前锋营',
       type: 'camp',
@@ -3165,6 +3956,12 @@ describe('validateLuanShiCommand', () => {
       recruitPotential: 0,
       armory: 45,
       horseSupply: 20,
+      controlEvidence: {
+        kind: 'founding',
+        occurredAt: '189-09-01',
+        sourceRefId: 'turn_event_forward_camp_founded',
+        summary: 'The player faction completed and took command of a newly founded forward camp.',
+      },
       updatedAt: '189-09-01',
     } as any);
 
@@ -3201,6 +3998,7 @@ describe('validateLuanShiCommand', () => {
   it('accepts household-only port data without farmland or agriculture', () => {
     const result = validateLuanShiCommand(makeState(), {
       action: 'upsertHoldingLedger',
+      operation: 'create',
       holdingId: 'holding_port_town',
       name: '临江港镇',
       type: 'port',
@@ -3221,6 +4019,12 @@ describe('validateLuanShiCommand', () => {
       registeredHouseholds: 420,
       eliteControlledShare: 25,
       localEliteRelation: 10,
+      controlEvidence: {
+        kind: 'grant',
+        occurredAt: '189-09-01',
+        sourceRefId: 'turn_event_port_grant',
+        summary: 'The port-town administration and tax authority were formally granted to the player faction.',
+      },
       updatedAt: '189-09-01',
     } as any);
 
@@ -4112,5 +4916,57 @@ describe('troop movement location validation', () => {
 
     expect(result.valid).toBe(false);
     expect(result.errors.join('\n')).toContain('必须提供 locationId');
+  });
+
+  it('admits incomplete allied formations as intelligence without inventing combat statistics', () => {
+    const command = {
+      action: 'upsertTroopLedger',
+      troopId: 'troop_imperial_main_force',
+      name: '皇甫嵩所部主力',
+      detailLevel: 'intelligence',
+      relationToPlayer: '友军',
+      knownLevel: '亲历',
+      certainty: 'reported',
+      lifecycleStatus: 'unknown',
+      strengthEstimate: {
+        min: 20_000,
+        max: 35_000,
+        asOf: '公元184年03月01日 09:00',
+        basis: '营垒与军报可确认大军存在，尚未完成点验。',
+      },
+      changeEvent: {
+        eventId: 'troop_event_imperial_main_force_observed_1840301',
+        kind: 'observed',
+        occurredAt: '公元184年03月01日 09:00',
+        summary: '主角在长社大营确认皇甫嵩所部主力正在集结。',
+      },
+    } as const;
+
+    const validation = validateLuanShiCommand(makeState(), command);
+    expect(validation.valid).toBe(true);
+
+    const once = applyLuanShiCommand(makeState(), command);
+    const twice = applyLuanShiCommand(once, command);
+    expect(twice.troops?.find((troop) => troop.troopId === command.troopId)).toMatchObject({
+      detailLevel: 'intelligence',
+      size: 0,
+      lifecycleStatus: 'unknown',
+      strengthEstimate: { min: 20_000, max: 35_000 },
+    });
+    expect(twice.troops?.find((troop) => troop.troopId === command.troopId)?.changeHistory).toHaveLength(1);
+  });
+
+  it('requires operational parents to reference a different existing formation', () => {
+    const result = validateLuanShiCommand(makeState(), {
+      action: 'upsertTroopLedger',
+      troopId: 'troop_detachment',
+      name: '临时别部',
+      detailLevel: 'intelligence',
+      relationToPlayer: '友军',
+      operationalParentForceId: 'troop_missing_parent',
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('\n')).toContain('operationalParentForceId 不存在');
   });
 });

@@ -171,6 +171,20 @@ describe('NpcIntentSimulation', () => {
     expect(targets.map((target) => target.npcId)).not.toContain('npc_guard');
   });
 
+  it('does not treat a due background activity as a foreground NPC simulation target', () => {
+    const state = makeState();
+    const npc = state.npcs!.find((item) => item.npcId === 'npc_absent')!;
+    npc.backgroundActivity = {
+      activityId: 'activity_due',
+      summary: '异地筹措粮草',
+      status: 'active',
+      dueAt: state.currentDate,
+    };
+
+    expect(selectNpcIntentSimulationTargets(state, '我独自在城门等待', { maxNpcCount: 10 })
+      .map((item) => item.npcId)).not.toContain('npc_absent');
+  });
+
   it('excludes polluted protagonist self-clone NPCs while keeping real focused NPCs', () => {
     const baseState = makeState();
     const state = {

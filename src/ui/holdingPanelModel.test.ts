@@ -151,6 +151,7 @@ describe('holdingPanelModel', () => {
       { label: '地点', value: '颍川郡', tone: 'normal' },
       { label: '所属势力', value: '刘构部', tone: 'normal' },
       { label: '主事人物', value: '荀攸', tone: 'normal' },
+      { label: '民政规模', value: '3级 · 县域辖境', tone: 'normal' },
       { label: '账面田亩', value: '12000亩', tone: 'normal' },
       { label: '编户', value: '1800户', tone: 'normal' },
       { label: '地方豪强掌控', value: '55%', tone: 'warning' },
@@ -233,6 +234,36 @@ describe('holdingPanelModel', () => {
       { label: '地点', value: '颍川郡', tone: 'normal' },
       { label: '实际控制', value: '刘构', tone: 'normal' },
       { label: '主事人物', value: '荀攸', tone: 'normal' },
+    ]));
+  });
+
+  it('shows household-based cash tax separately from the unchanged grain projection', () => {
+    const estate = {
+      ...baseRuntimeState.holdings![0],
+      holdingId: 'holding_wei_estate',
+      name: '魏家外庄',
+      type: 'estate',
+      civilAdministrationScope: 'territorial',
+      scaleLevel: 1,
+      agriculture: 30,
+      commerce: 10,
+      population: 50,
+      publicOrder: 70,
+      popularSupport: 70,
+      corruption: 0,
+      farmlandMu: 2000,
+      registeredHouseholds: 150,
+      eliteControlledShare: 0,
+      localEliteRelation: -50,
+    };
+    const model = buildHoldingPanelModel({
+      ...baseRuntimeState,
+      holdings: [estate],
+    } as RuntimeState, estate.holdingId);
+
+    expect(model.collectionRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: '地方估产', value: '粮草 400石 / 钱财 37贯' }),
+      expect.objectContaining({ label: '实际征收', value: '粮草 340石 / 钱财 31贯' }),
     ]));
   });
 
@@ -348,6 +379,9 @@ describe('holdingPanelModel', () => {
       name: 'Family estate',
       scaleText: expect.stringContaining('120'),
       projectTitles: ['Expand tenant fields'],
+      detailRows: expect.arrayContaining([
+        expect.objectContaining({ label: '年度估产', value: expect.stringContaining('粮草') }),
+      ]),
     }));
     expect(model.privateAssetProjects[0]).toEqual(expect.objectContaining({
       projectId: 'project_family_estate_expand',

@@ -3,13 +3,14 @@ import { THREE_KINGDOMS_KNOWLEDGE_BASE_BATCH_2_MAJOR_EVENTS } from './knowledgeB
 import { THREE_KINGDOMS_KNOWLEDGE_BASE_BATCH_3_CARDS } from './knowledgeBaseBatch3LateEra';
 import { THREE_KINGDOMS_KNOWLEDGE_BASE_BATCH_4_NEW_CORRECTION_CARDS } from './knowledgeBaseBatch4RomanceCorrections';
 import { bindThreeKingdomsMajorEventManifest } from './knowledgeBaseMajorEventBindings';
+import { THREE_KINGDOMS_KNOWLEDGE_BASE_CAI_YAN } from './knowledgeBaseCaiYan';
 
 export const threeKingdomsKnowledgeBase: WorldlineKnowledgeBase = {
   id: 'threeKingdoms.coreKnowledge.v1',
   worldBookId: 'threeKingdoms',
   name: '三国核心史实资料库 V1',
-  version: '0.5.0',
-  description: '三国核心史实资料库：184—280年重大事件链、常用检索别名、规范历史锚点和15项高频演义/史实纠偏已经补齐，并支撑24个开局剧本；提供人物阶段、势力演变、地点制度和常见错误锚点，不替代本局事实。',
+  version: '0.5.1',
+  description: '三国核心史实资料库：184—280年重大事件链、常用检索别名、规范历史锚点和15项高频演义/史实纠偏已经补齐，并支撑24个开局剧本；提供人物阶段、势力演变、地点制度和常见错误锚点，新增蔡琰完整人物阶段资料，不替代本局事实。',
   cards: bindThreeKingdomsMajorEventManifest([
     // ================================================================
     // 已有卡（保持原样）
@@ -3454,5 +3455,6 @@ export const threeKingdomsKnowledgeBase: WorldlineKnowledgeBase = {
     ...THREE_KINGDOMS_KNOWLEDGE_BASE_BATCH_2_MAJOR_EVENTS,
     ...THREE_KINGDOMS_KNOWLEDGE_BASE_BATCH_3_CARDS,
     ...THREE_KINGDOMS_KNOWLEDGE_BASE_BATCH_4_NEW_CORRECTION_CARDS,
+    ...THREE_KINGDOMS_KNOWLEDGE_BASE_CAI_YAN,
   ]),
 };

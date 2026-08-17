@@ -130,6 +130,44 @@ describe('mergeRepairWritebackProtocol', () => {
     expect(merged.routeWriteSuggestions).toHaveLength(2);
   });
 
+  it('replaces a diagnosed same-id location instead of preserving its rejected fields', () => {
+    const original = makeWriteback({
+      locationWriteSuggestions: [{
+        locationId: 'place_repair_target',
+        name: '错误地点',
+        kind: 'scene',
+        mapLayer: 'scene',
+        parentId: 'missing_parent',
+        summary: '原始失败候选。',
+        permanence: 'permanent',
+      }],
+    });
+    const repaired = makeWriteback({
+      locationWriteSuggestions: [{
+        locationId: 'place_repair_target',
+        name: '河畔哨所',
+        kind: 'outpost',
+        mapLayer: 'place',
+        parentId: 'region_root',
+        summary: '修复后的稳定地点。',
+        permanence: 'permanent',
+      }],
+    });
+
+    const merged = mergeRepairWritebackProtocol(original, repaired, {
+      replaceLocationIds: new Set(['place_repair_target']),
+    });
+
+    expect(merged.locationWriteSuggestions).toEqual([
+      expect.objectContaining({
+        locationId: 'place_repair_target',
+        name: '河畔哨所',
+        mapLayer: 'place',
+        parentId: 'region_root',
+      }),
+    ]);
+  });
+
   it('does not remove duplicate facts that were already present in the original response', () => {
     const original = makeWriteback({
       debugNotes: ['Repeated original note.', ' repeated original note! '],
@@ -151,6 +189,46 @@ describe('mergeRepairWritebackProtocol', () => {
     expect(merged.npcMemorySuggestions).toHaveLength(2);
     expect(merged.npcMemorySuggestions[0].content).toBe('First original.');
     expect(merged.npcMemorySuggestions[1].content).toBe('Second original.');
+  });
+
+  it('merges distinct faction actions while deduplicating the same structured suggestion', () => {
+    const original = makeWriteback({
+      factionRecentActionSuggestions: [{
+        factionId: 'faction_command',
+        summary: '主角代表军府完成军粮交割',
+        knownLevel: '亲历',
+      }],
+    });
+    const repaired = makeWriteback({
+      factionRecentActionSuggestions: [
+        {
+          factionId: ' faction_command ',
+          summary: ' 主角代表军府完成军粮交割 ',
+          knownLevel: '亲历',
+          sourceNote: '重复复核',
+        },
+        {
+          factionId: 'faction_rebels',
+          summary: '黄巾余部烧毁东郊驿站',
+          knownLevel: '听闻',
+        },
+      ],
+    });
+
+    const merged = mergeRepairWritebackProtocol(original, repaired);
+
+    expect(merged.factionRecentActionSuggestions).toEqual([
+      expect.objectContaining({
+        factionId: 'faction_command',
+        summary: '主角代表军府完成军粮交割',
+        knownLevel: '亲历',
+      }),
+      expect.objectContaining({
+        factionId: 'faction_rebels',
+        summary: '黄巾余部烧毁东郊驿站',
+        knownLevel: '听闻',
+      }),
+    ]);
   });
 
   it('does not attach an id-less repair item to one of several stable-id candidates', () => {
@@ -363,5 +441,14 @@ describe('mergeRepairWritebackProtocol', () => {
       'trait_original',
       'trait_repaired',
     ]);
+  });
+
+  it('preserves main-narrator recovery authority during auxiliary writeback repair', () => {
+    const original = makeWriteback({ playerRecoveryKind: 'rest' });
+    const repaired = makeWriteback({ playerRecoveryKind: 'none' });
+
+    const merged = mergeRepairWritebackProtocol(original, repaired);
+
+    expect(merged.playerRecoveryKind).toBe('rest');
   });
 });

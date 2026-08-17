@@ -1,5 +1,10 @@
 import React from 'react';
 import type { TurnJudgementCard } from '../engine/types';
+import {
+  NARRATIVE_DISPLAY_REGEX_RULES_CHANGED_EVENT,
+  applyNarrativeDisplayRegexRules,
+  loadNarrativeDisplayRegexRules,
+} from '../engine/settings/NarrativeDisplayRegex';
 import { parseNarrativeTextSegments } from './narrativeTextSegments';
 
 type NarrativeTextViewProps = {
@@ -318,6 +323,7 @@ function renderJudgementCard(
             {card.difficulty !== undefined && <span>难度 <strong>{card.difficulty}</strong></span>}
             {card.total !== undefined && <span>判定 <strong>{card.total}</strong></span>}
             {card.margin !== undefined && <span>差额 <strong>{formatSignedNumber(card.margin)}</strong></span>}
+            {card.experienceAward !== undefined && <span>阅历 <strong>+{card.experienceAward}</strong></span>}
           </div>
           {card.summary && <p>{card.summary}</p>}
           {card.details && card.details.length > 0 && (
@@ -393,6 +399,16 @@ export function NarrativeTextView({
   judgementCards,
   onOpenJudgementPanel,
 }: NarrativeTextViewProps) {
+  const [displayRegexRevision, setDisplayRegexRevision] = React.useState(0);
+  React.useEffect(() => {
+    const handleRulesChanged = () => setDisplayRegexRevision((revision) => revision + 1);
+    window.addEventListener(NARRATIVE_DISPLAY_REGEX_RULES_CHANGED_EVENT, handleRulesChanged);
+    return () => window.removeEventListener(NARRATIVE_DISPLAY_REGEX_RULES_CHANGED_EVENT, handleRulesChanged);
+  }, []);
+  const displayRegexRules = React.useMemo(
+    () => loadNarrativeDisplayRegexRules(),
+    [displayRegexRevision],
+  );
   const parts = splitNarrativeByJudgementMarkers(text, judgementCards);
 
   return (
@@ -404,7 +420,11 @@ export function NarrativeTextView({
 
         return (
           <React.Fragment key={`text-${index}`}>
-            {renderNarrativeTextSegments(part.text, protagonistName, `text-${index}`)}
+            {renderNarrativeTextSegments(
+              applyNarrativeDisplayRegexRules(part.text, displayRegexRules),
+              protagonistName,
+              `text-${index}`,
+            )}
           </React.Fragment>
         );
       })}

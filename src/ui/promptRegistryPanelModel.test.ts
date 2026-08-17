@@ -63,7 +63,7 @@ describe('promptRegistryPanelModel', () => {
   });
 
   it('maps category, risk, and edit levels to Chinese display labels', () => {
-    expect(getPromptCategoryLabel('opening.trueOpening')).toBe('真开局');
+    expect(getPromptCategoryLabel('opening.trueOpening')).toBe('开场剧情');
     expect(getPromptCategoryLabel('femaleProfile.writeback')).toBe('女性档案写回');
     expect(getPromptCategoryLabel('main.narrativeStyle')).toBe('主剧情 / 正文文风');
     expect(getRiskLevelLabel('high')).toBe('高风险');
@@ -169,10 +169,10 @@ describe('promptRegistryPanelModel', () => {
     const model = getPromptEntryDisplayModel(entry!);
 
     expect(getPromptCategoryLabel('nsfw.adultIntimacy' as any)).toBe('成人亲密描写');
-    expect(model.displayTitle).toBe('【成人亲密】通用描写协议');
+    expect(model.displayTitle).toBe('【成人亲密】单一叙事协议');
     expect(model.displayCategory).toBe('成人亲密描写');
-    expect(model.userDescription).toContain('已通过门禁');
-    expect(model.contentText).toContain('不要淡出、不要空泛跳过');
+    expect(model.userDescription).toContain('不再叠加末尾复核');
+    expect(model.contentText).toContain('未进入成人场景时完全忽略本协议');
     expect(model.contentPreview).toContain('成人亲密场景');
     expect(model.isEditable).toBe(true);
   });
@@ -186,9 +186,9 @@ describe('promptRegistryPanelModel', () => {
     expect(model.displayTitle).toBe('【正文文风】普通正文描写指南');
     expect(model.displayCategory).toBe('主剧情 / 正文文风');
     expect(model.userDescription).toContain('改善普通正文');
-    expect(model.contentText).toContain('只选一至两种最适合当前因果的推进方式');
+    expect(model.contentText).toContain('先静默判断当前场景的主要功能');
     expect(model.contentText).toContain('不是词语黑名单');
-    expect(model.contentPreview).toContain('正文单薄');
+    expect(model.contentPreview).toContain('准确推进事实');
     expect(model.isEditable).toBe(true);
   });
 

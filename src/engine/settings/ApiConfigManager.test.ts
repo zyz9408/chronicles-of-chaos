@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  API_MAX_OUTPUT_TOKEN_PRESETS,
   API_TASKS,
   API_PROVIDER_OPTIONS,
+  DEFAULT_API_MAX_OUTPUT_TOKENS,
   createApiConfigDraft,
   getApiConfigModels,
+  getApiMaxOutputTokenGuidance,
+  getApiMaxOutputTokenPresetId,
   getApiTaskRoutes,
   listApiConfigs,
   maskApiKey,
@@ -42,6 +46,35 @@ class MemoryStorage implements Storage {
 }
 
 describe('ApiConfigManager', () => {
+  it('offers 8K, 32K, and 64K output presets while keeping new profiles at 8K', () => {
+    expect(API_MAX_OUTPUT_TOKEN_PRESETS.map((preset) => preset.value)).toEqual([
+      8_192,
+      32_768,
+      65_536,
+    ]);
+    expect(DEFAULT_API_MAX_OUTPUT_TOKENS).toBe(8_192);
+    expect(createApiConfigDraft().maxOutputTokens).toBe(8_192);
+    expect(getApiMaxOutputTokenPresetId(8_192)).toBe('8k');
+    expect(getApiMaxOutputTokenPresetId(32_768)).toBe('32k');
+    expect(getApiMaxOutputTokenPresetId(65_536)).toBe('64k');
+    expect(getApiMaxOutputTokenPresetId(12_000)).toBe('custom');
+  });
+
+  it('explains that higher output caps require model and proxy support', () => {
+    expect(getApiMaxOutputTokenGuidance(8_192)).toMatchObject({
+      tone: 'default',
+      message: expect.stringContaining('通常足够'),
+    });
+    expect(getApiMaxOutputTokenGuidance(32_768).message).toContain('模型和代理');
+    expect(getApiMaxOutputTokenGuidance(65_536).message).toContain('不兼容');
+    expect(getApiMaxOutputTokenGuidance(12_000).message).toContain('12000');
+    expect(getApiMaxOutputTokenGuidance(48_000).message).toContain('48000');
+    expect(getApiMaxOutputTokenGuidance(100_000)).toMatchObject({
+      tone: 'warning',
+      message: expect.stringContaining('超过 64K'),
+    });
+  });
+
   it('covers mainstream API provider types used by LLM games', () => {
     const providerIds = API_PROVIDER_OPTIONS.map((provider) => provider.id);
 
@@ -54,6 +87,9 @@ describe('ApiConfigManager', () => {
         'anthropic',
         'qwen',
         'zhipu',
+        'zhipu_coding',
+        'minimax',
+        'minimax_international',
         'moonshot',
         'doubao',
         'xai',
@@ -64,6 +100,25 @@ describe('ApiConfigManager', () => {
         'custom',
       ]),
     );
+  });
+
+  it('uses distinct official presets for GLM Coding Plan and MiniMax regions', () => {
+    expect(createApiConfigDraft('zhipu')).toMatchObject({
+      provider: 'zhipu',
+      baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    });
+    expect(createApiConfigDraft('zhipu_coding')).toMatchObject({
+      provider: 'zhipu_coding',
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+    });
+    expect(createApiConfigDraft('minimax')).toMatchObject({
+      provider: 'minimax',
+      baseUrl: 'https://api.minimaxi.com/v1',
+    });
+    expect(createApiConfigDraft('minimax_international')).toMatchObject({
+      provider: 'minimax_international',
+      baseUrl: 'https://api.minimax.io/v1',
+    });
   });
 
   it('saves API config archives and resolves task routes with fallback', () => {
@@ -179,7 +234,10 @@ describe('ApiConfigManager', () => {
     );
 
     expect(stateWritebackTask).toMatchObject({
-      label: '状态写回',
+      label: '状态写回主要 API',
+    });
+    expect(API_TASKS.find((task) => task.id === 'stateWritebackFallback')).toMatchObject({
+      label: '状态写回备用 API',
     });
     setApiTaskRoute('mainNarrative', main.id, storage);
     expect(getApiTaskRoutes(storage).stateWriteback).toBeNull();
@@ -230,6 +288,22 @@ describe('ApiConfigManager', () => {
 
     expect(listApiConfigs(storage)[0].temperature).toBe(0.65);
     expect(resolveApiConfigForTask('mainNarrative', storage)?.temperature).toBe(0.65);
+  });
+
+  it('stores custom output caps as positive integers without changing valid presets', () => {
+    const draft = createApiConfigDraft('openai_compatible');
+    expect(prepareApiConfigForSave({
+      ...draft,
+      maxOutputTokens: '32768',
+    }).maxOutputTokens).toBe(32_768);
+    expect(prepareApiConfigForSave({
+      ...draft,
+      maxOutputTokens: 12_345.9,
+    }).maxOutputTokens).toBe(12_345);
+    expect(prepareApiConfigForSave({
+      ...draft,
+      maxOutputTokens: -1,
+    }).maxOutputTokens).toBeUndefined();
   });
 
   it('stores one API profile with multiple models and resolves a different model for each task route', () => {

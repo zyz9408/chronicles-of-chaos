@@ -14,6 +14,7 @@ import type {
   WorldlineRuntimeSettings,
 } from '../types';
 import { normalizeHeroineThreads } from './HeroineThreadIdentity';
+import { normalizeBondThreads } from './BondThreadIdentity';
 import {
   normalizeCurrentTroopReferenceIds,
   normalizeDuplicateTerminalTroopLineages,
@@ -21,6 +22,24 @@ import {
 import { normalizeFactionLedgerIdentities } from './factionLedgerIdentity';
 import { normalizeHistoricalAnchorStates } from '../worldline/HistoricalAnchorApplicability';
 import { normalizeLegacyHoldingCivilAdministration } from '../holdings/HoldingCivilAdministration';
+import {
+  normalizePrivateAssetLedgers,
+  remapPrivateAssetId,
+} from '../holdings/PrivateAssetPolicy';
+import { normalizeEncounterDifficulty, normalizeGameDifficulty } from '../settings/GameDifficulty';
+import { normalizeNarrativePerspective } from '../settings/NarrativePerspective';
+import { normalizePlayerProgression } from '../character/progression';
+import { normalizePlayerVitals } from '../character/PlayerVitals';
+import { normalizeCanonicalLedgerResourceShadows } from './resourceLedgerIdentity';
+import { normalizeFactionRecentActionHistory } from './factionRecentActionHistory';
+import {
+  normalizeCorrespondenceCommitments,
+  normalizeCorrespondenceEntries,
+} from '../correspondence';
+import {
+  resolveTroopFatiguePercent,
+  troopFatigueBandFromPercent,
+} from '../troops/TroopFatigue';
 
 type NormalizedMemoryArchive = MemoryArchive & {
   schemaVersion: 2;
@@ -214,15 +233,22 @@ function normalizeTroopLedgers(troops?: RuntimeState['troops']): TroopLedgerEntr
   return normalizeDuplicateTerminalTroopLineages((troops ?? []).map((troop) => {
     const locationId = troop.locationId?.trim();
     const lastKnownLocationId = troop.lastKnownLocationId?.trim() || locationId;
+    const fatigue = troop.fatigue ?? DEFAULT_TROOP_LEDGER_OPERATIONAL_FIELDS.fatigue;
+    const warFatiguePercent = resolveTroopFatiguePercent({
+      fatigue,
+      warFatiguePercent: troop.warFatiguePercent,
+    });
     return {
       ...troop,
+      detailLevel: troop.detailLevel ?? 'operational',
       ...(locationId ? { locationId } : {}),
       ...(lastKnownLocationId ? { lastKnownLocationId } : {}),
       ...(!troop.lastKnownAt?.trim() && lastKnownLocationId && troop.updatedAt?.trim()
         ? { lastKnownAt: troop.updatedAt.trim() }
         : {}),
       quality: troop.quality ?? DEFAULT_TROOP_LEDGER_OPERATIONAL_FIELDS.quality,
-      fatigue: troop.fatigue ?? DEFAULT_TROOP_LEDGER_OPERATIONAL_FIELDS.fatigue,
+      fatigue: troopFatigueBandFromPercent(warFatiguePercent),
+      warFatiguePercent,
       readiness: troop.readiness ?? DEFAULT_TROOP_LEDGER_OPERATIONAL_FIELDS.readiness,
       lifecycleStatus: troop.lifecycleStatus ?? DEFAULT_TROOP_LEDGER_OPERATIONAL_FIELDS.lifecycleStatus,
       knownLevel: troop.knownLevel ?? DEFAULT_TROOP_LEDGER_OPERATIONAL_FIELDS.knownLevel,
@@ -477,11 +503,65 @@ function clampCalendarInt(value: number, min: number, max: number): number {
 
 export function ensureLuanShiState(state: RuntimeState): NormalizedLuanShiState {
   state = normalizeFactionLedgerIdentities(state).state;
+  const normalizedResourceState = normalizeCanonicalLedgerResourceShadows(
+    normalizeResources(state.resources),
+    state.playerResources ?? {},
+  );
   const troops = normalizeTroopLedgers(state.troops);
   const holdings = normalizeHoldingTroopReferences(normalizeHoldingLedgers(state.holdings), troops);
-  const factions = normalizeFactionTroopReferences(state.factions ?? [], troops);
+  const privateAssetNormalization = normalizePrivateAssetLedgers(state.privateAssets);
+  const privateAssets = privateAssetNormalization.assets;
+  const privateAssetProjects = (state.privateAssetProjects ?? []).map((project) => ({
+    ...project,
+    assetId: remapPrivateAssetId(project.assetId, privateAssetNormalization.idMap),
+  }));
+  const domesticReports = (state.domesticReports ?? []).map((report) => ({
+    ...report,
+    ...(report.privateAssetHighlights
+      ? {
+          privateAssetHighlights: dedupeByKey(
+            report.privateAssetHighlights.map((highlight) => ({
+              ...highlight,
+              privateAssetId: remapPrivateAssetId(
+                highlight.privateAssetId,
+                privateAssetNormalization.idMap,
+              ),
+            })),
+            (highlight) => highlight.privateAssetId,
+          ),
+        }
+      : {}),
+    ...(report.projectHighlights
+      ? {
+          projectHighlights: report.projectHighlights.map((highlight) => ({
+            ...highlight,
+            ...(highlight.assetId
+              ? {
+                  assetId: remapPrivateAssetId(
+                    highlight.assetId,
+                    privateAssetNormalization.idMap,
+                  ),
+                }
+              : {}),
+          })),
+        }
+      : {}),
+  }));
+  const factions = normalizeFactionTroopReferences(state.factions ?? [], troops)
+    .map(normalizeFactionRecentActionHistory);
+  const normalizedPlayer = normalizePlayerProgression(state.player);
   return {
     ...state,
+    player: normalizedPlayer
+      ? {
+          ...normalizedPlayer,
+          vitals: normalizePlayerVitals(normalizedPlayer.vitals),
+        }
+      : normalizedPlayer,
+    gameDifficulty: normalizeGameDifficulty(state.gameDifficulty),
+    combatDifficulty: normalizeEncounterDifficulty('combat', state.combatDifficulty),
+    warDifficulty: normalizeEncounterDifficulty('war', state.warDifficulty),
+    narrativePerspective: normalizeNarrativePerspective(state.narrativePerspective),
     worldlineSettings: normalizeWorldlineSettings(state.worldlineSettings),
     worldlineAnchorStates: normalizeHistoricalAnchorStates(
       state.worldlineAnchorStates,
@@ -495,13 +575,32 @@ export function ensureLuanShiState(state: RuntimeState): NormalizedLuanShiState 
     routes: state.routes ?? [],
     mapNodes: state.mapNodes ?? [],
     routeEdges: state.routeEdges ?? [],
-    resources: normalizeResources(state.resources),
+    resources: normalizedResourceState.resources,
+    playerResources: normalizedResourceState.playerResources,
     holdings,
-    privateAssets: state.privateAssets ?? [],
-    privateAssetProjects: state.privateAssetProjects ?? [],
-    domesticReports: state.domesticReports ?? [],
+    holdingGovernanceProjects: (state.holdingGovernanceProjects ?? []).map((project) => ({
+      ...project,
+      host: { ...project.host },
+      ...(project.assistant ? { assistant: { ...project.assistant } } : {}),
+      baseline: { ...project.baseline },
+      expectedEffects: Object.fromEntries(
+        Object.entries(project.expectedEffects ?? {}).map(([field, range]) => [field, { ...range }]),
+      ),
+      modifiers: { ...project.modifiers },
+      ...(project.appliedArtIds ? { appliedArtIds: [...project.appliedArtIds] } : {}),
+      ...(project.result ? {
+        result: {
+          ...project.result,
+          deltas: { ...project.result.deltas },
+        },
+      } : {}),
+    })),
+    privateAssets,
+    privateAssetProjects,
+    domesticReports,
     factions,
     troops,
+    heavyCavalryFormationProjects: (state.heavyCavalryFormationProjects ?? []).map((project) => ({ ...project })),
     court: state.court ?? defaultCourt(),
     situationOverview: state.situationOverview ?? defaultSituationOverview(),
     plotPlan: state.plotPlan ?? [],
@@ -512,7 +611,17 @@ export function ensureLuanShiState(state: RuntimeState): NormalizedLuanShiState 
     heroineThreads: Array.isArray(state.heroineThreads)
       ? normalizeHeroineThreads(state.heroineThreads, state.npcs ?? [])
       : state.heroineThreads ?? [],
-    bondThreads: state.bondThreads ?? [],
+    bondThreads: Array.isArray(state.bondThreads)
+      ? normalizeBondThreads(state.bondThreads, state.npcs ?? [])
+      : state.bondThreads ?? [],
+    correspondence: normalizeCorrespondenceEntries(state.correspondence),
+    correspondenceCommitments: normalizeCorrespondenceCommitments(state.correspondenceCommitments),
     memoryArchive: normalizeMemoryArchive(state.memoryArchive),
   };
+}
+
+function dedupeByKey<T>(values: T[], getKey: (value: T) => string): T[] {
+  const byKey = new Map<string, T>();
+  for (const value of values) byKey.set(getKey(value), value);
+  return [...byKey.values()];
 }

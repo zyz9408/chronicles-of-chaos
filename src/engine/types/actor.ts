@@ -6,8 +6,8 @@ import type { NpcAwarenessReference } from './luanshi';
 import type { RelationshipTargetKind } from './statePatch';
 
 export type CharacterTraitSource = 'opening' | 'history' | 'event' | 'training' | 'injury' | 'custom';
-export type CharacterTraitRarity = 'white' | 'green' | 'blue' | 'red' | 'gold';
-export type CharacterUniqueArtRarity = CharacterTraitRarity;
+export type CharacterTraitRarity = 'white' | 'green' | 'blue' | 'purple' | 'orange' | 'red';
+export type CharacterUniqueArtRarity = 'white' | 'green' | 'blue' | 'purple' | 'orange' | 'red';
 export type CharacterUniqueArtDomain =
   | 'personalCombat'
   | 'warfare'
@@ -17,6 +17,61 @@ export type CharacterUniqueArtDomain =
   | 'survival'
   | 'craft'
   | 'other';
+
+export type CharacterUniqueArtAcquisitionKind =
+  | 'opening'
+  | 'background'
+  | 'training'
+  | 'teaching'
+  | 'manual'
+  | 'event'
+  | 'achievement';
+
+/**
+ * 一项绝艺首次进入角色长期档案时的事实来源。
+ *
+ * 旧存档允许缺失；新写入的绝艺必须携带完整 acquisition。升级不改写该来源。
+ */
+export interface CharacterUniqueArtAcquisition {
+  kind: CharacterUniqueArtAcquisitionKind;
+  occurredAt: string;
+  sourceRefId: string;
+  summary: string;
+  instructorNpcId?: string;
+  sourceItemId?: string;
+}
+
+export type CharacterUniqueArtProgressSource =
+  | 'actual_use'
+  | 'autonomous_practice'
+  | 'instruction_or_manual'
+  | 'major_achievement';
+
+export type CharacterUniqueArtProgressIntensity = 'minor' | 'normal' | 'major';
+
+/**
+ * 主 LLM 只提交成长事实；awardedProgress 与结算前后值均由本地写入。
+ */
+export interface CharacterUniqueArtProgressEvidence {
+  eventId: string;
+  source: CharacterUniqueArtProgressSource;
+  intensity: CharacterUniqueArtProgressIntensity;
+  occurredAt: string;
+  sourceRefId: string;
+  summary: string;
+  instructorNpcId?: string;
+  sourceItemId?: string;
+}
+
+export interface CharacterUniqueArtProgressRecord extends CharacterUniqueArtProgressEvidence {
+  awardedProgress: number;
+  levelBefore: number;
+  progressBefore: number;
+  levelAfter: number;
+  progressAfter: number;
+  levelledUp: boolean;
+  appliedTurnKey: string;
+}
 
 export interface CharacterCheckHook {
   scope: string;
@@ -42,9 +97,12 @@ export interface CharacterUniqueArt {
   level: number;
   maxLevel?: number;
   progress?: number;
+  /** 同回合已经升级后仍需保留、等待后续回合结算的溢出进度。 */
+  bankedProgress?: number;
   description: string;
   effectSummary: string;
   source: CharacterTraitSource | string;
+  acquisition?: CharacterUniqueArtAcquisition;
   acquiredAt?: string;
   upgradedAt?: string;
   promptHint?: string;
@@ -52,6 +110,8 @@ export interface CharacterUniqueArt {
   tags?: string[];
   relatedNpcIds?: string[];
   relatedFactionIds?: string[];
+  /** 最近的本地确定性成长记录；旧存档允许缺失。 */
+  progressHistory?: CharacterUniqueArtProgressRecord[];
 }
 
 export type CharacterEffectType = 'buff' | 'debuff' | 'mixed';
@@ -154,6 +214,24 @@ export interface FactionAssetAccess {
   summary: string;
 }
 
+export const PERSONAL_ESCORT_ENTITLEMENT_BASES = [
+  'official_position',
+  'military_command',
+  'nobility',
+  'faction_leadership',
+  'household_status',
+  'explicit_retinue',
+] as const;
+
+export type PersonalEscortEntitlementBasis = typeof PERSONAL_ESCORT_ENTITLEMENT_BASES[number];
+
+/** Stable identity fact; scene availability is decided by each encounter. */
+export interface PersonalEscortEntitlement {
+  status: 'none' | 'customary';
+  bases: PersonalEscortEntitlementBasis[];
+  updatedAt: string;
+}
+
 /** 角色/人物 */
 export interface Actor {
   id: string;
@@ -163,6 +241,9 @@ export interface Actor {
   aliases?: string[];
   commonAddress?: string;
   sex?: '男' | '女' | '其他';
+  /** Canonical in-world birthday. Runtime age is derived from this and currentDate. */
+  birthDate?: string;
+  /** Legacy compatibility snapshot; do not use as the runtime source of truth. */
   age?: number;
   roleType: string;          // 对应 Ontology 中的 actorRoleTypes
   factionId?: string;
@@ -195,6 +276,7 @@ export interface Actor {
   reputation?: CharacterReputation;
   playerMemory?: PlayerMemory;
   factionAssetAccess?: FactionAssetAccess;
+  personalEscortEntitlement?: PersonalEscortEntitlement;
   summary: string;
   relationshipWithPlayer?: string;
   situationSummary?: string;

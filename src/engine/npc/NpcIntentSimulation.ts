@@ -10,6 +10,7 @@ import {
   type ApiConfigArchive,
 } from '../settings/ApiConfigManager';
 import { ensureLuanShiState } from '../state/createInitialRuntimeState';
+import { deriveNpcCurrentAge } from '../time/npcAge';
 import { filterProtagonistNpcClones } from '../state/playerNpcBoundary';
 import { isNpcPhysicallyPresent } from '../state/npcPresence';
 import { selectPromptContext } from '../state/selectPromptContext';
@@ -23,12 +24,11 @@ import {
 import { resolvePromptTemplate } from '../prompts/PromptResolver';
 import { isTurnExecutionCancelled } from '../turn/TurnExecutionContext';
 import { isHardTurnBudgetExceededError } from '../turn/TurnLlmBudget';
-import { isTemporalTargetReached } from '../time/TemporalProjection';
 
 export interface NpcIntentSimulationTarget {
   npcId: string;
   npcName: string;
-  scope: 'present' | 'focused' | 'mentioned' | 'activityDue';
+  scope: 'present' | 'focused' | 'mentioned';
   sex?: string;
   age?: number;
   role?: string;
@@ -108,7 +108,7 @@ export function selectNpcIntentSimulationTargets(
         normalized.activeQuests,
         normalized.currentDate,
       );
-      const scope = getNpcSimulationScope(normalized, npc, playerInput, backgroundActivity);
+      const scope = getNpcSimulationScope(normalized, npc, playerInput);
       return scope
         ? { npc, backgroundActivity, scope, priority: getNpcSimulationPriority(scope) }
         : undefined;
@@ -126,7 +126,7 @@ export function selectNpcIntentSimulationTargets(
       npcName: npc.name,
       scope,
       sex: npc.sex,
-      age: typeof npc.age === 'number' ? npc.age : undefined,
+      age: deriveNpcCurrentAge(npc, normalized.currentDate),
       role: npc.currentIdentity ?? npc.role,
       locationId: npc.locationId,
       summary: npc.summary,
@@ -290,7 +290,7 @@ function buildNpcIntentSimulationMessages(
     '你不是主剧情模型：不写正文、不裁定成败、不修改状态、不输出 statePatches、commands、writeback 或 Markdown。',
     'NPC 只能依据自己能看见、听见、亲历、被公开告知或合理推断的信息行动；不能使用玩家内心、系统变量、未来剧情、其他地点私密事件。',
     '没有足够刺激、利益关联、职责压力或感知输入时，应输出 shouldAct=false 和“暂无明显意图”。',
-    '若目标携带 backgroundActivity，先判断它是否仍有效、已到复核时间、被阻塞或与当前地点冲突；到期只产生候选反应，不得把预计结果当成已经发生。',
+    '若目标携带 backgroundActivity，它只是该人物已经存在的背景处境；不得在此推进或结算后台时间线。',
     '每个目标 NPC 最多输出一个意图；所有目标 NPC 放在同一个 JSON intents 数组中。',
   ].join('\n');
   const defaultUserPrompt = [
@@ -321,7 +321,7 @@ function buildNpcIntentSimulationMessages(
     '- npcId 必须来自目标 NPC，不得编造漂移 ID。',
     '- 不要输出 statePatches、statePatch、writeback、commands、LuanShiCommand。',
     '- intent 是候选动作，不是已经发生的事实；主剧情模型会决定是否采纳。',
-    '- activityDue 目标只表示既有后台行动到达复核时间；不得自动宣告成功、失败、抵达、死亡或任务完成。',
+    '- 不得推进、结算或重排 backgroundActivity；后台世界演化由独立执行器负责。',
     '- trigger 必须具体，说明看见/听见什么、何时触发，或为什么条件不足。',
   ].join('\n');
 
@@ -364,18 +364,10 @@ function getNpcSimulationScope(
   state: RuntimeState,
   npc: LuanShiNpc,
   playerInput: string,
-  backgroundActivity: LuanShiNpc['backgroundActivity'],
 ): NpcIntentSimulationTarget['scope'] | undefined {
   if (isNpcPhysicallyPresent(state, npc)) return 'present';
   if (npc.isFocused) return 'focused';
   if (npc.name && playerInput.includes(npc.name)) return 'mentioned';
-  const activity = backgroundActivity;
-  if (
-    activity?.dueAt
-    && activity.status !== 'completed'
-    && activity.status !== 'cancelled'
-    && isTemporalTargetReached(state, activity.dueAt)
-  ) return 'activityDue';
   return undefined;
 }
 

@@ -39,6 +39,7 @@ describe('LocalDataManagement', () => {
   it('only selects owned preference and custom-opening keys', () => {
     const storage = new MemoryStorage();
     storage.setItem('coc_v2_render_depth', '20');
+    storage.setItem('coc_v2_narrative_length_retry_enabled', '0');
     storage.setItem('coc_v2_changelog_daily_view', '{}');
     storage.setItem('coc_v2_tavern_settings', '{}');
     storage.setItem('coc_v2_persistent_prompts', '[]');
@@ -48,6 +49,7 @@ describe('LocalDataManagement', () => {
 
     const keys = listPreferenceKeysToRemove(storage);
     expect(keys).toContain('coc_v2_render_depth');
+    expect(keys).toContain('coc_v2_narrative_length_retry_enabled');
     expect(keys).toContain('coc_v2_changelog_daily_view');
     expect(keys).toContain('coc_v2_persistent_prompts');
     expect(keys).toContain('coc_v2_tavern_settings');
@@ -58,6 +60,7 @@ describe('LocalDataManagement', () => {
     clearPreferenceData(storage);
     expect(storage.getItem('unrelated-app-token')).toBe('keep');
     expect(storage.getItem('coc_v2_render_depth')).toBeNull();
+    expect(storage.getItem('coc_v2_narrative_length_retry_enabled')).toBeNull();
     expect(storage.getItem('coc_v2_persistent_prompts')).toBeNull();
     expect(storage.getItem('coc_v2_tavern_settings')).toBeNull();
     expect(storage.getItem('coc_v2_opening_character_templates')).toBeNull();

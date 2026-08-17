@@ -3,6 +3,7 @@ import {
   COMBAT_RULESET_VERSION,
   ENCOUNTER_CONTRACT_VERSION,
   SEMANTIC_PROJECTION_VERSION,
+  THEATER_WAR_RULESET_VERSION,
   WAR_RULESET_VERSION,
   type AbilitySemanticProfile,
   type EncounterStartIntent,
@@ -14,6 +15,9 @@ import {
   type UnsealedWarResult,
 } from './EncounterContracts';
 import {
+  EQUIPMENT_QUALITY_BASELINES,
+  ITEM_EFFECT_LIMITS,
+  normalizeEquipmentQualityTier,
   validateEncounterResultPayload,
   validateEncounterStartIntent,
   validateSemanticProjection,
@@ -61,6 +65,17 @@ function createWarIntent(): EncounterStartIntent {
     enemyForce: {
       troopIds: ['troop_enemy_guard'],
       commanderActorId: 'npc_zhangxiu',
+    },
+    participation: {
+      commandScope: 'independent',
+      mission: 'defeat_local_force',
+      playerCommitments: [
+        { troopId: 'troop_player_infantry', committedStrength: 800 },
+        { troopId: 'troop_player_cavalry', committedStrength: 200 },
+      ],
+      enemyCommitments: [
+        { troopId: 'troop_enemy_guard', committedStrength: 500 },
+      ],
     },
     objective: 'defeat_enemy',
     environmentTags: ['open'],
@@ -223,6 +238,7 @@ function createWarResult(): UnsealedWarResult {
       { actorId: 'player_liuping', side: 'player', outcome: 'active' },
       { actorId: 'npc_enemy_general', side: 'enemy', outcome: 'wounded' },
     ],
+    experienceAward: 40,
     capturedItemIds: [],
   };
 }
@@ -231,6 +247,10 @@ describe('EncounterContractValidation', () => {
   it('accepts valid personal-combat and war start intents', () => {
     expect(validateEncounterStartIntent(createPersonalIntent())).toEqual({ valid: true, errors: [] });
     expect(validateEncounterStartIntent(createWarIntent())).toEqual({ valid: true, errors: [] });
+    const theaterIntent = createWarIntent();
+    if (theaterIntent.kind !== 'war') throw new Error('unexpected intent kind');
+    theaterIntent.rulesetVersion = THEATER_WAR_RULESET_VERSION;
+    expect(validateEncounterStartIntent(theaterIntent)).toEqual({ valid: true, errors: [] });
   });
 
   it('rejects personal combat with more than three actors on a side', () => {
@@ -255,6 +275,61 @@ describe('EncounterContractValidation', () => {
     expect(result.valid).toBe(false);
     expect(result.errors.some((error) => error.includes('不得重复'))).toBe(true);
     expect(result.errors.some((error) => error.includes('不能同时出现在双方'))).toBe(true);
+  });
+
+  it('accepts closed encounter-scoped enemies and rejects undeclared or unstable scoped IDs', () => {
+    const intent = createPersonalIntent();
+    if (intent.kind !== 'personal_combat') throw new Error('unexpected intent kind');
+    const scopedActorId = `${intent.encounterId}:scoped:enemy_1`;
+    intent.enemyParty.actorIds = [scopedActorId];
+    intent.scopedCombatants = [{
+      actorId: scopedActorId,
+      name: '持矛溃卒',
+      archetype: 'rabble',
+      weaponClass: 'polearm',
+      armorClass: 'light',
+    }];
+
+    expect(validateEncounterStartIntent(intent)).toEqual({ valid: true, errors: [] });
+
+    intent.scopedCombatants[0].actorId = 'scoped_enemy_without_encounter_prefix';
+    const wrongPrefix = validateEncounterStartIntent(intent);
+    expect(wrongPrefix.valid).toBe(false);
+    expect(wrongPrefix.errors.some((error) => error.includes('必须以'))).toBe(true);
+    expect(wrongPrefix.errors.some((error) => error.includes('必须且只能出现在一方'))).toBe(true);
+
+    delete intent.scopedCombatants;
+    const undeclared = validateEncounterStartIntent(intent);
+    expect(undeclared.valid).toBe(false);
+    expect(undeclared.errors).toContain(`本场临时参战者 ${scopedActorId} 缺少 scopedCombatants 声明。`);
+  });
+
+  it('accepts only locally marked friendly scoped escorts and validates scene availability', () => {
+    const intent = createPersonalIntent();
+    if (intent.kind !== 'personal_combat') throw new Error('unexpected intent kind');
+    const escortId = `${intent.encounterId}:scoped:player_guard_1`;
+    intent.escortAvailability = 'normal';
+    intent.playerParty.actorIds = ['player_liuping', escortId];
+    intent.scopedCombatants = [{
+      actorId: escortId,
+      name: '随身护卫甲',
+      archetype: 'regular',
+      weaponClass: 'standard',
+      armorClass: 'light',
+      systemRole: 'temporary_escort',
+    }];
+    expect(validateEncounterStartIntent(intent)).toEqual({ valid: true, errors: [] });
+
+    delete intent.scopedCombatants[0].systemRole;
+    expect(validateEncounterStartIntent(intent).errors.join('\n')).toContain('systemRole 必须为 temporary_escort');
+
+    intent.scopedCombatants[0].systemRole = 'temporary_escort';
+    intent.playerParty.actorIds = ['player_liuping'];
+    intent.enemyParty.actorIds = [escortId];
+    expect(validateEncounterStartIntent(intent).errors.join('\n')).toContain('只允许本地派生的我方临时护卫');
+
+    intent.escortAvailability = 'unknown' as typeof intent.escortAvailability;
+    expect(validateEncounterStartIntent(intent).errors.join('\n')).toContain('escortAvailability 不在白名单');
   });
 
   it('rejects unknown war environment tags and duplicate troop IDs', () => {
@@ -290,6 +365,36 @@ describe('EncounterContractValidation', () => {
 
   it('accepts a validated active unique-art projection', () => {
     expect(validateSemanticProjection(createUniqueArtProfile())).toEqual({ valid: true, errors: [] });
+  });
+
+  it('accepts a structured passive runtime recovery and rejects active or unsafe variants', () => {
+    const passive = createUniqueArtProfile();
+    if (passive.sourceType !== 'unique_art') throw new Error('unexpected profile kind');
+    passive.activation = 'passive';
+    passive.targetMode = 'self';
+    passive.purpose = 'healing';
+    passive.powerClass = 'light';
+    passive.powerMultiplier = 1.1;
+    passive.staminaCost = 8;
+    passive.maxHits = 1;
+    passive.perEncounterLimit = 1;
+    passive.allowAutoUse = false;
+    passive.rulesetScopes = ['runtime_turn'];
+    passive.effects = [{
+      trigger: 'after_runtime_turn',
+      condition: 'always',
+      operation: 'restore_hp',
+      target: 'self',
+      value: 4,
+      priority: 10,
+    }];
+
+    expect(validateSemanticProjection(passive)).toEqual({ valid: true, errors: [] });
+    expect(validateSemanticProjection({ ...passive, activation: 'active' }).valid).toBe(false);
+    expect(validateSemanticProjection({
+      ...passive,
+      effects: [{ ...passive.effects[0], target: 'all_allies' }],
+    }).valid).toBe(false);
   });
 
   it('accepts passive trait and equipment projections without guessing from names', () => {
@@ -331,6 +436,45 @@ describe('EncounterContractValidation', () => {
 
     expect(validateSemanticProjection(trait)).toEqual({ valid: true, errors: [] });
     expect(validateSemanticProjection(equipment)).toEqual({ valid: true, errors: [] });
+  });
+
+  it('enforces structured equipment quality floors without reading item names or descriptions', () => {
+    expect(EQUIPMENT_QUALITY_BASELINES.red).toEqual({
+      weaponBaseDamage: 19,
+      accuracyBonus: 8,
+      armorPenetration: 8,
+      blockBonus: 10,
+      armorTier: 5,
+    });
+    expect(normalizeEquipmentQualityTier('传说级')).toBe('orange');
+    expect(normalizeEquipmentQualityTier('金色')).toBe('orange');
+    expect(normalizeEquipmentQualityTier('red')).toBe('red');
+    expect(normalizeEquipmentQualityTier('御赐金色')).toBeUndefined();
+    expect(normalizeEquipmentQualityTier('国宝')).toBeUndefined();
+    expect(normalizeEquipmentQualityTier('家传')).toBeUndefined();
+    expect(normalizeEquipmentQualityTier('精造')).toBeUndefined();
+    expect(normalizeEquipmentQualityTier('祖传神甲')).toBeUndefined();
+
+    const weakRedWeapon: EquipmentSemanticProfile = {
+      profileKind: 'equipment',
+      projectionVersion: SEMANTIC_PROJECTION_VERSION,
+      sourceId: 'equipment_weak_red_weapon',
+      status: 'executable',
+      rulesetScopes: ['personal_combat'],
+      equipmentSlot: 'weapon',
+      qualityTier: 'red',
+      weaponWeight: 'standard',
+      weaponBaseDamage: 10,
+      accuracyBonus: 2,
+      armorPenetration: 1,
+      effects: [],
+    };
+    const result = validateSemanticProjection(weakRedWeapon);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain('weaponBaseDamage 低于 red 品级武器保底值 19。');
+    expect(result.errors).toContain('accuracyBonus 低于 red 品级武器保底值 8。');
+    expect(result.errors).toContain('armorPenetration 低于 red 品级武器保底值 8。');
   });
 
   it('keeps narrative-only projections out of executable effects', () => {
@@ -391,6 +535,54 @@ describe('EncounterContractValidation', () => {
     expect(result.errors).toContain('combatUse=true 的物品必须至少包含一个可执行效果。');
   });
 
+  it('enforces the six consumable quality ceilings', () => {
+    expect(ITEM_EFFECT_LIMITS).toEqual({
+      white: 10,
+      green: 20,
+      blue: 30,
+      purple: 50,
+      orange: 80,
+      red: 100,
+    });
+
+    for (const [qualityTier, limit] of Object.entries(ITEM_EFFECT_LIMITS) as Array<
+      [ItemCombatProfile['qualityTier'], number]
+    >) {
+      const profile: ItemCombatProfile = {
+        profileKind: 'item',
+        projectionVersion: SEMANTIC_PROJECTION_VERSION,
+        sourceId: `item_${qualityTier}_medicine`,
+        status: 'executable',
+        rulesetScopes: ['personal_combat'],
+        combatUse: true,
+        qualityTier,
+        consumable: true,
+        quantityPerUse: 1,
+        perEncounterLimit: 1,
+        effects: [{
+          trigger: 'before_action',
+          condition: 'always',
+          operation: 'restore_hp',
+          target: 'self',
+          value: limit,
+          priority: 20,
+        }],
+      };
+
+      expect(validateSemanticProjection(profile)).toEqual({ valid: true, errors: [] });
+
+      const excessive = {
+        ...profile,
+        effects: [{ ...profile.effects[0], value: limit + 1 }],
+      };
+      const excessiveResult = validateSemanticProjection(excessive);
+      expect(excessiveResult.valid).toBe(false);
+      expect(excessiveResult.errors).toContain(
+        `effects[0].value 超出 ${qualityTier} 品级允许强度 ${limit}。`,
+      );
+    }
+  });
+
   it('limits troop semantic tags to three unique whitelist values', () => {
     const profile: TroopSemanticProfile = {
       profileKind: 'troop',
@@ -408,6 +600,47 @@ describe('EncounterContractValidation', () => {
     expect(result.valid).toBe(false);
     expect(result.errors.some((error) => error.includes('最多 3 个'))).toBe(true);
     expect(result.errors.some((error) => error.includes('不得重复'))).toBe(true);
+  });
+
+  it('accepts a bounded mixed troop composition whose shares total one hundred', () => {
+    const profile: TroopSemanticProfile = {
+      profileKind: 'troop',
+      projectionVersion: SEMANTIC_PROJECTION_VERSION,
+      sourceId: 'troop_mixed_test',
+      status: 'executable',
+      rulesetScopes: ['war'],
+      primaryClass: 'mixed',
+      tags: [],
+      composition: [
+        { primaryClass: 'cavalry', sharePercent: 40, tags: ['heavy', 'mobile'] },
+        { primaryClass: 'infantry', sharePercent: 60, tags: ['anti_cavalry'] },
+      ],
+      effects: [],
+    };
+
+    expect(validateSemanticProjection(profile)).toEqual({ valid: true, errors: [] });
+  });
+
+  it('rejects ambiguous mixed troop composition instead of silently guessing it', () => {
+    const profile: TroopSemanticProfile = {
+      profileKind: 'troop',
+      projectionVersion: SEMANTIC_PROJECTION_VERSION,
+      sourceId: 'troop_invalid_mixed_test',
+      status: 'executable',
+      rulesetScopes: ['war'],
+      primaryClass: 'mixed',
+      tags: [],
+      composition: [
+        { primaryClass: 'infantry', sharePercent: 60, tags: ['anti_cavalry'] },
+        { primaryClass: 'infantry', sharePercent: 30, tags: [] },
+      ],
+      effects: [],
+    };
+    const result = validateSemanticProjection(profile);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((error) => error.includes('sharePercent 总和'))).toBe(true);
+    expect(result.errors.some((error) => error.includes('重复 primaryClass'))).toBe(true);
   });
 
   it('accepts a complete unsealed combat result', () => {

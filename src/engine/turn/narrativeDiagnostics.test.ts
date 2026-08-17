@@ -1,7 +1,36 @@
 import { describe, expect, it } from 'vitest';
 import type { RuntimeState, WorldBook } from '../types';
+import { savePromptOverride } from '../prompts/PromptOverrideStore';
 import type { NarrativeRenderEntry } from './narrativeDisplay';
 import { buildNarrativeDiagnosticExport } from './narrativeDiagnostics';
+
+class MemoryStorage implements Storage {
+  private readonly values = new Map<string, string>();
+
+  get length(): number {
+    return this.values.size;
+  }
+
+  clear(): void {
+    this.values.clear();
+  }
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+
+  key(index: number): string | null {
+    return Array.from(this.values.keys())[index] ?? null;
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key);
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value);
+  }
+}
 
 const worldBook: WorldBook = {
   manifest: {
@@ -53,6 +82,7 @@ const runtimeState: RuntimeState = {
   worldBookId: 'three-kingdoms',
   worldBookVersion: '0.1.0',
   worldBookSource: 'official',
+  narrativePerspective: 'third_person',
   startBookmarkId: 'bm_189',
   startDate: '公元189年09月01日 08:00（辰时）',
   currentDate: '公元189年09月01日 08:15（辰时）',
@@ -88,13 +118,33 @@ const runtimeState: RuntimeState = {
         elapsedMs: 39000,
         provider: 'gemini',
         model: 'gemini-3-flash',
+        narrativeLength: {
+          preference: 'rich',
+          label: '丰富',
+          minimumCharacters: 1000,
+          maximumCharacters: 1600,
+          actualCharacters: 800,
+          status: 'under_minimum',
+          meetsMinimum: false,
+          regenerationAttempted: true,
+          firstAttemptCharacters: 620,
+          regenerationResolved: false,
+        },
         processingStages: [
           {
             stage: 'generatingNarrative',
             label: '生成正文',
             status: 'finished',
             elapsedMs: 39000,
+            provider: 'openai_compatible',
             model: 'gemini-3-flash',
+            usage: {
+              promptTokens: 100,
+              completionTokens: 40,
+              totalTokens: 140,
+              cacheReadTokens: 70,
+              cacheMissTokens: 30,
+            },
           },
           {
             stage: 'repairingStateWriteback',
@@ -255,6 +305,8 @@ describe('narrativeDiagnostics', () => {
     expect(text).toContain('当前时间：公元189年09月01日 08:15（辰时）');
     expect(text).toContain('当前位置：洛阳城');
     expect(text).toContain('玩家：刘达');
+    expect(text).toContain('叙事人称：第三人称（姓名 / 他 / 她）');
+    expect(text).toContain('成人亲密协议：内置默认版');
     expect(text).toContain('世界书：三国演义 three-kingdoms v0.1.0');
     expect(text).toContain('## 第 1 回合');
     expect(text).toContain('玩家输入：我去找同营士卒打听消息');
@@ -263,9 +315,16 @@ describe('narrativeDiagnostics', () => {
     expect(text).toContain('生成信息：provider=gemini, model=gemini-3-flash, prompt=1877, completion=977, elapsed=39s');
     expect(text).toContain('处理阶段：');
     expect(text).toContain('- 生成正文：finished，耗时 39s，模型 gemini-3-flash');
+    expect(text).toContain('cacheHitRate=70%');
     expect(text).toContain('- 整理状态写回：failed，耗时 6s，模型 gemini-3-flash，详情：502 Bad Gateway');
     expect(text).toContain('Prompt Token 分层估算：');
     expect(text).toContain('总计：约 1877 tokens');
+    expect(text).toContain('正文篇幅诊断：');
+    expect(text).toContain('档位：丰富（rich）');
+    expect(text).toContain('目标：1000-1600 个非空白字符');
+    expect(text).toContain('实际：800 个非空白字符');
+    expect(text).toContain('状态：未达到重写阈值');
+    expect(text).toContain('整份重生成：已执行（首份 620 字，重生成后仍未达标）');
     expect(text).toContain('- 系统提示词：约 450 tokens');
     expect(text).toContain('- 状态写入上下文：约 480 tokens');
     expect(text).toContain('上下文拆分：');
@@ -278,7 +337,7 @@ describe('narrativeDiagnostics', () => {
     expect(text).toContain('消耗：prompt=321, completion=123, total=444');
     expect(text).toContain('门候(npc_guard)：抬手拦住主角，要求说明来意。');
     expect(text).toContain('触发：看见主角靠近营门时触发');
-    expect(text).toContain('公开思路摘要');
+    expect(text).not.toContain('公开思路摘要');
     expect(text).not.toContain('原文：');
     expect(text).not.toContain('{"narrativeText":"营门外的士卒压低声音"');
     expect(text).not.toContain('rawResponse');
@@ -290,6 +349,23 @@ describe('narrativeDiagnostics', () => {
     expect(text).not.toContain('apiKey');
     expect(text).not.toContain('x-api-key');
     expect(text).not.toContain('sk-test');
+  });
+
+  it('reports an active adult intimacy prompt override without exporting its content', () => {
+    const storage = new MemoryStorage();
+    const overrideContent = 'CUSTOM_ADULT_PROTOCOL_PRIVATE_CONTENT_SENTINEL';
+    savePromptOverride('nsfw.adultIntimacy.commonProtocol', overrideContent, storage);
+
+    const text = buildNarrativeDiagnosticExport({
+      runtimeState,
+      worldBook,
+      renderedEntries,
+      saveId: 'save-adult-prompt-override',
+      promptOverrideStorage: storage,
+    });
+
+    expect(text).toContain('成人亲密协议：玩家覆盖版（v1，更新于 ');
+    expect(text).not.toContain(overrideContent);
   });
 
   it('keeps full diagnostic export explicit and able to include raw response and private diagnostic material', () => {
@@ -325,6 +401,34 @@ describe('narrativeDiagnostics', () => {
     expect(text).not.toContain('coc.v2.api-settings');
     expect(text).not.toContain('"configs"');
     expect(text).not.toContain('"routes"');
+  });
+
+  it('exports the latest failed uncommitted attempt even when no turn entry was created', () => {
+    const text = buildNarrativeDiagnosticExport({
+      runtimeState,
+      worldBook,
+      renderedEntries,
+      saveId: 'save-failed-attempt',
+      failedProcessingAttempt: {
+        actionText: '继续追问粮仓账目',
+        failedAt: '2026-08-02T01:02:03.000Z',
+        error: '写回 API 请求失败，Bearer tp-secret-value',
+        processingStages: [{
+          stage: 'repairingStateWriteback',
+          label: '整理状态写回',
+          status: 'failed',
+          elapsedMs: 12_000,
+          detail: 'Authorization: Bearer tp-secret-value',
+          model: 'flash',
+        }],
+      },
+    });
+
+    expect(text).toContain('最近失败的执行尝试（未写入存档）');
+    expect(text).toContain('玩家输入：继续追问粮仓账目');
+    expect(text).toContain('整理状态写回：failed');
+    expect(text).toContain('耗时 12s');
+    expect(text).not.toContain('tp-secret-value');
   });
 
   it('labels a live narrative draft as uncommitted when diagnostics are exported mid-generation', () => {

@@ -41,6 +41,7 @@ Thumbs.db
 .runtime/
 .superpowers/
 .playwright-cli/
+.wrangler/
 output/
 
 # local only

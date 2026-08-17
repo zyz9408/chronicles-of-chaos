@@ -982,6 +982,18 @@
   background: rgba(82, 147, 225, 0.1);
 }
 
+.npc-trait-chip.rarity-purple {
+  border-color: rgba(166, 93, 220, 0.62);
+  color: #c995ff;
+  background: rgba(142, 72, 200, 0.12);
+}
+
+.npc-trait-chip.rarity-orange {
+  border-color: rgba(232, 139, 48, 0.68);
+  color: #ffb15e;
+  background: rgba(220, 116, 30, 0.12);
+}
+
 .npc-trait-chip.rarity-red {
   border-color: rgba(214, 75, 70, 0.58);
   color: #ff8b82;
@@ -1075,6 +1087,28 @@
 .npc-detail-title-line p {
   margin: 0;
   color: var(--text-secondary);
+}
+
+.npc-delete-profile-button {
+  margin-left: auto;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid rgba(196, 63, 63, 0.48);
+  background: rgba(95, 18, 18, 0.18);
+  color: #dca39a;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.npc-delete-profile-button:hover:not(:disabled) {
+  border-color: rgba(229, 90, 78, 0.82);
+  background: rgba(123, 27, 27, 0.34);
+  color: #ffd0c8;
+}
+
+.npc-delete-profile-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .npc-detail-location-line {
@@ -1608,8 +1642,67 @@
   line-height: 1.55;
 }
 
-.npc-memory-list p {
-  margin: 0.2rem 0 0;
+.npc-memory-workspace {
+  min-width: 0;
+}
+
+.npc-memory-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.npc-memory-section-head small {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-align: right;
+}
+
+.npc-memory-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
+  margin: 0.55rem 0;
+}
+
+.npc-memory-tabs button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-width: 0;
+  padding: 0.48rem 0.6rem;
+  border: 1px solid rgba(184, 138, 42, 0.22);
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.npc-memory-tabs button:hover,
+.npc-memory-tabs button:focus-visible {
+  border-color: rgba(210, 164, 57, 0.62);
+  color: var(--accent-gold);
+}
+
+.npc-memory-tabs button.active {
+  border-color: rgba(210, 164, 57, 0.72);
+  background: rgba(184, 138, 42, 0.12);
+  color: var(--accent-gold);
+}
+
+.npc-memory-tabs button strong {
+  min-width: 1.35rem;
+  padding: 0.05rem 0.3rem;
+  border-radius: 999px;
+  background: rgba(184, 138, 42, 0.12);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.npc-memory-list article,
+.npc-memory-list > p {
+  margin: 0;
   padding: 0.55rem 0.7rem;
   border: 1px solid rgba(184, 138, 42, 0.14);
   background: rgba(0, 0, 0, 0.14);
@@ -1618,12 +1711,35 @@
   font-size: 0.86rem;
 }
 
+.npc-memory-list article > span,
+.npc-memory-list article > small {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.npc-memory-list article > p {
+  margin: 0.25rem 0 0;
+}
+
+.npc-memory-list article > small {
+  margin-top: 0.3rem;
+  color: var(--accent-cyan);
+}
+
 .npc-memory-list {
   display: grid;
   gap: 0.45rem;
-  max-height: 12rem;
+  max-height: min(18rem, 36vh);
   overflow-y: auto;
-  padding-right: 0.2rem;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-right: 0.35rem;
+}
+
+.npc-memory-list .npc-memory-empty {
+  color: var(--text-muted);
+  text-align: center;
 }
 
 @media (max-width: 960px) {
@@ -1797,6 +1913,20 @@
   border-color: rgba(82, 147, 225, 0.56);
   color: #8bbcff;
   background: rgba(82, 147, 225, 0.1);
+}
+
+.res-chip.rarity-purple,
+.player-profile-chip.rarity-purple {
+  border-color: rgba(166, 93, 220, 0.62);
+  color: #c995ff;
+  background: rgba(142, 72, 200, 0.12);
+}
+
+.res-chip.rarity-orange,
+.player-profile-chip.rarity-orange {
+  border-color: rgba(232, 139, 48, 0.68);
+  color: #ffb15e;
+  background: rgba(220, 116, 30, 0.12);
 }
 
 .res-chip.rarity-red,

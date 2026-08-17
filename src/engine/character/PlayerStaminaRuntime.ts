@@ -1,5 +1,7 @@
 import type { ActionIntent, RuntimeState } from '../types';
 import { tryCreateGameClockFromDateLabel, type GameClock } from '../time/gameClock';
+import { normalizePlayerVitals } from './PlayerVitals';
+import type { PlayerRecoveryKind } from './PlayerRecoveryContracts';
 
 export type PlayerStaminaCategory =
   | 'combat'
@@ -29,12 +31,14 @@ export interface PlayerVitalsSettlement {
   state: RuntimeState;
   adjustment?: PlayerStaminaAdjustment;
   healthAdjustment?: PlayerHealthAdjustment;
+  diagnostic?: string;
 }
 
 interface PlayerStaminaTurnContext {
   previousState: RuntimeState;
   playerInput: string;
   actionIntent: ActionIntent;
+  recoveryKind?: PlayerRecoveryKind;
 }
 
 interface ClassifiedStaminaAction {
@@ -42,11 +46,9 @@ interface ClassifiedStaminaAction {
   reason: string;
 }
 
-const explicitRecoveryPattern = /休息|歇息|安睡|睡觉|入睡|就寝|过夜|歇一夜|睡一夜|静养|休养|疗养/;
-const healthRecoveryPattern = /静养|休养|疗养|养伤|疗伤|治疗|诊治|医治|包扎|处理伤口|恢复伤势|调养伤势/;
-const deliberationPattern = /询问|商议|是否|要不要|打算|计划|准备|建议|应该如何|能否/;
 const passiveWaitingPattern = /等待|静待|等候|时间经过|时间推移|停留|守候/;
 const combatExecutionPattern = /夜袭|劫营|冲锋|突击|厮杀|交锋|搏杀|杀入|斩杀|追击|伏击|攻城|守城|突围|擒拿|刺杀|放箭|射敌|挥刀|迎战|战斗/;
+const negatedCombatPhrasePattern = /(?:不|未|无需|避免|拒绝|并非|不是|非)(?:进行)?(?:战斗|交战|迎战|厮杀|交锋)/g;
 const intimateActivityPattern = /欢爱|交合|做爱|云雨|求欢|前戏|后入|插入|抽插|操干|射精|泄身|同房|房事|乘骑位|变换体位/;
 const strenuousActivityPattern = /训练|操练|演武|校场|骑术|急行|强行军|连夜行军|奔跑|攀爬|游泳|搬运|挖掘|劈砍|砍柴/;
 
@@ -58,14 +60,37 @@ export function applyPlayerVitalsAfterTurn(
   state: RuntimeState,
   context: PlayerStaminaTurnContext,
 ): PlayerVitalsSettlement {
-  const vitals = state.player.vitals;
-  if (!vitals || !Number.isFinite(vitals.stamina) || !Number.isFinite(vitals.maxStamina) || vitals.maxStamina <= 0) {
-    return { state };
+  const vitals = normalizePlayerVitals(state.player.vitals);
+  if (!context.recoveryKind) {
+    return withVitalsDiagnostic(
+      state,
+      '生命体力结算已跳过：主响应未提供合法 playerRecoveryKind。',
+    );
   }
 
   const previousStamina = clamp(Math.round(vitals.stamina), 0, Math.round(vitals.maxStamina));
   const elapsedMinutes = getElapsedMinutes(context.previousState, state);
-  const classified = classifyStaminaAction(context.playerInput, context.actionIntent);
+  const isRecovery = context.recoveryKind === 'rest' || context.recoveryKind === 'treatment';
+  if (isRecovery && !elapsedMinutes) {
+    return withVitalsDiagnostic(
+      state,
+      `生命体力结算已跳过：主响应声明 ${context.recoveryKind}，但有效游戏时间未推进。`,
+    );
+  }
+  const previousHp = clamp(Math.round(vitals.hp), 0, Math.round(vitals.maxHp));
+  if (context.recoveryKind === 'none' && previousHp <= 0) {
+    return withVitalsDiagnostic(
+      state,
+      '生命体力保持不变：主角生命为 0，且本回合未实际完成休整或治疗。',
+    );
+  }
+
+  const classified = classifyStaminaAction(
+    context.playerInput,
+    context.actionIntent,
+    context.recoveryKind,
+    elapsedMinutes,
+  );
   if (!classified) return { state };
 
   const requestedDelta = calculateStaminaDelta(classified.category, elapsedMinutes);
@@ -80,7 +105,12 @@ export function applyPlayerVitalsAfterTurn(
         category: classified.category,
         reason: classified.reason,
       };
-  const healthAdjustment = calculateHealthRecovery(vitals, context, classified.category, elapsedMinutes);
+  const healthAdjustment = calculateHealthRecovery(
+    vitals,
+    context.recoveryKind,
+    classified.category,
+    elapsedMinutes,
+  );
   if (!adjustment && !healthAdjustment) return { state };
 
   const nextState: RuntimeState = {
@@ -102,32 +132,32 @@ export function applyPlayerVitalsAfterTurn(
 /** 保留旧导出名，避免既有调用方被迫同步改名。 */
 export const applyPlayerStaminaAfterTurn = applyPlayerVitalsAfterTurn;
 
-export function isExplicitPlayerHealthRecoveryAction(playerInput: string): boolean {
-  return healthRecoveryPattern.test(playerInput.trim());
-}
-
 function classifyStaminaAction(
   playerInput: string,
   actionIntent: ActionIntent,
+  recoveryKind: PlayerRecoveryKind,
+  elapsedMinutes?: number,
 ): ClassifiedStaminaAction | undefined {
   const input = playerInput.trim();
 
-  // “等待/停留”可被粗意图识别为 rest，但不等于真正睡眠或休养。
-  if (passiveWaitingPattern.test(input) && !explicitRecoveryPattern.test(input)) return undefined;
-  // 显式执行休息优先于粗意图；“在营中静养半日”即使被识别成 interact 也必须恢复。
-  if (
-    explicitRecoveryPattern.test(input)
-    && !((actionIntent === 'inquire' || actionIntent === 'interact') && deliberationPattern.test(input))
-  ) {
-    return { category: 'recovery', reason: '休息恢复' };
+  // 恢复语义只来自主叙事结构化字段；本地不再扫描输入或正文猜测是否真正休整。
+  if (recoveryKind === 'rest' || recoveryKind === 'treatment') {
+    const label = recoveryKind === 'treatment' ? '治疗休养恢复' : '休息恢复';
+    return {
+      category: 'recovery',
+      reason: `${label}，${elapsedMinutes ?? 0}分钟`,
+    };
   }
 
-  // 询问和商议只结算交谈本身，后文提到的战斗、亲密或休息计划都不代表已经执行。
+  // “等待/停留”仍属于无负荷的普通时间流逝，但绝不因此获得恢复。
+  if (passiveWaitingPattern.test(input)) return undefined;
+  // 询问和商议只结算交谈本身，后文提到的战斗或亲密计划都不代表已经执行。
   if (actionIntent === 'inquire' || actionIntent === 'interact') {
     return { category: 'ordinary', reason: '日常行动消耗' };
   }
 
-  if (actionIntent === 'combat' || combatExecutionPattern.test(input)) {
+  const executableCombatInput = input.replace(negatedCombatPhrasePattern, '');
+  if (actionIntent === 'combat' || combatExecutionPattern.test(executableCombatInput)) {
     return { category: 'combat', reason: '战斗消耗' };
   }
   if (intimateActivityPattern.test(input)) return { category: 'intimacy', reason: '亲密活动消耗' };
@@ -139,30 +169,25 @@ function classifyStaminaAction(
 
 function calculateHealthRecovery(
   vitals: NonNullable<RuntimeState['player']['vitals']>,
-  context: PlayerStaminaTurnContext,
+  recoveryKind: PlayerRecoveryKind,
   category: PlayerStaminaCategory,
   elapsedMinutes?: number,
 ): PlayerHealthAdjustment | undefined {
-  if (
-    category !== 'recovery'
-    || !isExplicitPlayerHealthRecoveryAction(context.playerInput)
-    || !Number.isFinite(vitals.hp)
-    || !Number.isFinite(vitals.maxHp)
-    || vitals.maxHp <= 0
-  ) {
-    return undefined;
-  }
+  if (category !== 'recovery') return undefined;
+  const isTreatment = recoveryKind === 'treatment';
+  const isLongRest = !isTreatment && (elapsedMinutes ?? 0) >= 360;
+  if (!isTreatment && !isLongRest) return undefined;
   const previousHp = clamp(Math.round(vitals.hp), 0, Math.round(vitals.maxHp));
-  const requestedDelta = !elapsedMinutes || elapsedMinutes <= 0
-    ? 8
-    : Math.min(30, Math.max(8, Math.floor(elapsedMinutes / 60) * 4));
+  const requestedDelta = isTreatment
+    ? Math.min(30, Math.max(8, Math.floor((elapsedMinutes ?? 0) / 60) * 4))
+    : Math.min(12, Math.max(4, Math.floor((elapsedMinutes ?? 0) / 360) * 4));
   const nextHp = clamp(previousHp + requestedDelta, 0, Math.round(vitals.maxHp));
   if (nextHp === previousHp) return undefined;
   return {
     previousHp,
     nextHp,
     delta: nextHp - previousHp,
-    reason: '治疗休养恢复',
+    reason: `${isTreatment ? '治疗休养恢复' : '长时间休息恢复'}，${elapsedMinutes ?? 0}分钟`,
   };
 }
 
@@ -179,7 +204,7 @@ function calculateStaminaDelta(category: PlayerStaminaCategory, elapsedMinutes?:
     case 'explore':
       return -4;
     case 'recovery': {
-      if (!elapsedMinutes || elapsedMinutes <= 0) return 18;
+      if (!elapsedMinutes || elapsedMinutes <= 0) return 0;
       return Math.min(60, Math.max(12, Math.floor(elapsedMinutes / 60) * 6));
     }
     case 'ordinary':
@@ -225,6 +250,25 @@ function appendVitalsSummary(
         }
       : entry
   ));
+}
+
+function withVitalsDiagnostic(state: RuntimeState, diagnostic: string): PlayerVitalsSettlement {
+  if (state.turnLog.length === 0) return { state, diagnostic };
+  const lastIndex = state.turnLog.length - 1;
+  return {
+    state: {
+      ...state,
+      turnLog: state.turnLog.map((entry, index) => (
+        index === lastIndex
+          ? {
+              ...entry,
+              statePatchSummary: [entry.statePatchSummary, diagnostic].filter(Boolean).join('；'),
+            }
+          : entry
+      )),
+    },
+    diagnostic,
+  };
 }
 
 function clamp(value: number, min: number, max: number): number {

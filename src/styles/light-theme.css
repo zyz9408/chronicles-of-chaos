@@ -1,0 +1,743 @@
+/* ============================================================
+   宣纸明卷 —— 独立亮色色板
+   只替换界面表面、文字与交互色；地图、人物和战斗插画保持原图。
+   ============================================================ */
+
+html[data-coc-theme='light'] {
+  color-scheme: light;
+  scrollbar-color: rgba(138, 90, 22, 0.55) rgba(98, 74, 43, 0.09);
+  --bg-primary: #f3eee3;
+  --bg-secondary: #ebe3d4;
+  --bg-card: #fffaf0;
+  --bg-input: #fffdf8;
+  --text-primary: #2d2922;
+  --text-secondary: #625847;
+  --text-muted: #8a7b66;
+  --accent: #8a5a16;
+  --accent-hover: #a66f20;
+  --teal: #087e83;
+  --danger: #a13d38;
+  --danger-hover: #bd4c45;
+  --success: #2f6f49;
+  --border: #d6c5aa;
+  --border-light: #ad8855;
+  --line-subtle: 1px solid rgba(126, 84, 27, 0.15);
+  --line-default: 1px solid rgba(126, 84, 27, 0.3);
+  --line-strong: 1px solid rgba(126, 84, 27, 0.58);
+  --shadow-panel: 0 18px 58px rgba(66, 48, 27, 0.2);
+}
+
+html[data-coc-theme='light'] body {
+  background:
+    radial-gradient(circle at 50% 12%, rgba(138, 90, 22, 0.11), transparent 28rem),
+    radial-gradient(circle at 82% 88%, rgba(8, 126, 131, 0.055), transparent 30rem),
+    linear-gradient(180deg, #faf6ed 0%, #eee6d8 100%);
+}
+
+html[data-coc-theme='light'] ::selection {
+  background: rgba(138, 90, 22, 0.2);
+  color: #211b12;
+}
+
+html[data-coc-theme='light'] :where(input, select, textarea) {
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] :where(input, select, textarea)::placeholder {
+  color: #9c8e78;
+}
+
+/* 首页与开局：保留场景原图，只将承载内容的纸面改为明卷。 */
+html[data-coc-theme='light'] .start-shell:not(.start-shell--menu-stage) {
+  background:
+    radial-gradient(circle at 50% 12%, rgba(138, 90, 22, 0.1), transparent 28rem),
+    radial-gradient(circle at 50% 80%, rgba(8, 126, 131, 0.055), transparent 32rem),
+    var(--bg-primary);
+}
+
+html[data-coc-theme='light'] :where(.page-panel, .creation-page, .settings-panel) {
+  background:
+    linear-gradient(180deg, rgba(255, 252, 245, 0.97), rgba(239, 231, 217, 0.98)),
+    var(--bg-secondary);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px rgba(138, 90, 22, 0.1);
+}
+
+html[data-coc-theme='light'] :where(.character-template-modal, .opening-preview, .confirm-details) {
+  background:
+    linear-gradient(145deg, rgba(138, 90, 22, 0.045), transparent 34%),
+    linear-gradient(180deg, #fffaf1, #eee5d5);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] :where(.first-use-status-card, .release-notes-update) {
+  background: rgba(255, 251, 243, 0.84);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] :where(.character-template-item, .save-item, .worldbook-card, .bookmark-card, .crisis-card, .origin-btn, .location-btn, .sex-btn) {
+  background: rgba(255, 250, 240, 0.82);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] .main-menu.vertical .menu-btn:not(.primary) {
+  background:
+    linear-gradient(90deg, rgba(138, 90, 22, 0.035), transparent 28%, transparent 72%, rgba(138, 90, 22, 0.035)),
+    linear-gradient(180deg, rgba(255, 252, 245, 0.96), rgba(226, 215, 196, 0.97));
+  border-color: rgba(138, 90, 22, 0.58);
+  color: #3c3020;
+  box-shadow: 0 9px 24px rgba(45, 34, 20, 0.18);
+}
+
+html[data-coc-theme='light'] .main-menu.vertical .menu-btn:not(.primary):hover,
+html[data-coc-theme='light'] .main-menu.vertical .menu-btn:not(.primary):focus-visible {
+  background:
+    linear-gradient(90deg, rgba(138, 90, 22, 0.07), transparent 28%, transparent 72%, rgba(138, 90, 22, 0.07)),
+    linear-gradient(180deg, #fffdf8, #eadbc1);
+  color: #241b10;
+}
+
+/* 主游戏骨架。 */
+html[data-coc-theme='light'] :where(.game-screen, .game-frame) {
+  background:
+    linear-gradient(rgba(255, 253, 248, 0.78), rgba(245, 238, 226, 0.82)),
+    var(--bg-primary);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] .game-topbar {
+  background: linear-gradient(180deg, rgba(255, 251, 242, 0.97), rgba(235, 225, 209, 0.98));
+  border-bottom-color: rgba(138, 90, 22, 0.28);
+  box-shadow: 0 4px 18px rgba(74, 54, 30, 0.08);
+}
+
+html[data-coc-theme='light'] .gtb-time-row,
+html[data-coc-theme='light'] .gtb-weather-icon,
+html[data-coc-theme='light'] .nt-title,
+html[data-coc-theme='light'] .system-menu-heading span {
+  color: #75470f;
+}
+
+html[data-coc-theme='light'] .gtb-weather-row {
+  color: #766a57;
+}
+
+html[data-coc-theme='light'] .game-panel-left,
+html[data-coc-theme='light'] .game-panel-right {
+  background: linear-gradient(180deg, rgba(241, 234, 221, 0.94), rgba(226, 216, 199, 0.96));
+  border-color: rgba(138, 90, 22, 0.2);
+}
+
+html[data-coc-theme='light'] .game-panel-center {
+  background:
+    radial-gradient(circle at 50% 8%, rgba(138, 90, 22, 0.055), transparent 24rem),
+    rgba(255, 252, 246, 0.96);
+}
+
+html[data-coc-theme='light'] .game-input-footer,
+html[data-coc-theme='light'] .game-bottombar {
+  background:
+    linear-gradient(180deg, rgba(138, 90, 22, 0.04), transparent 28%),
+    linear-gradient(180deg, rgba(247, 241, 231, 0.98), rgba(231, 222, 207, 0.99));
+  border-color: rgba(138, 90, 22, 0.24);
+}
+
+html[data-coc-theme='light'] .reroll-btn {
+  background: linear-gradient(180deg, rgba(138, 90, 22, 0.12), rgba(255, 250, 240, 0.94));
+  color: var(--accent);
+}
+
+html[data-coc-theme='light'] .reroll-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, rgba(138, 90, 22, 0.2), rgba(255, 250, 240, 0.98));
+  color: #6b3f0b;
+}
+
+html[data-coc-theme='light'] .narrative-stream-box {
+  background:
+    linear-gradient(180deg, rgba(255, 251, 243, 0.9), rgba(239, 231, 217, 0.92)),
+    var(--bg-secondary);
+}
+
+html[data-coc-theme='light'] .narrative-segment-narration {
+  background: linear-gradient(90deg, rgba(161, 61, 56, 0.08), rgba(138, 90, 22, 0.025) 48%, rgba(255, 255, 255, 0.16));
+  color: #312c24;
+}
+
+html[data-coc-theme='light'] .narrative-dialogue-avatar {
+  background:
+    radial-gradient(circle at 50% 35%, rgba(138, 90, 22, 0.16), transparent 56%),
+    #f2eadc;
+}
+
+html[data-coc-theme='light'] .narrative-dialogue-row-player .narrative-dialogue-avatar {
+  background:
+    radial-gradient(circle at 50% 35%, rgba(138, 90, 22, 0.2), transparent 56%),
+    #ead8bb;
+}
+
+html[data-coc-theme='light'] .narrative-dialogue-bubble {
+  background: linear-gradient(180deg, rgba(138, 90, 22, 0.045), rgba(255, 252, 246, 0.92));
+  color: #312c24;
+}
+
+html[data-coc-theme='light'] .narrative-dialogue-row-player .narrative-dialogue-bubble,
+html[data-coc-theme='light'] .player-action-bubble {
+  background: linear-gradient(135deg, rgba(138, 90, 22, 0.12), rgba(246, 236, 219, 0.94));
+  color: #312c24;
+}
+
+html[data-coc-theme='light'] :where(.turn-display-panel, .narrative-turn-toolbar, .turn-inspection-popover, .turn-inspection-text, .turn-raw-view, .turn-edit-panel textarea) {
+  background: rgba(246, 239, 227, 0.94);
+  color: var(--text-primary);
+}
+
+/* 功能导航使用淡墨分区，不沿用暗底上的高亮字。 */
+html[data-coc-theme='light'] .system-menu-button {
+  border-color: rgba(138, 90, 22, 0.45);
+  background: rgba(255, 250, 240, 0.72);
+  color: #674511;
+}
+
+html[data-coc-theme='light'] .system-menu-button:hover {
+  border-color: var(--accent);
+  background: rgba(138, 90, 22, 0.1);
+  color: #4f320c;
+}
+
+html[data-coc-theme='light'] .system-menu-button--world {
+  background: rgba(8, 126, 131, 0.075);
+}
+
+html[data-coc-theme='light'] .system-menu-button--social {
+  background: rgba(132, 70, 116, 0.07);
+}
+
+html[data-coc-theme='light'] .system-menu-button--self {
+  background: rgba(47, 111, 73, 0.07);
+}
+
+html[data-coc-theme='light'] .system-menu-button--faction {
+  background: rgba(138, 90, 22, 0.08);
+}
+
+html[data-coc-theme='light'] .system-menu-button--war {
+  background: rgba(161, 61, 56, 0.07);
+}
+
+/* 通用浮窗与设置。 */
+html[data-coc-theme='light'] :where(.modal-backdrop, .system-modal-backdrop) {
+  background: rgba(66, 53, 37, 0.38);
+}
+
+html[data-coc-theme='light'] .settings-backdrop {
+  background: rgba(117, 98, 72, 0.17);
+}
+
+html[data-coc-theme='light'] :where(.settings-modal, .save-modal, .confirm-modal, .system-modal) {
+  background:
+    radial-gradient(circle at 86% 0%, rgba(138, 90, 22, 0.07), transparent 22rem),
+    linear-gradient(180deg, rgba(255, 252, 245, 0.99), rgba(236, 227, 212, 0.99));
+  color: var(--text-primary);
+  border-color: rgba(138, 90, 22, 0.5);
+  box-shadow:
+    inset 0 0 0 1px rgba(138, 90, 22, 0.1),
+    0 18px 58px rgba(66, 48, 27, 0.22);
+}
+
+html[data-coc-theme='light'] .settings-modal::before {
+  border-color: rgba(138, 90, 22, 0.52);
+}
+
+html[data-coc-theme='light'] .settings-nav {
+  border-color: rgba(138, 90, 22, 0.2);
+}
+
+html[data-coc-theme='light'] .settings-nav-section-label {
+  color: rgba(117, 71, 15, 0.68);
+}
+
+html[data-coc-theme='light'] .settings-nav-item:hover,
+html[data-coc-theme='light'] .settings-nav-item.active {
+  background: rgba(138, 90, 22, 0.08);
+}
+
+html[data-coc-theme='light'] .settings-nav-close {
+  background: #8a5a16;
+  color: #fffaf0;
+}
+
+html[data-coc-theme='light'] .settings-nav-close:hover {
+  background: #a66f20;
+}
+
+html[data-coc-theme='light'] :where(.gs-reading-preview, .narrative-regex-empty, .narrative-regex-rule, .narrative-regex-preview) {
+  background: rgba(255, 252, 246, 0.72);
+}
+
+/* 系统面板内的列表与数据卡统一使用纸面层级。语义品质色保持原值。 */
+html[data-coc-theme='light'] .system-modal :where(
+  .ui-panel-note,
+  .ui-panel-empty,
+  .player-profile-section,
+  .npc-panel-empty,
+  .npc-roster-empty,
+  .npc-detail-empty,
+  .npc-roster-panel,
+  .npc-roster-search,
+  .npc-roster-card,
+  .npc-detail-hero,
+  .memory-panel-tabs button,
+  .memory-recall-diagnostic,
+  .memory-recall-list article,
+  .memory-panel-content,
+  .memory-panel-layer-head,
+  .dynamic-stage-tab,
+  .dynamic-tab,
+  .dynamic-sidebar-tab,
+  .backpack-summary-grid > div,
+  .backpack-sidebar,
+  .backpack-category-button,
+  .backpack-equipped-slot,
+  .backpack-item-detail,
+  .holding-tab-button,
+  .faction-command-card
+) {
+  background-color: rgba(255, 251, 243, 0.78);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] .system-modal :where(.npc-roster-card, .holding-tab-button, .backpack-category-button):hover,
+html[data-coc-theme='light'] .system-modal :where(.npc-roster-card.active, .holding-tab-button.is-active, .backpack-category-button.is-active) {
+  background-color: rgba(138, 90, 22, 0.1);
+}
+
+/* 战略档案在暗色主题中使用半透明黑底；亮色主题必须改为独立纸面，
+ * 否则会与弹窗遮罩叠成灰底，令部队、势力与领地文字失去对比度。 */
+html[data-coc-theme='light'] .system-modal :where(.strategic-roster, .strategic-detail) {
+  background:
+    linear-gradient(180deg, rgba(255, 252, 246, 0.96), rgba(241, 232, 217, 0.96)),
+    var(--bg-card);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] .system-modal :where(
+  .strategic-roster-item,
+  .battle-tab-button,
+  .troop-group-summary > div,
+  .troop-detail-block,
+  .troop-record-card,
+  .strategic-detail-grid > div,
+  .strategic-detail-notes
+) {
+  background-color: rgba(255, 251, 243, 0.84);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] .system-modal :where(.strategic-roster-item, .battle-tab-button):hover,
+html[data-coc-theme='light'] .system-modal :where(.strategic-roster-item.is-active, .battle-tab-button.is-active) {
+  border-color: rgba(138, 90, 22, 0.64);
+  background-color: rgba(138, 90, 22, 0.1);
+}
+
+html[data-coc-theme='light'] .system-modal :where(
+  .system-modal-head span,
+  .strategic-roster-head strong,
+  .strategic-roster-item strong,
+  .battle-tab-button strong,
+  .strategic-detail-head h4,
+  .strategic-detail-head > span,
+  .troop-switch-control > span,
+  .troop-record-title h4,
+  .troop-info-section h5,
+  .strategic-tag-row em,
+  .faction-action-log__meta span,
+  .relationship-modal .strategic-detail-notes li strong
+) {
+  color: #75470f;
+}
+
+html[data-coc-theme='light'] .system-modal :where(
+  .strategic-detail-notes > span,
+  .strategic-detail-notes ul,
+  .strategic-detail-notes p,
+  .faction-action-log__head > div > small,
+  .faction-action-log__scroll li > small
+) {
+  color: var(--text-secondary);
+}
+
+html[data-coc-theme='light'] .system-modal .strategic-detail-notes strong {
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] .system-modal :where(.faction-action-log__head select, .troop-switch-select) {
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
+/* 手机端系统面板使用吸顶标题栏，覆盖响应式文件中的暗色底。 */
+html[data-coc-theme='light'] .system-modal.ui-system-workspace > .system-modal-head {
+  background:
+    linear-gradient(180deg, rgba(255, 252, 245, 0.99), rgba(239, 230, 215, 0.99)),
+    var(--bg-card);
+  border-bottom-color: rgba(138, 90, 22, 0.22);
+}
+
+html[data-coc-theme='light'] .system-modal.ui-system-workspace > .system-modal-head span {
+  color: #75470f;
+}
+
+html[data-coc-theme='light'] .system-modal.ui-system-workspace > .system-modal-head small {
+  color: var(--text-muted);
+}
+
+/* 图片说明仍位于深色渐变上，不随纸面文字改成深墨。 */
+html[data-coc-theme='light'] .system-modal .troop-visual-panel small {
+  color: rgba(255, 250, 240, 0.78);
+}
+
+html[data-coc-theme='light'] :where(.context-box, .crisis-box, .narrative-box, .message-box, .processing-stage-box, .sidebar-section, .action-btn) {
+  background-color: rgba(255, 250, 240, 0.86);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] .message-box-error {
+  background: rgba(161, 61, 56, 0.1);
+}
+
+html[data-coc-theme='light'] .memory-summary-pending-notice {
+  background: rgba(138, 90, 22, 0.1);
+}
+
+/* 人物志：该面板拥有独立的名单、详情与记忆工作区，不能只依赖
+ * system-modal 的外层纸面，否则内部硬编码的暗色卡片会覆盖主题。 */
+html[data-coc-theme='light'] .npc-panel-modal .npc-archive-layout {
+  border-color: rgba(138, 90, 22, 0.24);
+  background: rgba(255, 252, 246, 0.76);
+}
+
+html[data-coc-theme='light'] .npc-panel-modal :where(.npc-roster-panel, .npc-detail-panel) {
+  background:
+    linear-gradient(180deg, rgba(255, 252, 246, 0.96), rgba(239, 231, 217, 0.96)),
+    var(--bg-card);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] .npc-panel-modal .npc-roster-panel {
+  border-color: rgba(138, 90, 22, 0.24);
+}
+
+html[data-coc-theme='light'] .npc-panel-modal :where(
+  .npc-panel-empty,
+  .npc-roster-empty,
+  .npc-detail-empty,
+  .npc-roster-card,
+  .npc-card-section,
+  .npc-relation-panel > div,
+  .npc-relation-panel > p,
+  .npc-detail-overview-grid > div,
+  .npc-info-row,
+  .npc-ability-row,
+  .npc-presence-update-item,
+  .npc-memory-tabs button,
+  .npc-memory-list article,
+  .npc-memory-list > p,
+  .npc-female-profile-subsection,
+  .npc-female-profile-disclosure,
+  .npc-secret-preference-card,
+  .npc-secret-womb-card,
+  .npc-secret-womb-row,
+  .npc-secret-record-entry
+) {
+  background-color: rgba(255, 251, 243, 0.82);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] .npc-panel-modal .npc-detail-hero {
+  background:
+    radial-gradient(circle at 20% 0%, rgba(138, 90, 22, 0.11), transparent 38%),
+    rgba(255, 251, 243, 0.92);
+}
+
+html[data-coc-theme='light'] .npc-panel-modal :where(.npc-roster-avatar, .npc-detail-avatar) {
+  background: rgba(138, 90, 22, 0.08);
+  color: #75470f;
+}
+
+html[data-coc-theme='light'] .npc-panel-modal :where(
+  .npc-roster-head strong,
+  .npc-detail-title-line h3,
+  .npc-ability-row strong
+) {
+  color: #75470f;
+}
+
+html[data-coc-theme='light'] .npc-panel-modal :where(.npc-roster-tools button, .npc-memory-tabs button) {
+  background: rgba(255, 250, 240, 0.88);
+  color: var(--text-secondary);
+}
+
+html[data-coc-theme='light'] .npc-panel-modal :where(
+  .npc-roster-tools button:hover,
+  .npc-roster-tools button.active,
+  .npc-roster-card:hover,
+  .npc-roster-card.active,
+  .npc-memory-tabs button:hover,
+  .npc-memory-tabs button.active
+) {
+  border-color: rgba(138, 90, 22, 0.62);
+  background-color: rgba(138, 90, 22, 0.11);
+  color: #674511;
+}
+
+html[data-coc-theme='light'] .npc-panel-modal .npc-detail-location-line {
+  background: rgba(8, 126, 131, 0.07);
+}
+
+html[data-coc-theme='light'] .npc-panel-modal :where(.npc-roster-location, .npc-detail-location-line strong) {
+  color: #087378 !important;
+}
+
+html[data-coc-theme='light'] .npc-panel-modal .npc-adult-private-profile {
+  background:
+    linear-gradient(145deg, rgba(161, 61, 104, 0.055), transparent 45%),
+    rgba(255, 246, 248, 0.9);
+}
+
+html[data-coc-theme='light'] .npc-panel-modal .npc-secret-body-card {
+  background: rgba(255, 244, 248, 0.9);
+}
+
+html[data-coc-theme='light'] .npc-panel-modal :where(
+  .npc-secret-body-card p,
+  .npc-secret-womb-row strong,
+  .npc-secret-record-entry p
+) {
+  color: #653b4f;
+}
+
+html[data-coc-theme='light'] .npc-panel-modal .npc-private-record-limit select {
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
+/* 背包：品质色继续使用物品的内部品级，只把承载物品的表面改成纸面。 */
+html[data-coc-theme='light'] .backpack-modal :where(
+  .backpack-equip-target,
+  .backpack-money-row,
+  .backpack-sidebar,
+  .backpack-category-button,
+  .backpack-equipped-slot,
+  .backpack-item-card,
+  .backpack-item-detail,
+  .backpack-item-visual
+) {
+  background-color: rgba(255, 251, 243, 0.84);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] .backpack-modal .backpack-sidebar {
+  border-color: rgba(138, 90, 22, 0.22);
+}
+
+html[data-coc-theme='light'] .backpack-modal :where(
+  .backpack-category-button:hover,
+  .backpack-category-button.is-active,
+  .backpack-equipped-slot:hover,
+  .backpack-item-card:hover,
+  .backpack-item-card.is-selected
+) {
+  background-color: rgba(138, 90, 22, 0.11);
+  border-color: rgba(138, 90, 22, 0.62);
+}
+
+html[data-coc-theme='light'] .backpack-modal .backpack-item-card.is-equipped {
+  background: linear-gradient(180deg, rgba(8, 126, 131, 0.09), rgba(255, 251, 243, 0.88));
+}
+
+html[data-coc-theme='light'] .backpack-modal :where(.backpack-item-card.quality-orange, .backpack-item-card.quality-gold) {
+  background: linear-gradient(180deg, rgba(196, 118, 31, 0.08), rgba(255, 251, 243, 0.9));
+}
+
+html[data-coc-theme='light'] .backpack-modal .backpack-item-icon {
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.78), rgba(138, 90, 22, 0.08));
+}
+
+html[data-coc-theme='light'] .backpack-modal :where(.backpack-item-card.quality-white, .backpack-item-detail.quality-white) .backpack-item-icon {
+  color: #625847;
+}
+
+html[data-coc-theme='light'] .backpack-modal :where(.backpack-equipped-corner, .backpack-quantity-corner) {
+  background: rgba(255, 252, 246, 0.96);
+  box-shadow: 0 0 0.5rem rgba(8, 126, 131, 0.12);
+}
+
+html[data-coc-theme='light'] .backpack-modal :where(.backpack-money-row strong, .backpack-category-button span) {
+  color: #75470f;
+}
+
+html[data-coc-theme='light'] .backpack-modal .backpack-equip-target button {
+  background: rgba(255, 250, 240, 0.9);
+  color: var(--text-secondary);
+}
+
+/* 地图的史地图像保持原始明暗；工具栏、侧栏和档案改成亮色纸面。 */
+html[data-coc-theme='light'] .map-panel-modal :where(.map-v2-national-stage, .map-v2-side, .map-panel-archive) {
+  border-color: rgba(138, 90, 22, 0.24);
+  background:
+    linear-gradient(180deg, rgba(255, 252, 246, 0.95), rgba(239, 231, 217, 0.95)),
+    var(--bg-card);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] .map-panel-modal .map-v2-toolbar {
+  border-color: rgba(138, 90, 22, 0.28);
+  background: rgba(255, 252, 246, 0.92);
+}
+
+html[data-coc-theme='light'] .map-panel-modal .map-v2-toolbar button {
+  border-color: rgba(138, 90, 22, 0.4);
+  background: rgba(138, 90, 22, 0.08);
+  color: #75470f;
+}
+
+html[data-coc-theme='light'] .map-panel-modal .map-v2-toolbar button:hover {
+  background: rgba(138, 90, 22, 0.16);
+}
+
+html[data-coc-theme='light'] .map-panel-modal :where(
+  .map-panel-hero,
+  .map-panel-stat-strip span,
+  .map-panel-card,
+  .map-panel-route,
+  .map-panel-scene,
+  .map-panel-empty,
+  .map-panel-memory,
+  .map-panel-route-detail-block,
+  .map-panel-section
+) {
+  background-color: rgba(255, 251, 243, 0.82);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] .map-panel-modal .map-panel-card.accent {
+  background-color: rgba(8, 126, 131, 0.08);
+}
+
+html[data-coc-theme='light'] .map-panel-modal :where(
+  .map-panel-hero h3,
+  .map-panel-stat-strip strong,
+  .map-panel-card-title span,
+  .map-panel-section-title span,
+  .map-panel-subtitle span
+) {
+  color: #75470f;
+}
+
+html[data-coc-theme='light'] .map-panel-modal .map-v2-route-chips button {
+  border-color: rgba(8, 126, 131, 0.32);
+  background: rgba(8, 126, 131, 0.07);
+  color: #087378;
+}
+
+html[data-coc-theme='light'] .map-panel-modal .map-v2-route-chips button strong,
+html[data-coc-theme='light'] .map-panel-modal :where(.map-v2-focus-path, .map-v2-scene-parent) {
+  color: #087378 !important;
+}
+
+html[data-coc-theme='light'] .map-panel-modal .map-panel-archive-toggle {
+  border-color: rgba(138, 90, 22, 0.42);
+  background: rgba(138, 90, 22, 0.1);
+  color: #75470f;
+}
+
+/* 局势：阶段、分类和每条事实卡均是独立暗色层，需要完整换肤。 */
+html[data-coc-theme='light'] .dynamic-panel-modal :where(
+  .dynamic-stage-tab,
+  .dynamic-tab,
+  .dynamic-sidebar-tab,
+  .dynamic-panel-summary span,
+  .dynamic-card,
+  .dynamic-meta-grid span,
+  .dynamic-note,
+  .dynamic-tag-list span,
+  .dynamic-impact-grid span,
+  .dynamic-empty
+) {
+  background-color: rgba(255, 251, 243, 0.84);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] .dynamic-panel-modal .dynamic-sidebar {
+  border-color: rgba(138, 90, 22, 0.22);
+}
+
+html[data-coc-theme='light'] .dynamic-panel-modal :where(
+  .dynamic-stage-tab.active,
+  .dynamic-tab.active,
+  .dynamic-sidebar-tab.active,
+  .dynamic-panel-summary span.is-active
+) {
+  border-color: rgba(138, 90, 22, 0.64);
+  background: rgba(138, 90, 22, 0.11);
+  color: #674511;
+}
+
+html[data-coc-theme='light'] .dynamic-panel-modal .dynamic-card.chronicle-card {
+  background:
+    linear-gradient(135deg, rgba(138, 90, 22, 0.07), transparent 42%),
+    rgba(255, 251, 243, 0.9);
+}
+
+html[data-coc-theme='light'] .dynamic-panel-modal .dynamic-card.undercurrent-card {
+  background:
+    linear-gradient(135deg, rgba(8, 126, 131, 0.07), transparent 45%),
+    rgba(255, 251, 243, 0.9);
+}
+
+html[data-coc-theme='light'] .dynamic-panel-modal :where(.dynamic-status.signal-status, .dynamic-status.chronicle-status) {
+  color: #75470f;
+}
+
+html[data-coc-theme='light'] .dynamic-panel-modal .dynamic-status.undercurrent-status {
+  color: #087378;
+}
+
+/* 永久提示词：编辑器与条目此前仍是纯黑输入层。 */
+html[data-coc-theme='light'] .persistent-prompt-modal :where(
+  .persistent-prompt-compose,
+  .persistent-prompt-item,
+  .persistent-prompt-empty
+) {
+  border-color: rgba(138, 90, 22, 0.3);
+  background: rgba(255, 251, 243, 0.86);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] .persistent-prompt-modal .persistent-prompt-compose textarea {
+  border-color: rgba(138, 90, 22, 0.36);
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
+html[data-coc-theme='light'] .persistent-prompt-modal .persistent-prompt-delete {
+  background: rgba(161, 61, 56, 0.08);
+  color: var(--danger);
+}
+
+html[data-coc-theme='light'] .persistent-prompt-modal .persistent-prompt-status {
+  color: var(--success);
+}
+
+/* 图片与地图维持素材本身的明暗和色相。 */
+html[data-coc-theme='light'] :where(
+  .main-menu-scene,
+  .main-menu-collage,
+  .map-base-visual,
+  .battle-briefing-visual,
+  .encounter-scene,
+  .war-encounter-scene
+) {
+  color-scheme: dark;
+}

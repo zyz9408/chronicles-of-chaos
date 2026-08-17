@@ -3,10 +3,10 @@ import type {
   CalendarEraEntry,
   CharacterEquipmentItem,
   CharacterReputation,
-  CharacterUniqueArt,
   CombatRecord,
   DomesticReportEntry,
   FactionLedgerEntry,
+  FactionRecentActionEntry,
   ConflictRecord,
   HeroineThreadEntry,
   HoldingLedgerEntry,
@@ -25,16 +25,26 @@ import type {
 import { claimsReservedSystemDomesticReportIdentity } from '../domesticReports';
 import { normalizeConflictJudgement } from '../conflict/WarJudgementScore';
 import { clampReputationScore } from '../character/reputation';
+import { mergeStableCharacterUniqueArts } from '../character/NpcUniqueArtPolicy';
+import { normalizeCharacterTraits } from '../character/CharacterTraitNormalization';
 import { optionalSanitizedCombatReportField } from '../combat/combatReportText';
 import { calculateInitialSiegeEnduranceTurns } from '../holdings/HoldingSiegeSupply';
 import {
   mergeHoldingCivilAdministrationTransition,
   normalizeLegacyHoldingCivilAdministration,
 } from '../holdings/HoldingCivilAdministration';
+import {
+  clampPrivateAssetToAbsoluteLimits,
+  findExistingPrivateAssetByLedgerIdentity,
+} from '../holdings/PrivateAssetPolicy';
 import { equipInventoryItem, equipmentItemToInventoryItem, upsertInventoryItem } from '../character/playerLoadout';
 import { cloneEquipmentItem, cloneInventoryItem } from '../character/loadoutProtocol';
 import { v4 as uuidv4 } from '../turn/uuid';
-import { isAdultFemaleNpcAt } from '../time/npcAge';
+import {
+  deriveCurrentAgeFromBirthDate,
+  ensureCompleteBirthDate,
+  isAdultFemaleNpcAt,
+} from '../time/npcAge';
 import type { PregnancyModePreference } from '../settings/DisplaySettings';
 import { recordPlayerPregnancyRisk, resolvePregnancy } from '../pregnancy/PregnancyLifecycle';
 import { resolveNpcBackgroundActivityAgainstCurrentMatters } from './currentMatterLifecycle';
@@ -52,10 +62,12 @@ import type {
   CharacterIdentityUpdateFields,
   CharacterReputationUpdateCommand,
   CharacterUniqueArtsUpdateCommand,
+  CharacterUniqueArtProgressRecordCommand,
   CombatRecordUpsertCommand,
   ConflictRecordUpsertCommand,
   DomesticReportUpsertCommand,
   FactionLedgerUpsertCommand,
+  FactionRecentActionRecordCommand,
   HeroineThreadUpsertCommand,
   HoldingLedgerUpsertCommand,
   HoldingSiegeUpdate,
@@ -65,10 +77,12 @@ import type {
   NpcLoadoutUpdateCommand,
   NpcPresenceUpdateCommand,
   NpcProfileUpsertCommand,
+  NpcRelationshipUpdateCommand,
   PregnancyResolutionCommand,
   PregnancyRiskRecordCommand,
   PlayerLoadoutUpdateCommand,
   PrivateAssetProjectUpsertCommand,
+  StartHeavyCavalryFormationCommand,
   PrivateAssetUpsertCommand,
   PlayerTraitsUpdateCommand,
   ResourceLedgerUpdateCommand,
@@ -82,10 +96,24 @@ import {
   normalizeTroopScore,
   normalizeTroopStrengthTrend,
   canonicalRelationshipStableKey,
-  isPersonalMoneyResourceKey,
   validateLuanShiCommand,
 } from './luanshiCommands';
+import { startHeavyCavalryFormation } from '../troops/HeavyCavalryFormation';
+import { troopFatiguePercentFromBand } from '../troops/TroopFatigue';
+import {
+  applyUniqueArtProgressEvidence,
+  buildUniqueArtProgressTurnKey,
+  characterHasConsumedUniqueArtProgressSource,
+  characterHasUniqueArtProgressEvent,
+} from '../character/UniqueArtProgression';
 import { findHeroineThreadByIdentity } from './HeroineThreadIdentity';
+import { isCanonicalLedgerShadowResourceKey } from './resourceLedgerIdentity';
+import {
+  factionRecentActionKey,
+  formatFactionRecentActionText,
+  mergeFactionRecentActionRecords,
+  parseFactionRecentActionText,
+} from './factionRecentActionHistory';
 import {
   isTerminalTroopLedgerEntry,
   replaceTerminalTroopReferenceIds,
@@ -110,6 +138,7 @@ const identityFieldNames = [
   'identitySummary',
   'appearance',
   'personality',
+  'personalEscortEntitlement',
 ] as const satisfies readonly (keyof CharacterIdentityUpdateFields)[];
 
 const genericTroopTypeWords = new Set([
@@ -185,6 +214,10 @@ export function applyLuanShiCommand(
     return applyCharacterUniqueArtsUpdate(normalized, command);
   }
 
+  if (command.action === 'recordCharacterUniqueArtProgress') {
+    return applyCharacterUniqueArtProgressRecord(normalized, command);
+  }
+
   if (command.action === 'updateResourceLedger') {
     return applyResourceLedgerUpdate(normalized, command);
   }
@@ -193,8 +226,16 @@ export function applyLuanShiCommand(
     return applyFactionLedgerUpsert(normalized, command);
   }
 
+  if (command.action === 'recordFactionRecentAction') {
+    return applyFactionRecentActionRecord(normalized, command);
+  }
+
   if (command.action === 'upsertTroopLedger') {
     return applyTroopLedgerUpsert(normalized, command);
+  }
+
+  if (command.action === 'startHeavyCavalryFormation') {
+    return applyHeavyCavalryFormationStart(normalized, command);
   }
 
   if (command.action === 'upsertHoldingLedger') {
@@ -239,6 +280,10 @@ export function applyLuanShiCommand(
 
   if (command.action === 'upsertNpcProfile') {
     return applyNpcProfileUpsert(normalized, command);
+  }
+
+  if (command.action === 'updateNpcRelationship') {
+    return applyNpcRelationshipUpdate(normalized, command);
   }
 
   if (command.action === 'updateNpcPresence') {
@@ -320,8 +365,10 @@ function mergeExistingHoldingLedgerCommand(
     locationId: typeof incoming.locationId === 'string' ? incoming.locationId : previous.locationId,
   } as HoldingLedgerEntry);
 
+  const previousForMerge = normalizeLegacyHoldingCivilAdministration(previous);
+  const { controlEvidence: _previousControlEvidence, ...previousWithoutControlEvidence } = previousForMerge;
   const merged = {
-    ...normalizeLegacyHoldingCivilAdministration(previous),
+    ...previousWithoutControlEvidence,
     ...incoming,
     action: 'upsertHoldingLedger',
     holdingId: canonicalHoldingId,
@@ -340,11 +387,11 @@ function applyResourceLedgerUpdate(
   state: NormalizedLuanShiState,
   command: ResourceLedgerUpdateCommand,
 ): NormalizedLuanShiState {
-  const playerResources = omitPersonalMoneyResource({
+  const playerResources = omitReservedPlayerResourceKeys({
     ...state.playerResources,
     ...Object.fromEntries(
       Object.entries(command.playerResources ?? {})
-        .filter(([key]) => !isPersonalMoneyResourceKey(key))
+        .filter(([key]) => !isCanonicalLedgerShadowResourceKey(key))
         .map(([key, value]) => [key.trim(), value]),
     ),
   });
@@ -353,7 +400,7 @@ function applyResourceLedgerUpdate(
     ...state,
     resources: {
       ...state.resources,
-      ...(command.money !== undefined ? { money: command.money } : {}),
+      ...(command.moneyGuan !== undefined ? { money: command.moneyGuan } : {}),
       ...(command.grain !== undefined ? { grain: command.grain } : {}),
       ...(command.horses !== undefined ? { horses: command.horses } : {}),
       ...(command.arms !== undefined ? { arms: command.arms } : {}),
@@ -371,6 +418,23 @@ function applyFactionLedgerUpsert(
   state: NormalizedLuanShiState,
   command: FactionLedgerUpsertCommand,
 ): NormalizedLuanShiState {
+  const previousEntry = state.factions.find((faction) => faction.factionId === command.factionId.trim());
+  const actionObservedAt = command.lastKnownAt?.trim()
+    || command.updatedAt?.trim()
+    || state.currentDate;
+  const incomingActionRecords = command.recentActions.flatMap((action) => {
+    const record = parseFactionRecentActionText(action, command.knownLevel);
+    if (!record) return [];
+    return [{
+      ...record,
+      observedAt: actionObservedAt,
+      ...(command.sourceNote?.trim() ? { sourceNote: command.sourceNote.trim() } : {}),
+    }];
+  });
+  const recentActionRecords = mergeFactionRecentActionRecords(
+    previousEntry?.recentActionRecords ?? [],
+    incomingActionRecords,
+  );
   const nextEntry: FactionLedgerEntry = {
     factionId: command.factionId.trim(),
     name: command.name.trim(),
@@ -389,7 +453,8 @@ function applyFactionLedgerUpsert(
     ...optionalStringField('sourceNote', command.sourceNote),
     ...optionalStringField('lastKnownAt', command.lastKnownAt),
     ...optionalStringField('updatedAt', command.updatedAt),
-    recentActions: cleanStringList(command.recentActions),
+    recentActions: recentActionRecords.map(formatFactionRecentActionText),
+    recentActionRecords,
   };
   const exists = state.factions.some((faction) => faction.factionId === nextEntry.factionId);
 
@@ -401,12 +466,59 @@ function applyFactionLedgerUpsert(
   };
 }
 
+function applyFactionRecentActionRecord(
+  state: NormalizedLuanShiState,
+  command: FactionRecentActionRecordCommand,
+): NormalizedLuanShiState {
+  const factionId = command.factionId.trim();
+  const observedAt = command.observedAt?.trim() || state.currentDate;
+  const sourceNote = command.sourceNote?.trim();
+  const incomingRecord: FactionRecentActionEntry = {
+    summary: command.summary.trim(),
+    knownLevel: command.knownLevel,
+    observedAt,
+    ...(sourceNote ? { sourceNote } : {}),
+  };
+
+  return {
+    ...state,
+    factions: state.factions.map((faction) => {
+      if (faction.factionId !== factionId) return faction;
+      if (faction.recentActionRecords?.some(
+        (record) => factionRecentActionKey(record) === factionRecentActionKey(incomingRecord),
+      )) return faction;
+      const recentActionRecords = mergeFactionRecentActionRecords(
+        faction.recentActionRecords ?? [],
+        [incomingRecord],
+      );
+
+      return {
+        ...faction,
+        recentActions: recentActionRecords.map(formatFactionRecentActionText),
+        recentActionRecords,
+        lastKnownAt: observedAt,
+        updatedAt: state.currentDate,
+        ...(sourceNote ? { sourceNote } : {}),
+      };
+    }),
+  };
+}
+
 function applyTroopLedgerUpsert(
   state: NormalizedLuanShiState,
   command: TroopLedgerUpsertCommand,
 ): NormalizedLuanShiState {
   const troopId = command.troopId.trim();
   const previousEntry = state.troops.find((troop) => troop.troopId === troopId);
+  const detailLevel = command.detailLevel ?? previousEntry?.detailLevel ?? 'operational';
+  const detailDefaults = detailLevel === 'intelligence'
+    ? {
+        ...DEFAULT_TROOP_LEDGER_OPERATIONAL_FIELDS,
+        lifecycleStatus: 'unknown' as const,
+        knownLevel: '听闻' as const,
+        certainty: 'reported' as const,
+      }
+    : DEFAULT_TROOP_LEDGER_OPERATIONAL_FIELDS;
   const sizeResolution = resolveTroopLedgerSize(previousEntry, command);
   const explicitLocationId = command.locationId?.trim();
   const explicitLastKnownLocationId = command.lastKnownLocationId?.trim();
@@ -422,26 +534,55 @@ function applyTroopLedgerUpsert(
     ?? command.updatedAt?.trim()
     ?? state.currentDate;
   const updatedAt = resolveCommandUpdatedAt(command.updatedAt, state.currentDate);
+  const previousChangeHistory = previousEntry?.changeHistory ?? [];
+  const incomingChangeEvent = command.changeEvent
+    ? {
+        eventId: command.changeEvent.eventId.trim(),
+        kind: command.changeEvent.kind,
+        occurredAt: command.changeEvent.occurredAt.trim(),
+        summary: command.changeEvent.summary.trim(),
+        ...(command.changeEvent.sourceNote?.trim() ? { sourceNote: command.changeEvent.sourceNote.trim() } : {}),
+      }
+    : undefined;
+  const changeHistory = incomingChangeEvent
+    && !previousChangeHistory.some((event) => event.eventId === incomingChangeEvent.eventId)
+    ? [...previousChangeHistory, incomingChangeEvent].slice(-40)
+    : previousChangeHistory;
+  const normalizedFatigue = normalizeTroopFatigue(command.fatigue);
   const nextEntry: TroopLedgerEntry = {
-    ...DEFAULT_TROOP_LEDGER_OPERATIONAL_FIELDS,
+    ...detailDefaults,
     ...(previousEntry ?? {}),
     troopId,
     name: command.name !== undefined ? command.name.trim() : previousEntry?.name ?? '',
     ...(command.aliases && command.aliases.length > 0 ? { aliases: cleanStringList(command.aliases) } : {}),
+    detailLevel,
     size: sizeResolution.size,
+    ...(command.strengthEstimate ? {
+      strengthEstimate: {
+        min: command.strengthEstimate.min,
+        max: command.strengthEstimate.max,
+        ...(command.strengthEstimate.asOf?.trim() ? { asOf: command.strengthEstimate.asOf.trim() } : {}),
+        ...(command.strengthEstimate.basis?.trim() ? { basis: command.strengthEstimate.basis.trim() } : {}),
+      },
+    } : {}),
     ...(sizeResolution.previousSize !== undefined ? { previousSize: sizeResolution.previousSize } : {}),
     ...optionalStringField('factionId', command.factionId),
     ...optionalStringField('previousFactionId', command.previousFactionId),
     ...optionalStringField('allegianceChangedAt', command.allegianceChangedAt),
     ...optionalStringField('allegianceChangeReason', command.allegianceChangeReason),
     ...optionalStringField('troopType', normalizeTroopType(command.troopType)),
+    ...optionalEnumField('logisticsClass', command.logisticsClass),
+    ...(command.acquisitionEvidence ? { acquisitionEvidence: { ...command.acquisitionEvidence } } : {}),
     ...optionalStringField('specialDesignation', command.specialDesignation),
     ...optionalEnumField('quality', normalizeTroopQuality(command.quality)),
-    ...optionalEnumField('fatigue', normalizeTroopFatigue(command.fatigue)),
+    ...optionalEnumField('fatigue', normalizedFatigue),
+    ...(normalizedFatigue ? { warFatiguePercent: troopFatiguePercentFromBand(normalizedFatigue) } : {}),
     ...optionalEnumField('readiness', normalizeTroopReadiness(command.readiness)),
     ...optionalEnumField('lifecycleStatus', command.lifecycleStatus),
     ...(command.statusTags && command.statusTags.length > 0 ? { statusTags: cleanStringList(command.statusTags) } : {}),
     ...(command.leaderNpcId ? { leaderNpcId: command.leaderNpcId.trim() } : {}),
+    ...(command.deputyNpcIds ? { deputyNpcIds: cleanStringList(command.deputyNpcIds).slice(0, 2) } : {}),
+    ...(command.strategistNpcId ? { strategistNpcId: command.strategistNpcId.trim() } : {}),
     ...(resolvedLocationId ? { locationId: resolvedLocationId } : {}),
     ...(resolvedLastKnownLocationId ? { lastKnownLocationId: resolvedLastKnownLocationId } : {}),
     ...((resolvedLocationId || explicitLastKnownLocationId) ? { lastKnownAt: locationObservedAt } : {}),
@@ -464,8 +605,9 @@ function applyTroopLedgerUpsert(
     training: command.training !== undefined ? normalizeTroopScore(command.training) ?? previousEntry?.training ?? 0 : previousEntry?.training ?? 0,
     supplies: command.supplies !== undefined ? normalizeTroopSupplies(command.supplies) : previousEntry?.supplies ?? '',
     ...optionalEnumField('upkeepSource', command.upkeepSource),
-    task: command.task !== undefined ? command.task.trim() : previousEntry?.task ?? '',
+    task: command.task !== undefined ? command.task.trim() : previousEntry?.task ?? (detailLevel === 'intelligence' ? '动向未明' : ''),
     relationToPlayer: command.relationToPlayer !== undefined ? command.relationToPlayer.trim() : previousEntry?.relationToPlayer ?? '',
+    ...optionalStringField('operationalParentForceId', command.operationalParentForceId),
     ...optionalStringField('parentTroopId', command.parentTroopId),
     ...(command.childTroopIds && command.childTroopIds.length > 0 ? { childTroopIds: cleanStringList(command.childTroopIds) } : {}),
     ...(command.mergedFromTroopIds && command.mergedFromTroopIds.length > 0
@@ -477,6 +619,7 @@ function applyTroopLedgerUpsert(
     ...optionalEnumField('strengthTrend', sizeResolution.strengthTrend ?? normalizeTroopStrengthTrend(command.strengthTrend)),
     ...optionalStringField('sourceNote', sizeResolution.sourceNote ?? command.sourceNote),
     ...optionalStringField('lastChangeReason', sizeResolution.lastChangeReason ?? command.lastChangeReason),
+    ...(changeHistory.length > 0 ? { changeHistory } : {}),
     updatedAt,
   };
   if (nextEntry.troopType && isGenericTroopType(nextEntry.troopType)) {
@@ -556,6 +699,14 @@ function applyTroopLedgerUpsert(
         })
       : state.holdings,
   };
+}
+
+function applyHeavyCavalryFormationStart(
+  state: NormalizedLuanShiState,
+  command: StartHeavyCavalryFormationCommand,
+): NormalizedLuanShiState {
+  const result = startHeavyCavalryFormation(state, command);
+  return result.ok ? ensureLuanShiState(result.state) : state;
 }
 
 function mergeStableIdLists(existing: string[] | undefined, incoming: string[]): string[] {
@@ -661,8 +812,22 @@ function applyHoldingLedgerUpsert(
     ...optionalStringField('factionId', command.factionId),
     ...optionalStringField('nominalAllegiance', command.nominalAllegiance),
     ...optionalStringField('actualController', command.actualController),
+    ...(command.controlEvidence !== undefined
+      ? {
+          controlEvidence: {
+            kind: command.controlEvidence.kind,
+            occurredAt: command.controlEvidence.occurredAt.trim(),
+            sourceRefId: command.controlEvidence.sourceRefId.trim(),
+            summary: command.controlEvidence.summary.trim(),
+          },
+        }
+      : {}),
     ...optionalStringField('stewardNpcId', command.stewardNpcId),
+    ...(command.governanceOfficerNpcIds !== undefined
+      ? { governanceOfficerNpcIds: cleanStringList(command.governanceOfficerNpcIds) }
+      : {}),
     civilAdministrationScope: command.civilAdministrationScope ?? previousEntry?.civilAdministrationScope,
+    civilScaleLevel: command.civilScaleLevel ?? previousEntry?.civilScaleLevel,
     scaleLevel: command.scaleLevel ?? previousEntry?.scaleLevel,
     agriculture: command.agriculture ?? previousEntry?.agriculture,
     commerce: command.commerce ?? previousEntry?.commerce,
@@ -797,9 +962,19 @@ function applyPrivateAssetUpsert(
   state: NormalizedLuanShiState,
   command: PrivateAssetUpsertCommand,
 ): NormalizedLuanShiState {
-  const nextEntry: PrivateAssetEntry = {
+  const previous = command.operation === 'update'
+    ? findExistingPrivateAssetByLedgerIdentity(state.privateAssets, command)
+    : undefined;
+  const name = command.name.trim();
+  const aliases = cleanStringList([
+    ...(previous?.aliases ?? []),
+    ...(previous && previous.name !== name ? [previous.name] : []),
+  ]).filter((alias) => alias !== name);
+  const nextEntry: PrivateAssetEntry = clampPrivateAssetToAbsoluteLimits({
+    ...(previous ?? {}),
     privateAssetId: command.privateAssetId.trim(),
-    name: command.name.trim(),
+    name,
+    ...(aliases.length > 0 ? { aliases } : {}),
     type: command.type,
     ownerScope: command.ownerScope,
     status: command.status,
@@ -816,8 +991,9 @@ function applyPrivateAssetUpsert(
     ...(command.riskNotes && command.riskNotes.length > 0 ? { riskNotes: cleanStringList(command.riskNotes) } : {}),
     ...(command.recentChanges && command.recentChanges.length > 0 ? { recentChanges: cleanStringList(command.recentChanges) } : {}),
     ...optionalStringField('sourceNote', command.sourceNote),
+    ...(command.acquisition ? { acquisition: command.acquisition } : {}),
     updatedAt: resolveCommandUpdatedAt(command.updatedAt, state.currentDate),
-  };
+  });
   const exists = state.privateAssets.some((asset) => asset.privateAssetId === nextEntry.privateAssetId);
 
   return {
@@ -832,6 +1008,7 @@ function applyPrivateAssetProjectUpsert(
   state: NormalizedLuanShiState,
   command: PrivateAssetProjectUpsertCommand,
 ): NormalizedLuanShiState {
+  const existingEntry = state.privateAssetProjects.find((project) => project.projectId === command.projectId.trim());
   const nextEntry: PrivateAssetProjectEntry = {
     projectId: command.projectId.trim(),
     assetId: command.assetId.trim(),
@@ -845,9 +1022,15 @@ function applyPrivateAssetProjectUpsert(
     ...(command.targetDelta ? { targetDelta: { ...command.targetDelta } } : {}),
     ...(command.riskNotes && command.riskNotes.length > 0 ? { riskNotes: cleanStringList(command.riskNotes) } : {}),
     ...(command.progressNotes && command.progressNotes.length > 0 ? { progressNotes: cleanStringList(command.progressNotes) } : {}),
+    ...(existingEntry?.host ? { host: { ...existingEntry.host } } : {}),
+    ...(existingEntry?.assistant ? { assistant: { ...existingEntry.assistant } } : {}),
+    ...(existingEntry?.risk ? { risk: existingEntry.risk } : {}),
+    ...(existingEntry?.modifiers ? { modifiers: { ...existingEntry.modifiers } } : {}),
+    ...(existingEntry?.appliedArtIds ? { appliedArtIds: [...existingEntry.appliedArtIds] } : {}),
+    ...(existingEntry?.cancelledAt ? { cancelledAt: existingEntry.cancelledAt } : {}),
     updatedAt: resolveCommandUpdatedAt(command.updatedAt, state.currentDate),
   };
-  const exists = state.privateAssetProjects.some((project) => project.projectId === nextEntry.projectId);
+  const exists = Boolean(existingEntry);
 
   return {
     ...state,
@@ -1322,6 +1505,14 @@ function applyNpcProfileUpsert(
   command: NpcProfileUpsertCommand,
 ): NormalizedLuanShiState {
   const existing = state.npcs.find((npc) => npc.npcId === command.npcId);
+  const birthDate = ensureCompleteBirthDate({
+    age: existing?.age ?? command.age,
+    birthDate: existing?.birthDate ?? command.birthDate,
+    ageKnownAtDate: existing?.ageKnownAtDate ?? command.ageKnownAtDate,
+    currentDate: state.currentDate,
+    stableId: `npc:${command.npcId.trim()}`,
+  });
+  const currentAge = deriveCurrentAgeFromBirthDate(birthDate, state.currentDate) ?? command.age;
   const nextNpc: LuanShiNpc = {
     npcId: command.npcId.trim(),
     name: command.name.trim(),
@@ -1330,9 +1521,8 @@ function applyNpcProfileUpsert(
     ...(command.aliases && command.aliases.length > 0 ? { aliases: command.aliases.map((alias) => alias.trim()).filter(Boolean) } : {}),
     ...optionalStringField('commonAddress', command.commonAddress),
     sex: command.sex,
-    age: command.age,
-    ...optionalStringField('birthDate', command.birthDate ?? existing?.birthDate),
-    ageKnownAtDate: normalizeAgeKnownAtDate(command.ageKnownAtDate, state.currentDate),
+    age: currentAge,
+    ...optionalStringField('birthDate', birthDate),
     role: command.role.trim(),
     ...optionalStringField('factionId', command.factionId),
     ...optionalStringField('factionName', command.factionName),
@@ -1352,18 +1542,15 @@ function applyNpcProfileUpsert(
     appearance: command.appearance.trim(),
     personality: command.personality.trim(),
     motivation: command.motivation.trim(),
-    relationToPlayer: command.relationToPlayer.trim(),
-    contactLevel: command.contactLevel,
-    recentAttitude: command.recentAttitude.trim(),
+    relationToPlayer: existing?.relationToPlayer ?? command.relationToPlayer.trim(),
+    contactLevel: existing?.contactLevel ?? command.contactLevel,
+    recentAttitude: existing?.recentAttitude ?? command.recentAttitude.trim(),
     abilityScores: { ...command.abilityScores },
     ...(command.vitals ? { vitals: { ...command.vitals } } : existing?.vitals ? { vitals: { ...existing.vitals } } : {}),
-    traits: command.traits.map((trait) => ({
-      ...trait,
-      ...(trait.checkHooks ? { checkHooks: trait.checkHooks.map((hook) => ({ ...hook })) } : {}),
-    })),
-    ...(command.uniqueArts
-      ? { uniqueArts: command.uniqueArts.map(cloneCharacterUniqueArt) }
-      : existing?.uniqueArts ? { uniqueArts: existing.uniqueArts.map(cloneCharacterUniqueArt) } : {}),
+    traits: normalizeCharacterTraits(command.traits),
+    ...((command.uniqueArts || existing?.uniqueArts)
+      ? { uniqueArts: mergeStableCharacterUniqueArts(existing?.uniqueArts, command.uniqueArts) }
+      : {}),
     ...(command.effects
       ? { effects: command.effects.map((effect) => ({
           ...effect,
@@ -1392,6 +1579,39 @@ function applyNpcProfileUpsert(
     npcs: existing
       ? state.npcs.map((npc) => (npc.npcId === command.npcId ? nextNpc : npc))
       : [...state.npcs, nextNpc],
+  };
+}
+
+function applyNpcRelationshipUpdate(
+  state: NormalizedLuanShiState,
+  command: NpcRelationshipUpdateCommand,
+): NormalizedLuanShiState {
+  const npcId = command.npcId.trim();
+  const existing = state.npcs.find((npc) => npc.npcId === npcId);
+  if (!existing) return state;
+
+  const nextContactLevel = Math.min(100, Math.max(0, existing.contactLevel + command.contactDelta));
+  return {
+    ...state,
+    npcs: state.npcs.map((npc) => npc.npcId === npcId
+      ? {
+          ...npc,
+          contactLevel: nextContactLevel,
+          ...(command.relationToPlayer !== undefined
+            ? { relationToPlayer: command.relationToPlayer.trim() }
+            : {}),
+          ...(command.recentAttitude !== undefined
+            ? { recentAttitude: command.recentAttitude.trim() }
+            : {}),
+        }
+      : npc),
+    npcAwarenessIndex: state.npcAwarenessIndex.map((entry) => entry.npcId === npcId
+      ? {
+          ...entry,
+          contactLevel: nextContactLevel,
+          updatedAt: state.currentDate,
+        }
+      : entry),
   };
 }
 
@@ -1453,13 +1673,6 @@ function resolveRequiredString(value: unknown, fallback: string): string {
 }
 
 function resolveCommandUpdatedAt(value: string | null | undefined, fallback: string): string {
-  if (typeof value === 'string' && value.trim()) {
-    return value.trim();
-  }
-  return fallback;
-}
-
-function normalizeAgeKnownAtDate(value: string | null | undefined, fallback: string): string {
   if (typeof value === 'string' && value.trim()) {
     return value.trim();
   }
@@ -1695,7 +1908,7 @@ function applyPlayerLoadoutUpdate(
     ...state,
     player,
     playerResources: hasMoney
-      ? omitPersonalMoneyResource(state.playerResources)
+      ? omitReservedPlayerResourceKeys(state.playerResources)
       : state.playerResources,
     resources: state.resources,
     worldStateDelta: nextWorldStateDelta,
@@ -1725,9 +1938,9 @@ function applyNpcLoadoutUpdate(
   };
 }
 
-function omitPersonalMoneyResource(resources: Record<string, number>): Record<string, number> {
+function omitReservedPlayerResourceKeys(resources: Record<string, number>): Record<string, number> {
   return Object.fromEntries(
-    Object.entries(resources).filter(([key]) => !isPersonalMoneyResourceKey(key)),
+    Object.entries(resources).filter(([key]) => !isCanonicalLedgerShadowResourceKey(key)),
   );
 }
 
@@ -1860,21 +2073,11 @@ function clonePlayerTrait(trait: PlayerTraitsUpdateCommand['traits'][number]): P
   };
 }
 
-function cloneCharacterUniqueArt(art: CharacterUniqueArt): CharacterUniqueArt {
-  return {
-    ...art,
-    ...(art.checkHooks ? { checkHooks: art.checkHooks.map((hook) => ({ ...hook })) } : {}),
-    ...(art.tags ? { tags: [...art.tags] } : {}),
-    ...(art.relatedNpcIds ? { relatedNpcIds: [...art.relatedNpcIds] } : {}),
-    ...(art.relatedFactionIds ? { relatedFactionIds: [...art.relatedFactionIds] } : {}),
-  };
-}
-
 function applyPlayerTraitsUpdate(
   state: NormalizedLuanShiState,
   command: PlayerTraitsUpdateCommand,
 ): NormalizedLuanShiState {
-  const traits = command.traits.map(clonePlayerTrait);
+  const traits = normalizeCharacterTraits(command.traits).map(clonePlayerTrait);
   const openingTraitDetails = traits.map((trait) => ({
     id: trait.id,
     label: trait.label,
@@ -1904,9 +2107,8 @@ function applyCharacterUniqueArtsUpdate(
   state: NormalizedLuanShiState,
   command: CharacterUniqueArtsUpdateCommand,
 ): NormalizedLuanShiState {
-  const uniqueArts = command.uniqueArts.map(cloneCharacterUniqueArt);
-
   if (command.characterType === 'player') {
+    const uniqueArts = mergeStableCharacterUniqueArts(state.player.uniqueArts, command.uniqueArts);
     const openingUniqueArtDetails = uniqueArts.map((art) => ({
       id: art.id,
       name: art.name,
@@ -1918,6 +2120,9 @@ function applyCharacterUniqueArtsUpdate(
       description: art.description,
       effectSummary: art.effectSummary,
       source: art.source,
+      acquisition: art.acquisition ? { ...art.acquisition } : undefined,
+      acquiredAt: art.acquiredAt,
+      upgradedAt: art.upgradedAt,
       promptHint: art.promptHint,
       checkHooks: art.checkHooks ? art.checkHooks.map((hook) => ({ ...hook })) : undefined,
     }));
@@ -1944,8 +2149,68 @@ function applyCharacterUniqueArtsUpdate(
     ...state,
     npcs: state.npcs.map((npc) => {
       const matches = targetId ? npc.npcId === targetId : npc.name === targetName;
-      return matches ? { ...npc, uniqueArts } : npc;
+      return matches
+        ? { ...npc, uniqueArts: mergeStableCharacterUniqueArts(npc.uniqueArts, command.uniqueArts) }
+        : npc;
     }),
+  };
+}
+
+function applyCharacterUniqueArtProgressRecord(
+  state: NormalizedLuanShiState,
+  command: CharacterUniqueArtProgressRecordCommand,
+): NormalizedLuanShiState {
+  const turnKey = buildUniqueArtProgressTurnKey(state.turnLog.length, state.currentDate);
+  const applyToArts = (sourceArts: readonly import('../types').CharacterUniqueArt[] | undefined) => {
+    const arts = mergeStableCharacterUniqueArts(sourceArts, []);
+    if (
+      characterHasUniqueArtProgressEvent(arts, command.eventId)
+      || characterHasConsumedUniqueArtProgressSource(arts, command)
+    ) {
+      return { arts, applied: false };
+    }
+    const artIndex = arts.findIndex((art) => art.id === command.artId.trim());
+    if (artIndex < 0) return { arts, applied: false };
+    const result = applyUniqueArtProgressEvidence(arts[artIndex], command, turnKey);
+    if (!result.applied) return { arts, applied: false };
+    arts[artIndex] = result.art;
+    return { arts, applied: true };
+  };
+
+  if (command.characterType === 'player') {
+    const result = applyToArts(state.player.uniqueArts);
+    if (!result.applied) return state;
+    return {
+      ...state,
+      player: { ...state.player, uniqueArts: result.arts },
+      worldStateDelta: {
+        ...state.worldStateDelta,
+        openingUniqueArts: result.arts.map((art) => art.name),
+        openingUniqueArtDetails: result.arts.map(cloneUniqueArtForWorldState),
+      },
+    };
+  }
+
+  const targetId = command.characterId?.trim();
+  const targetName = command.characterName?.trim();
+  let applied = false;
+  const npcs = state.npcs.map((npc) => {
+    const matches = targetId ? npc.npcId === targetId : npc.name === targetName;
+    if (!matches) return npc;
+    const result = applyToArts(npc.uniqueArts);
+    if (!result.applied) return npc;
+    applied = true;
+    return { ...npc, uniqueArts: result.arts };
+  });
+  return applied ? { ...state, npcs } : state;
+}
+
+function cloneUniqueArtForWorldState(art: import('../types').CharacterUniqueArt): Record<string, unknown> {
+  return {
+    ...art,
+    ...(art.acquisition ? { acquisition: { ...art.acquisition } } : {}),
+    ...(art.checkHooks ? { checkHooks: art.checkHooks.map((hook) => ({ ...hook })) } : {}),
+    ...(art.progressHistory ? { progressHistory: art.progressHistory.map((entry) => ({ ...entry })) } : {}),
   };
 }
 
@@ -1988,6 +2253,22 @@ function applyCharacterIdentityUpdate(
 function applyIdentityFields<T extends object>(target: T, command: CharacterIdentityUpdateFields): T {
   const next: Record<string, unknown> = { ...(target as Record<string, unknown>) };
 
+  const authorityIdentityFields: Array<keyof CharacterIdentityUpdateFields> = [
+    'currentIdentity',
+    'factionId',
+    'factionName',
+    'officeTitle',
+    'militaryTitle',
+    'nobleTitle',
+  ];
+  const updatesAuthorityIdentity = authorityIdentityFields.some((field) => (
+    Object.prototype.hasOwnProperty.call(command, field)
+    && normalizeIdentityComparisonValue(next[field]) !== normalizeIdentityComparisonValue(command[field])
+  ));
+  if (updatesAuthorityIdentity && !Object.prototype.hasOwnProperty.call(command, 'personalEscortEntitlement')) {
+    delete next.personalEscortEntitlement;
+  }
+
   const updatesCurrentIdentity = Object.prototype.hasOwnProperty.call(command, 'currentIdentity');
   if (updatesCurrentIdentity) {
     const previousIdentity = normalizeIdentityComparisonValue(next.currentIdentity);
@@ -2013,7 +2294,12 @@ function applyIdentityFields<T extends object>(target: T, command: CharacterIden
       continue;
     }
 
-    next[field] = Array.isArray(value) ? [...value] : value;
+    if (field === 'personalEscortEntitlement') {
+      const entitlement = value as NonNullable<CharacterIdentityUpdateFields['personalEscortEntitlement']>;
+      next[field] = { ...entitlement, bases: [...entitlement.bases] };
+    } else {
+      next[field] = Array.isArray(value) ? [...value] : value;
+    }
   }
 
   return next as unknown as T;

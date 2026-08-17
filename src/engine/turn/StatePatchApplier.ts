@@ -18,15 +18,27 @@ import type {
 import type { LuanShiCommand } from '../state/luanshiCommands';
 import { applyLuanShiCommand } from '../state/luanshiReducers';
 import { v4 as uuidv4 } from './uuid';
-import { advanceRuntimeClock, type GameClockAdvance } from '../time/gameClock';
+import {
+  advanceGameClock,
+  advanceRuntimeClock,
+  ensureGameClock,
+  formatGameClock,
+  type GameClockAdvance,
+} from '../time/gameClock';
 import {
   loadPregnancyModeFromStorage,
   type PregnancyModePreference,
 } from '../settings/DisplaySettings';
 import { advancePregnancyLifecycle } from '../pregnancy/PregnancyLifecycle';
+import { settleDueHoldingGovernanceProjects } from '../holdings/HoldingGovernanceProjects';
+import { settleDueHeavyCavalryFormationProjects } from '../troops/HeavyCavalryFormation';
 import { extractLuanShiCommandFromPatch, normalizeLuanShiCommandPatch } from './LuanShiCommandPatch';
 import { findReusableRumorBySemantic } from './signalDedupe';
-import { applyPlayerExperience, isValidQuestCompletionExperienceReward } from '../character/progression';
+import {
+  applyPlayerExperience,
+  isValidQuestCompletionExperienceReward,
+  questCompletionExperienceReward,
+} from '../character/progression';
 import {
   synchronizeCurrentMatterLifecycle,
   synchronizeNpcBackgroundActivitiesWithCurrentMatters,
@@ -84,10 +96,19 @@ export function applyPatches(
 ): RuntimeState {
   const normalizedPatches: StatePatch[] = [];
   let timeAdvanceCount = 0;
+  const updatedNpcRelationshipIds = new Set<string>();
   for (const patch of patches) {
     const result = normalizeStatePatchContractResult(normalizeLuanShiCommandPatch(patch));
     if (!result.ok) return state;
     if (result.patch.type === 'timeAdvance' && ++timeAdvanceCount > 1) return state;
+    const command = extractLuanShiCommandFromPatch(result.patch);
+    if (command?.action === 'updateNpcRelationship') {
+      const npcId = typeof command.npcId === 'string' ? command.npcId.trim() : '';
+      if (npcId) {
+        if (updatedNpcRelationshipIds.has(npcId)) return state;
+        updatedNpcRelationshipIds.add(npcId);
+      }
+    }
     normalizedPatches.push(result.patch);
   }
 
@@ -123,6 +144,8 @@ export function finalizeStatePatchDraft(
   }
 
   Object.assign(newState, advancePregnancyLifecycle(newState));
+  Object.assign(newState, settleDueHoldingGovernanceProjects(newState));
+  Object.assign(newState, settleDueHeavyCavalryFormationProjects(newState));
 
   // 添加回合日志
   const logEntry: TurnLogEntry = {
@@ -132,7 +155,7 @@ export function finalizeStatePatchDraft(
     narrativeText: narrativeText.slice(0, 200) + (narrativeText.length > 200 ? '...' : ''),
     fullNarrativeText: narrativeText,
     statePatchSummary: patches.length > 0
-      ? patches.map((patch) => `${patch.type}: ${patch.reason}`).join('；')
+      ? patches.map(summarizeAppliedPatch).join('；')
       : '无状态变更',
     timestamp: new Date().toISOString(),
     displayMeta,
@@ -146,6 +169,46 @@ export function finalizeStatePatchDraft(
     : undefined;
 
   return newState;
+}
+
+function summarizeAppliedPatch(patch: StatePatch): string {
+  const command = extractLuanShiCommandFromPatch(patch);
+  if (command?.action === 'updateResourceLedger') {
+    const details: string[] = [];
+    if (typeof command.moneyGuan === 'number' && Number.isFinite(command.moneyGuan)) {
+      const delta = typeof command.moneyDeltaGuan === 'number' && Number.isFinite(command.moneyDeltaGuan)
+        ? `, delta=${command.moneyDeltaGuan >= 0 ? '+' : ''}${command.moneyDeltaGuan}贯`
+        : '';
+      details.push(`money=${command.moneyGuan}贯${delta}`);
+    }
+    for (const field of ['grain', 'horses', 'arms', 'recruits'] as const) {
+      const value = command[field];
+      if (typeof value === 'number' && Number.isFinite(value)) details.push(`${field}=${value}`);
+    }
+    for (const field of ['weapons', 'documents', 'tokens', 'importantSupplies'] as const) {
+      const value = command[field];
+      if (Array.isArray(value)) details.push(`${field}[${value.length}]`);
+    }
+    for (const [resourceKey, value] of Object.entries(command.playerResources ?? {})) {
+      details.push(`playerResources.${resourceKey}=${value}`);
+    }
+    return `${patch.type}: updateResourceLedger[${details.join(', ')}] · ${patch.reason}`;
+  }
+
+  if (patch.type === 'resourceChanged') {
+    const normalized = normalizeResourceChangedPayload(patch.payload);
+    if (normalized.ok) {
+      const payload = normalized.payload;
+      const operation = payload.mode === 'absolute'
+        ? `=${payload.newValue}`
+        : payload.change >= 0
+          ? `+=${payload.change}`
+          : `-=${Math.abs(payload.change)}`;
+      return `${patch.type}: playerResources.${payload.resource}${operation} · ${patch.reason}`;
+    }
+  }
+
+  return `${patch.type}: ${patch.reason}`;
 }
 
 function applySinglePatch(
@@ -367,13 +430,18 @@ function applySinglePatch(
             newState.currentDate,
           );
         }
-        const experienceReward = normalizedPatch.payload.experienceReward;
+        const explicitExperienceReward = normalizedPatch.payload.experienceReward;
+        const experienceReward: number | undefined = explicitExperienceReward === undefined
+          ? questCompletionExperienceReward(newState.player.level ?? 1, quest.severity)
+          : isValidQuestCompletionExperienceReward(explicitExperienceReward)
+            ? explicitExperienceReward
+            : undefined;
         if (
           status === 'completed'
           && previousStatus !== 'completed'
           && previousStatus !== 'archived'
           && quest.completionExperienceAwarded === undefined
-          && isValidQuestCompletionExperienceReward(experienceReward)
+          && experienceReward !== undefined
         ) {
           newState.player = applyPlayerExperience(newState.player, experienceReward, quest.title).player;
           quest.completionExperienceAwarded = experienceReward;
@@ -584,6 +652,26 @@ function appendNpcPresenceUpdate(state: RuntimeState, payload: Record<string, un
   } else {
     npc.presenceUpdates.push(update);
   }
+  state.npcAwarenessIndex ??= [];
+  let awareness = state.npcAwarenessIndex.find((item) => item.npcId === npc.npcId);
+  if (!awareness) {
+    awareness = {
+      awarenessId: `awareness_${npc.npcId}`,
+      npcId: npc.npcId,
+      name: npc.name,
+      sourceType: 'npcProfile',
+      sourceIds: [npc.npcId],
+      contactLevel: npc.contactLevel,
+      playerRelevance: ['presenceUpdate'],
+      knownToPlayer: true,
+      archiveVisible: true,
+      updatedAt: state.currentDate,
+    };
+    state.npcAwarenessIndex.push(awareness);
+  }
+  awareness.lastPresenceBeatAt = update.createdAt;
+  awareness.cooldownUntil = formatGameClock(advanceGameClock(ensureGameClock(state), { daysAdvanced: 7 }));
+  awareness.updatedAt = state.currentDate;
 }
 
 function assignPayloadString<T, K extends keyof T>(

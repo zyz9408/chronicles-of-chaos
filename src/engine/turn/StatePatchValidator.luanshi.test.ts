@@ -119,6 +119,8 @@ function makeNpcProfilePatch(overrides: Record<string, unknown> = {}): StatePatc
         action: 'upsertNpcProfile',
         npcId: 'npc_gate_guard',
         name: '门候',
+        persistenceReason: 'active_system_role',
+        persistenceEvidence: '此人已担任城门门候，负责持续的城门盘查职责。',
         sex: '男',
         age: 36,
         role: '城门守军',
@@ -274,6 +276,8 @@ describe('validatePatch with luanshiCommand', () => {
       currentIdentity: '汝南逃难士人',
       relationToPlayer: '同名族人，正寻求投靠。',
       summary: '与主角同名但履历不同。',
+      persistenceReason: 'player_committed_relationship',
+      persistenceEvidence: '玩家已同意其投靠并纳入后续安置。',
     });
 
     const result = validatePatch(patch, worldBook, [], makeBoundaryRuntimeState());
@@ -573,6 +577,8 @@ describe('validatePatch with luanshiCommand', () => {
           action: 'upsertNpcProfile',
           npcId: 'npc_adult_woman',
           name: '某氏',
+          persistenceReason: 'active_system_role',
+          persistenceEvidence: '其皇太后身份已成为当前朝局持续运转的权力角色。',
           sex: '女',
           age: 33,
           role: '重要女性 NPC',
@@ -615,6 +621,8 @@ describe('validatePatch with luanshiCommand', () => {
       payload: {
         npcId: 'npc_liu_shan',
         name: '刘禅',
+        persistenceReason: 'historical_figure',
+        persistenceEvidence: '蜀汉皇帝刘禅已在当前朝局中亲自接见主角。',
         sex: '男',
         age: 48,
         role: '蜀汉皇帝',
@@ -847,26 +855,35 @@ describe('validatePatch with canonical resourceChanged contracts', () => {
   } as unknown as StatePatch, worldBook, []);
 
   it.each([
-    { resource: 'grain', mode: 'delta', change: 5 },
-    { resource: 'grain', mode: 'delta', change: '-2.5' },
-    { resource: 'grain', mode: 'absolute', newValue: '12' },
-    { resource: 'grain', change: '3' },
-    { resource: 'grain', newValue: 8 },
+    { resource: 'supplyCredit', mode: 'delta', change: 5 },
+    { resource: 'supplyCredit', mode: 'delta', change: '-2.5' },
+    { resource: 'supplyCredit', mode: 'absolute', newValue: '12' },
+    { resource: 'supplyCredit', change: '3' },
+    { resource: 'supplyCredit', newValue: 8 },
   ])('accepts explicit and legacy unambiguous payload %#', (payload) => {
     expect(validateResource(payload).valid).toBe(true);
   });
 
   it.each([
-    { resource: 'grain', change: 1, newValue: 2 },
-    { resource: 'grain' },
-    { resource: 'grain', mode: 'delta', newValue: 2 },
-    { resource: 'grain', mode: 'absolute', change: 2 },
-    { resource: 'grain', mode: 'delta', change: 1, newValue: 2 },
+    { resource: 'supplyCredit', change: 1, newValue: 2 },
+    { resource: 'supplyCredit' },
+    { resource: 'supplyCredit', mode: 'delta', newValue: 2 },
+    { resource: 'supplyCredit', mode: 'absolute', change: 2 },
+    { resource: 'supplyCredit', mode: 'delta', change: 1, newValue: 2 },
     { resource: '', mode: 'delta', change: 1 },
     { resource: '   ', mode: 'delta', change: 1 },
   ])('rejects ambiguous or mismatched payload %#', (payload) => {
     expect(validateResource(payload).valid).toBe(false);
   });
+
+  it.each(['grain', '粮草', '军粮', 'horses', '马匹', 'arms', '军械', 'recruits', '可征召人手'])(
+    'rejects canonical ledger alias %s through the generic resource path',
+    (resource) => {
+      const result = validateResource({ resource, mode: 'absolute', newValue: 289 });
+      expect(result.valid).toBe(false);
+      expect(result.errors.join('\n')).toContain('updateResourceLedger');
+    },
+  );
 
   it.each([
     '',
@@ -880,7 +897,7 @@ describe('validatePatch with canonical resourceChanged contracts', () => {
     'Infinity',
     '由系统计算',
   ])('rejects non-finite or ambiguous numeric value %#', (value) => {
-    expect(validateResource({ resource: 'grain', mode: 'delta', change: value }).valid).toBe(false);
+    expect(validateResource({ resource: 'supplyCredit', mode: 'delta', change: value }).valid).toBe(false);
   });
 
   it('rejects a non-object payload without throwing', () => {
@@ -904,7 +921,7 @@ describe('validatePatch with canonical resourceChanged contracts', () => {
       valid: false,
       errors: ['resourceChanged.payload 必须是对象'],
     });
-    expect(validateResource({ resource: 'grain', change: 1 }).valid).toBe(true);
+    expect(validateResource({ resource: 'supplyCredit', change: 1 }).valid).toBe(true);
   });
 });
 
@@ -1008,7 +1025,7 @@ describe('validatePatch raw payload global restrictions', () => {
     {
       type: 'resourceChanged',
       payload: {
-        resource: 'grain',
+        resource: 'supplyCredit',
         mode: 'delta',
         change: 1,
         officeTitle: 'field marshal',

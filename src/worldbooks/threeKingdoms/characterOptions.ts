@@ -189,7 +189,7 @@ export const threeKingdomsCharacterOptions: OpeningCharacterOptions = {
       label: '士林清望',
       description: '在读书人圈子里已有可被提起的清名。',
       source: 'opening',
-      rarity: 'red',
+      rarity: 'orange',
       promptHint: '举荐、清议、名士往来和政治站队中影响很大，也会引来审视与敌意。',
     },
     {
@@ -197,7 +197,7 @@ export const threeKingdomsCharacterOptions: OpeningCharacterOptions = {
       label: '名将门生',
       description: '曾受名将指点、收留或门下提携。',
       source: 'opening',
-      rarity: 'red',
+      rarity: 'orange',
       promptHint: '军中履历、派系、人脉和敌对势力都会因此被牵动，影响重但风险也重。',
     },
     {
@@ -205,7 +205,7 @@ export const threeKingdomsCharacterOptions: OpeningCharacterOptions = {
       label: '宫禁旧线',
       description: '与京师、宦门、外戚或宫中传闻有隐秘旧线。',
       source: 'opening',
-      rarity: 'red',
+      rarity: 'orange',
       promptHint: '可开启高风险权力信息，但每次使用都可能带来追查、试探或误判。',
     },
     {

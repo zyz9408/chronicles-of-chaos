@@ -3,6 +3,7 @@ import {
   executeCombatAction,
   resolveCombatDecision,
 } from './CombatEngine';
+import { canStabilizeAlly } from './CombatRules';
 import type {
   CombatAction,
   CombatAutoPauseReason,
@@ -37,11 +38,13 @@ export function chooseCombatAiAction(state: CombatEngineState, actorId: string):
   const rescueTarget = allies
     .filter((candidate) => candidate.hp === 0 && candidate.downCount === 1 && !candidate.revivedOnce)
     .sort((left, right) => left.stableOrder - right.stableOrder)[0];
-  if (rescueTarget) return { type: 'stabilize', actorId, targetId: rescueTarget.actorId };
+  if (rescueTarget && canStabilizeAlly(actor, rescueTarget)) {
+    return { type: 'stabilize', actorId, targetId: rescueTarget.actorId };
+  }
 
   const usableArts = actorSnapshot.uniqueArtProfiles
-    .filter((art) => art.allowAutoUse
-      && (art.powerClass === 'light' || art.powerClass === 'standard')
+    .filter((art) => art.activation !== 'passive'
+      && art.allowAutoUse
       && (actor.artUsage[art.sourceId] ?? 0) < art.perEncounterLimit
       && actor.stamina >= art.staminaCost)
     .sort((left, right) => left.sourceId.localeCompare(right.sourceId));

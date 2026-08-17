@@ -1,8 +1,7 @@
 import { expect, test } from '@playwright/test';
-import { seedMainNarrativeApi } from './e2eStorage';
 
 async function startDebugGame(page: import('@playwright/test').Page) {
-  await seedMainNarrativeApi(page);
+  await page.goto('/');
   await page.getByRole('button', { name: '新的征程' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
@@ -20,7 +19,7 @@ test('game screen opens save, load, and settings from the right-side utility are
 
   const utilityArea = page.getByTestId('game-utility-actions');
   await expect(utilityArea).toBeVisible();
-  await expect(utilityArea.getByRole('button')).toHaveText(['保存进度', '读取进度', '设置']);
+  await expect(utilityArea.getByRole('button')).toHaveText(['保存进度', '读取进度', '设置', '排查工具']);
 
   await page.getByTestId('game-save-progress').click();
   let saveModal = page.locator('.save-modal');

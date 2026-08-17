@@ -93,6 +93,12 @@ export interface RuntimeMapWriteApplication {
   canonicalLocationId?: string;
 }
 
+export interface RuntimeMapWriteRejection {
+  suggestionIndex: number;
+  stableId?: string;
+  errors: string[];
+}
+
 export interface RuntimeLocationWriteBatchApplication {
   state: RuntimeState;
   suggestions: StructuredLocationWriteSuggestion[];
@@ -100,6 +106,12 @@ export interface RuntimeLocationWriteBatchApplication {
   appliedCount: number;
   errors: string[];
   diagnostics: RuntimeLocationWriteDiagnostic[];
+  rejections: RuntimeMapWriteRejection[];
+}
+
+export interface RuntimeLocationWriteOptions {
+  /** 仅当结构化 locationChange 已确认玩家实际抵达时启用。 */
+  persistVisitedNonPermanent?: boolean;
 }
 
 export function getWorldBookMapRoots(worldBook: WorldBook): MapNode[] {
@@ -402,12 +414,13 @@ export function applyLocationWriteSuggestion(
   worldBook: WorldBook,
   state: RuntimeState,
   suggestion: StructuredLocationWriteSuggestion,
+  options: RuntimeLocationWriteOptions = {},
 ): RuntimeMapWriteApplication {
-  if (suggestion.permanence !== 'permanent') {
+  if (suggestion.permanence !== 'permanent' && !options.persistVisitedNonPermanent) {
     return {
       state,
       applied: false,
-      errors: ['仅永久地点会写入 Map V1；临时地点与风闻地点暂不沉淀为路线节点。'],
+      errors: [],
       diagnostics: [],
     };
   }
@@ -500,6 +513,13 @@ export function applyLocationWriteSuggestion(
     controlHint: suggestion.controlHint?.trim() || '由结构化写回确认',
     tensionHint: suggestion.tensionHint?.trim() || '待后续回合更新',
     parentId: canonicalParentId,
+    ...(suggestion.permanence === 'permanent'
+      ? {}
+      : {
+          runtimePersistence: 'visited-temporary' as const,
+          discoveredAt: state.currentDate,
+          availability: 'active' as const,
+        }),
   };
 
   nextState.mapNodes = upsertMapNodeById(nextState.mapNodes ?? [], node);
@@ -678,12 +698,14 @@ export function applyLocationWriteSuggestionsSequentially(
   worldBook: WorldBook,
   state: RuntimeState,
   suggestions: StructuredLocationWriteSuggestion[],
+  visitedLocationIds: ReadonlySet<string> = new Set(),
 ): RuntimeLocationWriteBatchApplication {
   let nextState = state;
   let appliedCount = 0;
   const aliasMap = new Map<string, string>();
   const errors: string[] = [];
   const diagnostics: RuntimeLocationWriteDiagnostic[] = [];
+  const rejections: RuntimeMapWriteRejection[] = [];
   const canonicalSuggestions: StructuredLocationWriteSuggestion[] = [];
 
   for (let index = 0; index < suggestions.length; index += 1) {
@@ -693,7 +715,10 @@ export function applyLocationWriteSuggestionsSequentially(
       parentId: remapLocationId(suggestion.parentId?.trim(), aliasMap),
       connectedRegionIds: remapLocationIds(suggestion.connectedRegionIds, aliasMap),
     };
-    const result = applyLocationWriteSuggestion(worldBook, nextState, remappedSuggestion);
+    const incomingLocationId = remappedSuggestion.locationId?.trim() ?? '';
+    const result = applyLocationWriteSuggestion(worldBook, nextState, remappedSuggestion, {
+      persistVisitedNonPermanent: Boolean(incomingLocationId && visitedLocationIds.has(incomingLocationId)),
+    });
     nextState = result.state;
     if (result.applied && result.incomingLocationId && result.canonicalLocationId) {
       aliasMap.set(result.incomingLocationId, result.canonicalLocationId);
@@ -705,6 +730,13 @@ export function applyLocationWriteSuggestionsSequentially(
     } else {
       canonicalSuggestions.push(remappedSuggestion);
       errors.push(...result.errors.map((error) => `#${index + 1} ${error}`));
+      if (result.errors.length > 0) {
+        rejections.push({
+          suggestionIndex: index,
+          stableId: incomingLocationId || undefined,
+          errors: [...result.errors],
+        });
+      }
       diagnostics.push(...result.diagnostics.map((diagnostic) => ({
         ...diagnostic,
         candidateIds: [...diagnostic.candidateIds],
@@ -720,6 +752,7 @@ export function applyLocationWriteSuggestionsSequentially(
     appliedCount,
     errors,
     diagnostics,
+    rejections,
   };
 }
 

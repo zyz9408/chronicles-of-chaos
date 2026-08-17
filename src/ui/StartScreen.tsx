@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CharacterTrait,
+  GameDifficultyLevel,
+  NarrativePerspective,
   MapNode,
   RuntimeState,
   OpeningCharacterOption,
@@ -14,10 +16,31 @@ import { listStartBookmarks, getStartBookmark } from '../engine/worldbook/StartB
 import { listWorldlineKnowledgeBasesForWorldBook } from '../engine/worldline/WorldlineKnowledgeRegistry';
 import { clearAllSaves, continueLastSave, createManualSave, createSave, deleteSave, exportSaves, importSaves, loadSave, listSaves } from '../engine/save/SaveManager';
 import { createPortableSaveZip, readSaveArchiveFile } from '../engine/save/SaveArchiveZip';
+import {
+  CloudSaveApiError,
+  deleteCloudSave,
+  downloadCloudSave,
+  getCloudSession,
+  getKnownCloudRevision,
+  listCloudSaves,
+  loadCloudSyncPreferences,
+  startDiscordCloudLogin,
+  syncCurrentSave,
+  uploadLocalSave,
+  type CloudSaveItem,
+  type CloudSessionState,
+  type CloudUsage,
+} from '../engine/save/CloudSaveService';
 import type { SaveData } from '../engine/types';
 import { createCustomOpeningState } from '../engine/state/createCustomOpeningState';
-import { resolveApiConfigForTaskAsync } from '../engine/settings/ApiConfigManager';
+import { ensureCompleteBirthDate } from '../engine/time/npcAge';
+import {
+  resolveApiConfigForTaskAsync,
+  resolveExplicitApiConfigForTaskAsync,
+  type ApiConfigArchive,
+} from '../engine/settings/ApiConfigManager';
 import { BrowserLlmClient } from '../engine/llm/LlmClient';
+import { copyUint8ArrayToArrayBuffer, downloadBlobFile } from './downloadBlobFile';
 import {
   TurnExecutionCancelledError,
   TurnExecutionOwner,
@@ -37,10 +60,13 @@ import customCharacterSilhouette from '../assets/ui/custom-character-silhouette.
 import historicalFiguresSilhouette from '../assets/ui/historical-figures-silhouette.png';
 import {
   createCustomOpeningOption,
+  createCustomOpeningTrait,
   isCustomBirthOption,
   isCustomIdentityOption,
+  isCustomOpeningTrait,
   loadCustomOpeningOptions,
   saveCustomOpeningOptions,
+  updateCustomOpeningTrait,
 } from './openingCustomOptions';
 import {
   applyHistoricalRoleCompletion,
@@ -49,7 +75,6 @@ import {
   parseHistoricalRoleCompletionContent,
 } from './historicalRoleCompletion';
 import {
-  OPENING_ABILITY_POINT_BUDGET,
   adjustOpeningAbilityAllocation,
   canDecreaseOpeningAbility,
   canIncreaseOpeningAbility,
@@ -73,6 +98,17 @@ import type {
   OpeningCharacterTemplate,
   OpeningCharacterTemplateProfile,
 } from '../engine/opening/OpeningCharacterTemplateStore';
+import {
+  combatDifficultyProfiles,
+  gameDifficultyProfiles,
+  getEncounterDifficultyProfile,
+  getGameDifficultyProfile,
+  warDifficultyProfiles,
+} from '../engine/settings/GameDifficulty';
+import {
+  getNarrativePerspectiveProfile,
+  narrativePerspectiveProfiles,
+} from '../engine/settings/NarrativePerspective';
 
 const ApiSettingsPanel = React.lazy(async () => {
   const module = await import('./ApiSettingsPanel');
@@ -90,6 +126,9 @@ type PlayerMode = 'original' | 'historical';
 type AbilityScores = Record<string, number>;
 type CharacterTemplateModal = 'save' | 'load';
 
+const openingBirthMonths = Array.from({ length: 12 }, (_, index) => index + 1);
+const openingBirthDays = Array.from({ length: 30 }, (_, index) => index + 1);
+
 export function shouldAdvanceSessionWhenClosingGameLoad(pendingGeneration: number | null): boolean {
   return pendingGeneration !== null;
 }
@@ -103,18 +142,10 @@ export function StartScreenLoadEntryButton({ onOpen }: { onOpen: () => void }) {
 }
 
 const openingLlmClient = new BrowserLlmClient();
+const NPC_COMPLETION_REQUEST_TIMEOUT_MS = 60_000;
 
 function dateStamp(): string {
   return new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-}
-
-function downloadBlobFile(filename: string, blob: Blob): void {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
 }
 
 function pickSaveArchiveFile(): Promise<File | null> {
@@ -122,16 +153,28 @@ function pickSaveArchiveFile(): Promise<File | null> {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'application/zip,.zip,application/json,.json';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    const finish = (file: File | null, error?: Error) => {
+      input.remove();
+      if (error) reject(error);
+      else resolve(file);
+    };
     input.onchange = () => {
       const file = input.files?.[0];
       if (!file) {
-        resolve(null);
+        finish(null);
         return;
       }
-      resolve(file);
+      finish(file);
     };
-    input.onerror = () => reject(new Error('无法读取所选存档文件。'));
-    input.click();
+    input.addEventListener('cancel', () => finish(null), { once: true });
+    input.onerror = () => finish(null, new Error('无法读取所选存档文件。'));
+    try {
+      input.click();
+    } catch (error) {
+      finish(null, error instanceof Error ? error : new Error('无法打开存档文件选择器。'));
+    }
   });
 }
 
@@ -206,6 +249,11 @@ function formatSaveTime(iso: string): string {
   }
 }
 
+function formatCloudBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
+  return `${(bytes / 1_000_000).toFixed(bytes >= 10_000_000 ? 1 : 2)} MB`;
+}
+
 export const StartScreen: React.FC = () => {
   const [worldBooks] = useState(() => {
     initWorldBookRegistry();
@@ -236,14 +284,21 @@ export const StartScreen: React.FC = () => {
   const turnExecutionOwnerRef = useRef(new TurnExecutionOwner());
   const sessionAbortControllerRef = useRef(new AbortController());
   const pendingGameLoadGenerationRef = useRef<number | null>(null);
+  const lastAutoCloudSyncKeyRef = useRef('');
   const [runtimeState, setRuntimeState] = useState<RuntimeState | null>(null);
   const [activeGameModal, setActiveGameModal] = useState<GameModal | null>(null);
   const [saveItems, setSaveItems] = useState<SaveListItem[]>([]);
   const [saveStatus, setSaveStatus] = useState('');
   const [enrichedSaves, setEnrichedSaves] = useState<EnrichedSaveItem[]>([]);
+  const [saveSource, setSaveSource] = useState<'local' | 'cloud'>('local');
+  const [cloudSession, setCloudSession] = useState<CloudSessionState | null>(null);
+  const [cloudSaves, setCloudSaves] = useState<CloudSaveItem[]>([]);
+  const [cloudUsage, setCloudUsage] = useState<CloudUsage | null>(null);
+  const [cloudBusyId, setCloudBusyId] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<
     | { type: 'single'; saveId: string }
     | { type: 'all' }
+    | { type: 'customTrait'; traitId: string; label: string }
     | { type: 'customBirthOrigin'; optionId: string; label: string }
     | { type: 'customIdentity'; optionId: string; label: string }
     | { type: 'openingCharacterTemplate'; templateId: string; label: string }
@@ -254,11 +309,17 @@ export const StartScreen: React.FC = () => {
   const [playerCourtesyName, setPlayerCourtesyName] = useState('');
   const [playerSex, setPlayerSex] = useState<'男' | '女' | '其他'>('男');
   const [playerAge, setPlayerAge] = useState(18);
+  const [playerBirthMonth, setPlayerBirthMonth] = useState(() => Math.floor(Math.random() * 12) + 1);
+  const [playerBirthDay, setPlayerBirthDay] = useState(() => Math.floor(Math.random() * 30) + 1);
   const [playerAppearance, setPlayerAppearance] = useState('');
   const [playerPersonality, setPlayerPersonality] = useState('');
   const [situationSummary, setSituationSummary] = useState('');
   const [customNotes, setCustomNotes] = useState('');
   const [playerExtraRequest, setPlayerExtraRequest] = useState('');
+  const [gameDifficulty, setGameDifficulty] = useState<GameDifficultyLevel>('standard');
+  const [combatDifficulty, setCombatDifficulty] = useState<GameDifficultyLevel>('standard');
+  const [warDifficulty, setWarDifficulty] = useState<GameDifficultyLevel>('standard');
+  const [narrativePerspective, setNarrativePerspective] = useState<NarrativePerspective>('second_person');
   const [historicalName, setHistoricalName] = useState('');
   const [completionStatus, setCompletionStatus] = useState('');
   const [selectedAbilityPresetId, setSelectedAbilityPresetId] = useState('balanced');
@@ -268,6 +329,7 @@ export const StartScreen: React.FC = () => {
   const [customTraits, setCustomTraits] = useState<CharacterTrait[]>([]);
   const [customTraitDraft, setCustomTraitDraft] = useState({ label: '', description: '' });
   const [showCustomTraitForm, setShowCustomTraitForm] = useState(false);
+  const [editingCustomTraitId, setEditingCustomTraitId] = useState<string | null>(null);
   const [customBirthOrigins, setCustomBirthOrigins] = useState<OpeningCharacterOption[]>([]);
   const [customIdentities, setCustomIdentities] = useState<OpeningCharacterOption[]>([]);
   const [customBirthDraft, setCustomBirthDraft] = useState({ label: '', description: '' });
@@ -361,6 +423,21 @@ export const StartScreen: React.FC = () => {
     () => (worldBook ? listStartBookmarks(worldBook) : []),
     [worldBook],
   );
+  const selectedBookmark = useMemo(
+    () => bookmarks.find((bookmark) => bookmark.id === selectedBookmarkId),
+    [bookmarks, selectedBookmarkId],
+  );
+  const derivedPlayerBirthDate = useMemo(() => (
+    selectedBookmark
+      ? ensureCompleteBirthDate({
+          age: playerAge,
+          currentDate: selectedBookmark.startDate,
+          stableId: 'player_1',
+          preferredMonth: playerBirthMonth,
+          preferredDay: playerBirthDay,
+        })
+      : undefined
+  ), [playerAge, playerBirthDay, playerBirthMonth, selectedBookmark]);
   const baseOpeningLocationSeed = useMemo(
     () => worldBook?.openingLocationSeed ?? worldBook?.mapSeed ?? [],
     [worldBook],
@@ -454,7 +531,7 @@ export const StartScreen: React.FC = () => {
       selectedLocationName ? `初始地点：${selectedLocationName}` : '',
       abilityText ? `开局能力：${abilityText}` : '',
       selectedTraits.length > 0 ? `开局特质：${selectedTraits.map((trait) => `${trait.label}：${trait.description}`).join('；')}` : '',
-      '初始行装：由真开局 AI 根据姓名、出身、当前身份、历史人物档案、初始地点与玩家额外要求生成并结构化写回，不由玩家手动选择。',
+      '初始行装：根据姓名、出身、当前身份、历史人物档案、初始地点与玩家额外要求，随开场剧情一并确定，无需手动选择。',
       playerExtraRequest.trim() ? `玩家额外开局要求：${playerExtraRequest.trim()}` : '',
       customNotes.trim() ? `AI补全/补充档案：${customNotes.trim()}` : '',
     ].filter(Boolean).join('\n');
@@ -496,25 +573,95 @@ export const StartScreen: React.FC = () => {
     })));
   }, []);
 
+  const refreshCloudSaves = useCallback(async () => {
+    try {
+      const session = await getCloudSession();
+      setCloudSession(session);
+      if (!session.authenticated) {
+        setCloudSaves([]);
+        setCloudUsage(session.usage ?? null);
+        return;
+      }
+      const cloud = await listCloudSaves();
+      setCloudSaves(cloud.saves);
+      setCloudUsage(cloud.usage);
+    } catch (error) {
+      setCloudSaves([]);
+      setCloudUsage(null);
+      setSaveStatus(`云存档状态读取失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  }, []);
+
   useEffect(() => {
     void refreshSaveItems();
   }, [refreshSaveItems]);
 
   useEffect(() => {
+    if (screen === 'load') {
+      setSaveSource('local');
+      void refreshCloudSaves();
+    }
+  }, [refreshCloudSaves, screen]);
+
+  useEffect(() => {
+    const cloudAuth = new URLSearchParams(window.location.search).get('cloudAuth');
+    if (!cloudAuth) return;
+    setSaveStatus(cloudAuth === 'success' ? 'Discord 登录成功，可以使用云存档。' : 'Discord 登录未完成，请重试。');
+    void refreshCloudSaves();
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.searchParams.delete('cloudAuth');
+    window.history.replaceState({}, '', `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+  }, [refreshCloudSaves]);
+
+  useEffect(() => {
+    if (!currentSaveId || !runtimeState || !loadCloudSyncPreferences().autoSyncCurrentSave) return;
+    const syncKey = `${currentSaveId}:${runtimeState.currentDate}:${runtimeState.turnLog.length}`;
+    if (lastAutoCloudSyncKeyRef.current === syncKey) return;
+    const timer = window.setTimeout(() => {
+      lastAutoCloudSyncKeyRef.current = syncKey;
+      void syncCurrentSave(currentSaveId)
+        .then(() => {
+          if (activeGameModal === 'save' || activeGameModal === 'load') {
+            setSaveStatus('当前活动存档已自动同步到云端。');
+            void refreshCloudSaves();
+          }
+        })
+        .catch((error) => {
+          if (error instanceof CloudSaveApiError && error.code === 'not_authenticated') return;
+          if (activeGameModal === 'save' || activeGameModal === 'load') {
+            setSaveStatus(`云端自动同步未完成：${error instanceof Error ? error.message : '未知错误'}；本地存档已保留。`);
+          }
+        });
+    }, 4_000);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeGameModal,
+    currentSaveId,
+    refreshCloudSaves,
+    runtimeState,
+  ]);
+
+  useEffect(() => {
     if (!selectedWorldBookId) {
+      setCustomTraits([]);
       setCustomBirthOrigins([]);
       setCustomIdentities([]);
+      setEditingCustomTraitId(null);
       setEditingCustomBirthId(null);
       setEditingCustomIdentityId(null);
+      setShowCustomTraitForm(false);
       setLoadedCustomOpeningWorldBookId(null);
       return;
     }
 
     const savedCustomOptions = loadCustomOpeningOptions(selectedWorldBookId);
+    setCustomTraits(savedCustomOptions.traits);
     setCustomBirthOrigins(savedCustomOptions.birthOrigins);
     setCustomIdentities(savedCustomOptions.identities);
+    setEditingCustomTraitId(null);
     setEditingCustomBirthId(null);
     setEditingCustomIdentityId(null);
+    setShowCustomTraitForm(false);
     setShowCustomBirthForm(false);
     setShowCustomIdentityForm(false);
     setLoadedCustomOpeningWorldBookId(selectedWorldBookId);
@@ -526,8 +673,9 @@ export const StartScreen: React.FC = () => {
     saveCustomOpeningOptions(selectedWorldBookId, {
       birthOrigins: customBirthOrigins,
       identities: customIdentities,
+      traits: customTraits,
     });
-  }, [customBirthOrigins, customIdentities, loadedCustomOpeningWorldBookId, selectedWorldBookId]);
+  }, [customBirthOrigins, customIdentities, customTraits, loadedCustomOpeningWorldBookId, selectedWorldBookId]);
 
   const handleSelectWorldBook = (id: string) => {
     const nextWorldBook = getWorldBook(id);
@@ -552,6 +700,7 @@ export const StartScreen: React.FC = () => {
     setCustomTraits([]);
     setCustomTraitDraft({ label: '', description: '' });
     setShowCustomTraitForm(false);
+    setEditingCustomTraitId(null);
     setCustomOpeningPlaces([]);
     setCustomPlaceDraft({ label: '', description: '' });
     setShowCustomBirthForm(false);
@@ -588,6 +737,8 @@ export const StartScreen: React.FC = () => {
       courtesyName: playerCourtesyName,
       playerSex,
       playerAge,
+      playerBirthMonth,
+      playerBirthDay,
       origin: [selectedBirthLabel, selectedIdentityLabel].filter(Boolean).join(' / '),
       birthOrigin: selectedBirthLabel,
       birthOriginDescription: selectedBirthDescription,
@@ -607,11 +758,19 @@ export const StartScreen: React.FC = () => {
       openingExtraRequest: playerExtraRequest,
       customNotes: composedCustomNotes,
       worldlineSettings: createOpeningWorldlineSettings(selectedWorldBookId, selectedWorldlineKnowledgeMode),
+      gameDifficulty,
+      combatDifficulty,
+      warDifficulty,
+      narrativePerspective,
     });
   }, [
     worldBook,
     selectedWorldBookId,
     selectedWorldlineKnowledgeMode,
+    gameDifficulty,
+    combatDifficulty,
+    warDifficulty,
+    narrativePerspective,
     selectedBookmarkId,
     selectedOrigin,
     selectedLocationId,
@@ -622,6 +781,8 @@ export const StartScreen: React.FC = () => {
     playerCourtesyName,
     playerSex,
     playerAge,
+    playerBirthMonth,
+    playerBirthDay,
     playerAppearance,
     playerPersonality,
     abilityBaseScores,
@@ -639,9 +800,13 @@ export const StartScreen: React.FC = () => {
   ]);
 
   const openingPreview = useMemo(
-    () => (step === 5 ? generateRuntimeState() : null),
+    () => (step === 6 ? generateRuntimeState() : null),
     [step, generateRuntimeState],
   );
+  const selectedGameDifficulty = getGameDifficultyProfile(gameDifficulty);
+  const selectedCombatDifficulty = getEncounterDifficultyProfile('combat', combatDifficulty);
+  const selectedWarDifficulty = getEncounterDifficultyProfile('war', warDifficulty);
+  const selectedNarrativePerspective = getNarrativePerspectiveProfile(narrativePerspective);
 
   const handleStartNew = () => {
     advanceGameSession('当前回合已取消。');
@@ -665,6 +830,10 @@ export const StartScreen: React.FC = () => {
     }
     setScreen('create');
     setStep(1);
+    setGameDifficulty('standard');
+    setCombatDifficulty('standard');
+    setWarDifficulty('standard');
+    setNarrativePerspective('second_person');
   };
 
   const handleStartNewWithConfigCheck = async () => {
@@ -753,6 +922,19 @@ export const StartScreen: React.FC = () => {
 
   const handleConfirmDelete = async () => {
     if (!deleteConfirm) return;
+
+    if (deleteConfirm.type === 'customTrait') {
+      const traitId = deleteConfirm.traitId;
+      setCustomTraits((current) => current.filter((trait) => trait.id !== traitId));
+      setSelectedTraitIds((current) => current.filter((id) => id !== traitId));
+      if (editingCustomTraitId === traitId) {
+        setEditingCustomTraitId(null);
+        setCustomTraitDraft({ label: '', description: '' });
+        setShowCustomTraitForm(false);
+      }
+      setDeleteConfirm(null);
+      return;
+    }
 
     if (deleteConfirm.type === 'customBirthOrigin') {
       const optionId = deleteConfirm.optionId;
@@ -861,7 +1043,7 @@ export const StartScreen: React.FC = () => {
       const apiConfig = await resolveApiConfigForTaskAsync('mainNarrative');
       if (!isCurrentSession(generation)) return;
       if (!apiConfig) {
-        throw new Error('真开局需要先配置主剧情 API。');
+        throw new Error('开局前请先配置主剧情 API。');
       }
 
       const enteredGeneration = await enterGameWithState(state, {
@@ -871,7 +1053,7 @@ export const StartScreen: React.FC = () => {
       if (enteredGeneration !== null) generation = enteredGeneration;
     } catch (error) {
       if (isCurrentSession(generation)) {
-        setOpeningStartStatus(error instanceof Error ? error.message : '真开局生成失败。');
+        setOpeningStartStatus(error instanceof Error ? error.message : '开场剧情生成失败。');
       }
     } finally {
       if (isCurrentSession(generation)) setIsStartingGame(false);
@@ -900,7 +1082,7 @@ export const StartScreen: React.FC = () => {
       const zipBytes = await createPortableSaveZip(archive);
       downloadBlobFile(
         `coc-v2-saves-${dateStamp()}.zip`,
-        new Blob([zipBytes], { type: 'application/zip' }),
+        new Blob([copyUint8ArrayToArrayBuffer(zipBytes)], { type: 'application/zip' }),
       );
       setSaveStatus('存档已导出为 ZIP 分包。');
     } catch (error) {
@@ -947,12 +1129,78 @@ export const StartScreen: React.FC = () => {
     }
   };
 
+  const handleUploadCloudSave = async (saveId: string) => {
+    const local = saveItems.find((save) => save.id === saveId);
+    if (!local) {
+      setSaveStatus('本地存档不存在，无法上传。');
+      return;
+    }
+    const remote = cloudSaves.find((save) => save.slotId === saveId);
+    const knownRevision = getKnownCloudRevision(saveId);
+    if (remote && knownRevision !== remote.revision) {
+      const confirmed = window.confirm(
+        '云端已有一个本机未确认的版本。继续会以当前本地存档覆盖云端；如需保留云端版本，请先下载。确定继续吗？',
+      );
+      if (!confirmed) return;
+    }
+    setCloudBusyId(saveId);
+    setSaveStatus('正在压缩并上传存档……');
+    try {
+      const uploaded = await uploadLocalSave(local, remote?.revision ?? 0);
+      setSaveStatus(`云端上传完成：第 ${uploaded.revision} 版。`);
+      await refreshCloudSaves();
+    } catch (error) {
+      setSaveStatus(`云端上传失败：${error instanceof Error ? error.message : '未知错误'}；本地存档不受影响。`);
+    } finally {
+      setCloudBusyId(null);
+    }
+  };
+
+  const handleDownloadCloudSave = async (cloudSave: CloudSaveItem) => {
+    const local = saveItems.find((save) => save.id === cloudSave.slotId);
+    if (local && local.updatedAt !== cloudSave.metadata.updatedAt) {
+      const confirmed = window.confirm(
+        '本机已有同一槽位的存档。下载会用云端版本覆盖本机同槽位，但不会删除其他本地存档。确定继续吗？',
+      );
+      if (!confirmed) return;
+    }
+    setCloudBusyId(cloudSave.slotId);
+    setSaveStatus('正在下载并校验云存档……');
+    try {
+      await downloadCloudSave(cloudSave);
+      await refreshSaveItems();
+      setSaveStatus('云存档已校验并写入本机；可切回“本地存档”读取。');
+    } catch (error) {
+      setSaveStatus(`云存档下载失败：${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      setCloudBusyId(null);
+    }
+  };
+
+  const handleDeleteCloudSave = async (cloudSave: CloudSaveItem) => {
+    if (!window.confirm('确定删除这个云存档吗？本机同名存档不会删除。')) return;
+    setCloudBusyId(cloudSave.slotId);
+    try {
+      await deleteCloudSave(cloudSave);
+      await refreshCloudSaves();
+      setSaveStatus('云存档已删除，本地存档保持不变。');
+    } catch (error) {
+      setSaveStatus(`云存档删除失败：${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      setCloudBusyId(null);
+    }
+  };
+
   const openGameModal = (modal: GameModal, settingsTab?: SettingsTab) => {
     setSaveStatus('');
     if (modal === 'settings') {
       setSettingsInitialTab(settingsTab ?? 'game');
     }
-    if (modal === 'save' || modal === 'load') void refreshSaveItems();
+    if (modal === 'save' || modal === 'load') {
+      setSaveSource('local');
+      void refreshSaveItems();
+      void refreshCloudSaves();
+    }
     setActiveGameModal(modal);
   };
 
@@ -970,6 +1218,14 @@ export const StartScreen: React.FC = () => {
     }
 
     const apiConfig = await resolveApiConfigForTaskAsync('npcCompletion');
+    const configuredFallbackApiConfig = await resolveExplicitApiConfigForTaskAsync('npcCompletionFallback');
+    const fallbackApiConfig = configuredFallbackApiConfig
+      && (
+        configuredFallbackApiConfig.id !== apiConfig?.id
+        || configuredFallbackApiConfig.model !== apiConfig?.model
+      )
+      ? configuredFallbackApiConfig
+      : null;
     if (!apiConfig) {
       setCompletionStatus('尚未配置 API。请先到设置里新建 API，并在任务路由中分配给 NPC/历史人物补全。');
       return;
@@ -988,9 +1244,7 @@ export const StartScreen: React.FC = () => {
         bookmarkSummary: selectedBookmark?.situationSummary ?? selectedBookmark?.description,
         currentLocationId: selectedLocationId,
       }) : [];
-      const result = await openingLlmClient.generate({
-        config: apiConfig,
-        messages: buildHistoricalRoleCompletionMessages({
+      const messages = buildHistoricalRoleCompletionMessages({
           worldName: worldBook?.manifest.name ?? '未知',
           bookmarkLabel: selectedBookmark?.label ?? '未选',
           bookmarkStartDate: selectedBookmark?.startDate,
@@ -1002,16 +1256,31 @@ export const StartScreen: React.FC = () => {
           traits: openingCharacterOptions.traits ?? [],
           mapSeed: openingLocationSeed,
           knowledgeHints,
-        }),
-        temperature: apiConfig.temperature,
-        maxOutputTokens: Math.min(apiConfig.maxOutputTokens ?? 2048, 2048),
-        responseFormat: 'json_object',
       });
-      const content = result.content;
-      if (!content) {
-        throw new Error('接口没有返回人物内容');
+      const requestCompletion = async (config: ApiConfigArchive) => {
+        const result = await openingLlmClient.generate({
+          config,
+          messages,
+          temperature: config.temperature,
+          maxOutputTokens: Math.min(config.maxOutputTokens ?? 2048, 2048),
+          responseFormat: 'json_object',
+          timeoutMs: NPC_COMPLETION_REQUEST_TIMEOUT_MS,
+          retryCount: 0,
+          retryDelayMs: 0,
+        });
+        if (!result.content.trim()) {
+          throw new Error('接口没有返回人物内容');
+        }
+        return parseHistoricalRoleCompletionContent(result.content);
+      };
+      let parsed;
+      try {
+        parsed = await requestCompletion(apiConfig);
+      } catch (primaryError) {
+        if (!fallbackApiConfig) throw primaryError;
+        setCompletionStatus('NPC建档主要 API 未完成，正在切换备用 API...');
+        parsed = await requestCompletion(fallbackApiConfig);
       }
-      const parsed = parseHistoricalRoleCompletionContent(content);
       const applied = applyHistoricalRoleCompletion(parsed, {
         currentHistoricalName: historicalName,
         currentSex: playerSex,
@@ -1077,9 +1346,12 @@ export const StartScreen: React.FC = () => {
     courtesyName: playerCourtesyName,
     sex: playerSex,
     age: playerAge,
+    birthMonth: playerBirthMonth,
+    birthDay: playerBirthDay,
     appearance: playerAppearance,
     personality: playerPersonality,
     customNotes,
+    ...(playerExtraRequest.trim() ? { playerExtraRequest: playerExtraRequest.trim() } : {}),
     abilityPresetId: selectedAbilityPresetId,
     abilityBaseScores: { ...abilityBaseScores },
     abilityScores: { ...abilityScores },
@@ -1160,9 +1432,12 @@ export const StartScreen: React.FC = () => {
     setPlayerCourtesyName(profile.courtesyName);
     setPlayerSex(profile.sex);
     setPlayerAge(profile.age);
+    if (profile.birthMonth) setPlayerBirthMonth(profile.birthMonth);
+    if (profile.birthDay) setPlayerBirthDay(profile.birthDay);
     setPlayerAppearance(profile.appearance);
     setPlayerPersonality(profile.personality);
     setCustomNotes(profile.customNotes);
+    setPlayerExtraRequest(profile.playerExtraRequest ?? '');
     setSelectedAbilityPresetId(profile.abilityPresetId);
     setAbilityBaseScores({ ...profile.abilityBaseScores });
     setAbilityScores({ ...profile.abilityScores });
@@ -1172,7 +1447,7 @@ export const StartScreen: React.FC = () => {
     setActiveCharacterTemplateId(template.id);
     setCharacterTemplateName(template.label);
     setCharacterTemplateModal(null);
-    setCharacterTemplateStatus(`已读取人物模板“${template.label}”，当前剧本、日期与地点未改变。`);
+    setCharacterTemplateStatus(`已读取人物模板“${template.label}”；人物档案与模板中的开局额外要求已恢复，当前剧本、日期与地点未改变。`);
     setStep(3);
   };
 
@@ -1188,21 +1463,40 @@ export const StartScreen: React.FC = () => {
     });
   };
 
+  const beginCustomTraitEdit = (trait: CharacterTrait) => {
+    setEditingCustomTraitId(trait.id);
+    setCustomTraitDraft({ label: trait.label, description: trait.description });
+    setShowCustomTraitForm(true);
+  };
+
+  const cancelCustomTraitEdit = () => {
+    setEditingCustomTraitId(null);
+    setCustomTraitDraft({ label: '', description: '' });
+    setShowCustomTraitForm(false);
+  };
+
   const handleAddCustomTrait = () => {
     const label = customTraitDraft.label.trim();
     const description = customTraitDraft.description.trim();
     if (!label) return;
-    const trait: CharacterTrait = {
-      id: `custom_trait_${Date.now()}`,
-      label,
-      description: description || '玩家自定义开局特质。',
-      source: 'custom',
-      promptHint: description || '由 LLM 根据玩家自定义特质在合适场景中体现。',
-    };
-    setCustomTraits((current) => [...current, trait]);
-    setSelectedTraitIds((current) => [...current.slice(0, 2), trait.id]);
-    setCustomTraitDraft({ label: '', description: '' });
-    setShowCustomTraitForm(false);
+
+    if (editingCustomTraitId) {
+      setCustomTraits((current) => current.map((trait) => (
+        trait.id === editingCustomTraitId
+          ? updateCustomOpeningTrait(trait, label, description)
+          : trait
+      )));
+    } else {
+      const trait = createCustomOpeningTrait(label, description);
+      setCustomTraits((current) => [...current, trait]);
+      setSelectedTraitIds((current) => [...current.slice(0, 2), trait.id]);
+    }
+
+    cancelCustomTraitEdit();
+  };
+
+  const handleDeleteCustomTrait = (trait: CharacterTrait) => {
+    setDeleteConfirm({ type: 'customTrait', traitId: trait.id, label: trait.label });
   };
 
   const beginCustomBirthOriginEdit = (option: OpeningCharacterOption) => {
@@ -1415,20 +1709,160 @@ export const StartScreen: React.FC = () => {
                 </span>
                 <span className="save-item-time">保存于 {formatSaveTime(save.updatedAt)}</span>
               </button>
-              <button
-                type="button"
-                className="save-item-delete"
-                title="删除此存档"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  handleDeleteSingleSave(save.id);
-                }}
-              >
-                ✕
-              </button>
+              <span className="save-item-actions">
+                {cloudSession?.authenticated && (
+                  <button
+                    type="button"
+                    className="save-item-cloud-action"
+                    disabled={cloudBusyId === save.id}
+                    title="上传或更新此云存档"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void handleUploadCloudSave(save.id);
+                    }}
+                  >
+                    {cloudBusyId === save.id ? '上传中' : cloudSaves.some((item) => item.slotId === save.id) ? '更新云端' : '上传云端'}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="save-item-delete"
+                  title="删除此存档"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    handleDeleteSingleSave(save.id);
+                  }}
+                >
+                  ✕
+                </button>
+              </span>
             </div>
           ))
         )}
+      </div>
+    </div>
+  );
+
+  const renderCloudSaveList = () => {
+    if (!cloudSession) {
+      return <div className="cloud-save-empty"><p>正在检查云存档服务……</p></div>;
+    }
+    if (!cloudSession.configured) {
+      return <div className="cloud-save-empty"><p>云存档数据库尚未配置；本地存档仍可正常使用。</p></div>;
+    }
+    if (!cloudSession.authConfigured) {
+      return <div className="cloud-save-empty"><p>云存档已接入，尚需维护者完成 Discord OAuth 配置。</p></div>;
+    }
+    if (!cloudSession.authenticated) {
+      return (
+        <div className="cloud-save-empty">
+          <p>登录 Discord 后，可在电脑与手机之间同步存档。</p>
+          <button type="button" className="nav-btn primary" onClick={() => startDiscordCloudLogin('/?cloud=1')}>
+            登录 Discord
+          </button>
+          <small>只请求基础身份，不读取聊天内容，也不会自动加入服务器。</small>
+        </div>
+      );
+    }
+    if (cloudSaves.length === 0) {
+      return (
+        <div className="cloud-save-empty">
+          <p>云端暂无存档。切回“本地存档”，选择需要上传的槽位。</p>
+        </div>
+      );
+    }
+    return (
+      <div className="cloud-save-list">
+        {cloudSaves.map((save) => (
+          <article key={save.slotId} className="cloud-save-item">
+            <div className="cloud-save-item-main">
+              <div className="cloud-save-item-head">
+                <strong>{save.metadata.playerName || save.metadata.label || '未命名角色'}</strong>
+                <span>云端第 {save.revision} 版</span>
+              </div>
+              <p>
+                {save.metadata.currentDate && `${save.metadata.currentDate} · `}
+                {save.metadata.locationName && `${save.metadata.locationName} · `}
+                第 {save.metadata.turnCount} 回合
+              </p>
+              <small>
+                上传于 {formatSaveTime(save.updatedAt)} · {formatCloudBytes(save.sizeBytes)}
+              </small>
+            </div>
+            <div className="cloud-save-item-actions">
+              <button
+                type="button"
+                className="nav-btn primary"
+                disabled={cloudBusyId === save.slotId}
+                onClick={() => void handleDownloadCloudSave(save)}
+              >
+                {cloudBusyId === save.slotId ? '处理中…' : '下载到本机'}
+              </button>
+              <button
+                type="button"
+                className="nav-btn danger"
+                disabled={cloudBusyId === save.slotId}
+                onClick={() => void handleDeleteCloudSave(save)}
+              >
+                删除云端
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
+    );
+  };
+
+  const renderSaveSourceBar = () => (
+    <div className="save-source-bar">
+      <div className="save-source-tabs" role="tablist" aria-label="存档来源">
+        <button
+          type="button"
+          className={saveSource === 'local' ? 'active' : ''}
+          aria-selected={saveSource === 'local'}
+          onClick={() => setSaveSource('local')}
+        >
+          本地存档 <span>{saveItems.length}</span>
+        </button>
+        <button
+          type="button"
+          className={saveSource === 'cloud' ? 'active' : ''}
+          aria-selected={saveSource === 'cloud'}
+          onClick={() => {
+            setSaveSource('cloud');
+            void refreshCloudSaves();
+          }}
+        >
+          云端存档 <span>{cloudSaves.length}</span>
+        </button>
+      </div>
+      <div className="save-cloud-summary">
+        {cloudSession?.authenticated && cloudSession.account ? (
+          <>
+            <strong>{cloudSession.account.displayName}</strong>
+            <span>{formatCloudBytes(cloudUsage?.usedBytes ?? 0)} / {formatCloudBytes(cloudUsage?.limitBytes ?? 0)}</span>
+          </>
+        ) : (
+          <span>云存档为可选功能，本地模式始终可用</span>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderSaveModalBody = () => saveSource === 'cloud' ? (
+    <div className="save-modal-body save-modal-body--cloud">
+      {renderCloudSaveList()}
+    </div>
+  ) : (
+    <div className="save-modal-body">
+      <div className="save-section">
+        <h3 className="save-section-title"><span>手动存档</span><span className="save-section-count">{manualSaves.length}</span></h3>
+        {renderSaveList(manualSaves, '暂无手动存档')}
+      </div>
+      <div className="save-section-divider" />
+      <div className="save-section">
+        <h3 className="save-section-title"><span>自动存档</span><span className="save-section-count">{autoSaves.length}</span></h3>
+        {renderSaveList(autoSaves, '暂无自动存档')}
       </div>
     </div>
   );
@@ -1459,17 +1893,8 @@ export const StartScreen: React.FC = () => {
           </div>
           <button className="save-modal-close" onClick={onClose}>✕</button>
         </div>
-        <div className="save-modal-body">
-          <div className="save-section">
-            <h3 className="save-section-title"><span>手动存档</span><span className="save-section-count">{manualSaves.length}</span></h3>
-            {renderSaveList(manualSaves, '暂无手动存档')}
-          </div>
-          <div className="save-section-divider" />
-          <div className="save-section">
-            <h3 className="save-section-title"><span>自动存档</span><span className="save-section-count">{autoSaves.length}</span></h3>
-            {renderSaveList(autoSaves, '暂无自动存档')}
-          </div>
-        </div>
+        {renderSaveSourceBar()}
+        {renderSaveModalBody()}
         {saveStatus && <p className="save-modal-status">{saveStatus}</p>}
       </section>
     </div>
@@ -1490,17 +1915,8 @@ export const StartScreen: React.FC = () => {
           </div>
           <button className="save-modal-close" onClick={onClose}>✕</button>
         </div>
-        <div className="save-modal-body">
-          <div className="save-section">
-            <h3 className="save-section-title"><span>手动存档</span><span className="save-section-count">{manualSaves.length}</span></h3>
-            {renderSaveList(manualSaves, '暂无手动存档')}
-          </div>
-          <div className="save-section-divider" />
-          <div className="save-section">
-            <h3 className="save-section-title"><span>自动存档</span><span className="save-section-count">{autoSaves.length}</span></h3>
-            {renderSaveList(autoSaves, '暂无自动存档')}
-          </div>
-        </div>
+        {renderSaveSourceBar()}
+        {renderSaveModalBody()}
         {saveStatus && <p className="save-modal-status">{saveStatus}</p>}
       </section>
     </div>
@@ -1578,7 +1994,7 @@ export const StartScreen: React.FC = () => {
             <div>
               <p>{isSaveMode ? 'CHARACTER ARCHIVE' : 'CHARACTER LIBRARY'}</p>
               <h2>{isSaveMode ? '保存开局人物' : '读取开局人物'}</h2>
-              <span>只保存人物档案；当前剧本、日期、地点与剧情要求不会被覆盖。</span>
+              <span>保存人物档案；已填写的开局额外要求也会一并保存，当前剧本、日期与地点不会改变。</span>
             </div>
             <button type="button" className="save-modal-close" onClick={() => setCharacterTemplateModal(null)}>✕</button>
           </header>
@@ -1627,6 +2043,8 @@ export const StartScreen: React.FC = () => {
     if (!deleteConfirm) return '';
 
     switch (deleteConfirm.type) {
+      case 'customTrait':
+        return '删除自定义特质';
       case 'customBirthOrigin':
         return '\u5220\u9664\u81ea\u5b9a\u4e49\u51fa\u8eab';
       case 'customIdentity':
@@ -1646,6 +2064,8 @@ export const StartScreen: React.FC = () => {
         return '\u786e\u5b9a\u8981\u5220\u9664\u8fd9\u4e2a\u5b58\u6863\u5417\uff1f\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\u3002';
       case 'all':
         return '\u786e\u5b9a\u8981\u6e05\u9664\u5168\u90e8\u5b58\u6863\u5417\uff1f\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\u3002';
+      case 'customTrait':
+        return `确定要删除自定义特质“${deleteConfirm.label}”吗？此操作不可恢复，并会从本次已选特质中移除。`;
       case 'customBirthOrigin':
         return '\u786e\u5b9a\u8981\u5220\u9664\u81ea\u5b9a\u4e49\u51fa\u8eab\u300c' + deleteConfirm.label + '\u300d\u5417\uff1f\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\u3002';
       case 'customIdentity':
@@ -2009,7 +2429,7 @@ export const StartScreen: React.FC = () => {
                         />
                       </label>
                     </div>
-                    <div className="form-grid two">
+                    <div className="form-grid opening-demographics-grid">
                       <label>
                         性别
                         <div className="sex-toggle">
@@ -2022,7 +2442,22 @@ export const StartScreen: React.FC = () => {
                         年龄
                         <input type="number" min={1} max={120} value={playerAge} onChange={(event) => setPlayerAge(Number(event.target.value))} className="age-input" />
                       </label>
+                      <label>
+                        出生月
+                        <select value={playerBirthMonth} onChange={(event) => setPlayerBirthMonth(Number(event.target.value))}>
+                          {openingBirthMonths.map((month) => <option key={month} value={month}>{month}月</option>)}
+                        </select>
+                      </label>
+                      <label>
+                        出生日
+                        <select value={playerBirthDay} onChange={(event) => setPlayerBirthDay(Number(event.target.value))}>
+                          {openingBirthDays.map((day) => <option key={day} value={day}>{day}日</option>)}
+                        </select>
+                      </label>
                     </div>
+                    <p className="opening-derived-birth-date">
+                      推导出生日期：<strong>{derivedPlayerBirthDate ?? '请先选择有效年龄与开局剧本'}</strong>
+                    </p>
                     <div className="setup-section">
                       <label>外貌</label>
                       <textarea value={playerAppearance} onChange={(event) => setPlayerAppearance(event.target.value)} className="story-textarea compact" placeholder="例：黑发黑眸，面容清秀，衣着朴素利落。" />
@@ -2047,8 +2482,8 @@ export const StartScreen: React.FC = () => {
                       </div>
                       <div className="ability-budget" data-testid="opening-ability-budget" aria-live="polite">
                         <span>可分配点数</span>
-                        <strong>{remainingAbilityPoints} / {OPENING_ABILITY_POINT_BUDGET}</strong>
-                        <small>按住 + / − 可快速调整</small>
+                        <strong>{remainingAbilityPoints}</strong>
+                        <small>降低初始能力会返还点数；按住 + / − 可快速调整</small>
                       </div>
                       <div className="ability-grid">
                         {visibleAbilityEntries.map(([key, value]) => (
@@ -2172,16 +2607,31 @@ export const StartScreen: React.FC = () => {
                   <div className="trait-grid">
                     {(openingCharacterOptions.traits ?? []).map((trait) => {
                       const isTraitSelected = selectedTraitIds.includes(trait.id);
+                      const isCustom = isCustomOpeningTrait(trait);
                       return (
-                        <OpeningTraitButton
-                          key={trait.id}
-                          trait={trait}
-                          selected={isTraitSelected}
-                          onToggle={handleToggleTrait}
-                        />
+                        <div key={trait.id} className={`trait-card-wrap ${isCustom ? 'custom-trait-card' : ''}`}>
+                          <OpeningTraitButton
+                            trait={trait}
+                            selected={isTraitSelected}
+                            onToggle={handleToggleTrait}
+                          />
+                          {isCustom && (
+                            <div className="custom-card-actions">
+                              <button type="button" onClick={() => beginCustomTraitEdit(trait)}>编辑</button>
+                              <button type="button" className="danger" onClick={() => handleDeleteCustomTrait(trait)}>删除</button>
+                            </div>
+                          )}
+                        </div>
                       );
                     })}
-                    <button className="trait-chip add-card trait-rarity-pending" onClick={() => setShowCustomTraitForm(true)}>
+                    <button
+                      className="trait-chip add-card trait-rarity-pending"
+                      onClick={() => {
+                        setEditingCustomTraitId(null);
+                        setCustomTraitDraft({ label: '', description: '' });
+                        setShowCustomTraitForm(true);
+                      }}
+                    >
                       + 自定义特质
                     </button>
                   </div>
@@ -2198,8 +2648,8 @@ export const StartScreen: React.FC = () => {
                         placeholder="特质描述，会进入开局 prompt，并影响 LLM 如何理解主角。"
                       />
                       <div>
-                        <button className="nav-btn" onClick={handleAddCustomTrait} disabled={!customTraitDraft.label.trim()}>保存特质</button>
-                        <button className="nav-btn back" onClick={() => setShowCustomTraitForm(false)}>取消</button>
+                        <button className="nav-btn" onClick={handleAddCustomTrait} disabled={!customTraitDraft.label.trim()}>{editingCustomTraitId ? '保存修改' : '保存特质'}</button>
+                        <button className="nav-btn back" onClick={cancelCustomTraitEdit}>取消</button>
                       </div>
                     </div>
                   )}
@@ -2310,6 +2760,108 @@ export const StartScreen: React.FC = () => {
 
             {step === 6 && worldBook && (
               <div className="confirm-section">
+                <section className="setup-section opening-difficulty-section">
+                  <div className="opening-difficulty-heading">
+                    <div>
+                      <h2>选择本局难度</h2>
+                      <p className="section-hint">
+                        三项难度分别保存到本存档；只影响之后新发生的普通判定、个人战或战争，不会重算已有结果。
+                      </p>
+                    </div>
+                    <span>默认：标准</span>
+                  </div>
+                  <h3 className="opening-difficulty-subtitle">普通判定难度</h3>
+                  <div
+                    className="opening-difficulty-grid"
+                    role="radiogroup"
+                    aria-label="本局游戏难度"
+                  >
+                    {gameDifficultyProfiles.map((profile) => (
+                      <button
+                        key={profile.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={profile.id === gameDifficulty}
+                        className={`opening-difficulty-card${profile.id === gameDifficulty ? ' selected' : ''}`}
+                        onClick={() => setGameDifficulty(profile.id)}
+                      >
+                        <span>
+                          <strong>{profile.label}</strong>
+                          <em>
+                            Y{profile.difficultyOffset >= 0 ? '+' : ''}
+                            {profile.difficultyOffset}
+                          </em>
+                        </span>
+                        <small>{profile.summary}</small>
+                      </button>
+                    ))}
+                  </div>
+                  <h3 className="opening-difficulty-subtitle">个人战斗难度</h3>
+                  <div className="opening-difficulty-grid" role="radiogroup" aria-label="本局个人战斗难度">
+                    {combatDifficultyProfiles.map((profile) => (
+                      <button
+                        key={profile.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={profile.id === combatDifficulty}
+                        className={`opening-difficulty-card${profile.id === combatDifficulty ? ' selected' : ''}`}
+                        onClick={() => setCombatDifficulty(profile.id)}
+                      >
+                        <span><strong>{profile.label}</strong><em>×{profile.playerPowerMultiplier.toFixed(2)}</em></span>
+                        <small>{profile.summary}</small>
+                      </button>
+                    ))}
+                  </div>
+                  <h3 className="opening-difficulty-subtitle">战争难度</h3>
+                  <div className="opening-difficulty-grid" role="radiogroup" aria-label="本局战争难度">
+                    {warDifficultyProfiles.map((profile) => (
+                      <button
+                        key={profile.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={profile.id === warDifficulty}
+                        className={`opening-difficulty-card${profile.id === warDifficulty ? ' selected' : ''}`}
+                        onClick={() => setWarDifficulty(profile.id)}
+                      >
+                        <span><strong>{profile.label}</strong><em>×{profile.playerPowerMultiplier.toFixed(2)}</em></span>
+                        <small>{profile.summary}</small>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+                <section className="setup-section opening-difficulty-section">
+                  <div className="opening-difficulty-heading">
+                    <div>
+                      <h2>选择正文叙事人称</h2>
+                      <p className="section-hint">
+                        只改变【旁白】对主角的称呼；不会替主角补写对白、心理决定或额外行动。
+                      </p>
+                    </div>
+                    <span>默认：第二人称</span>
+                  </div>
+                  <div
+                    className="opening-difficulty-grid opening-perspective-grid"
+                    role="radiogroup"
+                    aria-label="开局正文叙事人称"
+                  >
+                    {narrativePerspectiveProfiles.map((profile) => (
+                      <button
+                        key={profile.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={profile.id === narrativePerspective}
+                        className={`opening-difficulty-card${profile.id === narrativePerspective ? ' selected' : ''}`}
+                        onClick={() => setNarrativePerspective(profile.id)}
+                      >
+                        <span>
+                          <strong>{profile.label}</strong>
+                          <em>{profile.marker}</em>
+                        </span>
+                        <small>{profile.summary}</small>
+                      </button>
+                    ))}
+                  </div>
+                </section>
                 <div className="setup-section">
                   <label>开局额外要求</label>
                   <textarea
@@ -2327,12 +2879,26 @@ export const StartScreen: React.FC = () => {
                   <p><strong>角色姓名：</strong>{playerMode === 'historical' ? historicalName : playerName || '无名氏'}</p>
                   {playerCourtesyName && <p><strong>字：</strong>{playerCourtesyName}</p>}
                   <p><strong>性别年龄：</strong>{playerSex}，{playerAge}岁</p>
+                  <p><strong>出生日期：</strong>{derivedPlayerBirthDate ?? '尚未推导'}</p>
                   <p><strong>出身：</strong>{selectedBirthLabel}</p>
                   <p><strong>身份：</strong>{selectedIdentityLabel}</p>
                   <p><strong>初始地点：</strong>{selectedLocationName}</p>
                   <p><strong>能力：</strong>{visibleAbilityEntries.map(([key, value]) => `${key}${value}`).join('、')}</p>
                   <p><strong>特质：</strong>{selectedTraits.length > 0 ? selectedTraits.map((trait) => trait.label).join('、') : '未选择'}</p>
-                  <p><strong>行装：</strong>由真开局 AI 根据出身、身份、地点与额外要求生成并写回</p>
+                  <p>
+                    <strong>本局难度：</strong>
+                    {selectedGameDifficulty.label}
+                    （普通判定难度 Y
+                    {selectedGameDifficulty.difficultyOffset >= 0 ? '+' : ''}
+                    {selectedGameDifficulty.difficultyOffset}）
+                  </p>
+                  <p><strong>个人战斗难度：</strong>{selectedCombatDifficulty.label}（我方修正 ×{selectedCombatDifficulty.playerPowerMultiplier.toFixed(2)}）</p>
+                  <p><strong>战争难度：</strong>{selectedWarDifficulty.label}（我方有效战力 ×{selectedWarDifficulty.playerPowerMultiplier.toFixed(2)}）</p>
+                  <p>
+                    <strong>叙事人称：</strong>
+                    {selectedNarrativePerspective.label}（{selectedNarrativePerspective.marker}）
+                  </p>
+                  <p><strong>行装：</strong>根据出身、身份、地点与额外要求，随开场剧情一并确定</p>
                   {playerExtraRequest.trim() && <p><strong>额外要求：</strong>{playerExtraRequest.trim()}</p>}
                 </div>
                 {openingPreview && (
@@ -2342,7 +2908,7 @@ export const StartScreen: React.FC = () => {
                       <div className="preview-card"><span>玩家</span><strong>{openingPreview.player.name}</strong><p>{openingPreview.player.summary}</p></div>
                       <div className="preview-card"><span>地点账本</span><strong>{openingPreview.locations?.[0]?.name ?? '未知地点'}</strong><p>{openingPreview.locations?.[0]?.summary ?? '尚无地点记录'}</p></div>
                       <div className="preview-card"><span>主角档案</span><strong>Lv.{openingPreview.player.level ?? 1} · 生命 {openingPreview.player.vitals?.hp ?? 100}/{openingPreview.player.vitals?.maxHp ?? 100}</strong><p>{openingPreview.player.traits?.map((trait) => trait.label).join('、') || '无特质'}</p></div>
-                      <div className="preview-card"><span>行装</span><strong>真开局 AI 待生成</strong><p>钱财、装备、背包会在真开局响应中通过 updatePlayerLoadout 写回。</p></div>
+                      <div className="preview-card"><span>行装</span><strong>随开场剧情生成</strong><p>钱财、装备与随身物品会结合人物身份和开局处境一并确定。</p></div>
                       <div className="preview-card"><span>当前局势</span><strong>{openingPreview.situationOverview?.immediateHooks[0] ?? '待生成'}</strong><p>{openingPreview.situationOverview?.currentPressure[0] ?? '尚无压力记录'}</p></div>
                     </div>
                     <div className="preview-list"><span>任务日志</span><strong>{openingPreview.activeQuests[0]?.title ?? '无任务'}</strong><p>{openingPreview.activeQuests[0]?.description ?? '尚无任务描述'}</p></div>

@@ -9,20 +9,27 @@ import type {
   CharacterTrait,
   CharacterUniqueArt,
   CharacterVitals,
+  BondThreadEntry,
+  CorrespondenceCommitmentDeliverable,
   InventoryItem,
   LuanShiNpcFemaleProfile,
   MapLayerKind,
   MapRouteEdgeV1,
   NpcAwarenessReference,
+  NpcProfilePersistenceReason,
+  PersonalEscortEntitlement,
+  PrivateAssetEntry,
   StatePatch,
   SuggestedAction,
   TurnOrdinaryCheck,
 } from '../types';
 import type {
   EncounterStartIntent,
+  EncounterTransitionDecision,
   SemanticProjection,
 } from '../encounterV2/EncounterContracts';
 import type { ActionIntent } from '../types';
+import type { PlayerRecoveryKind } from '../character/PlayerRecoveryContracts';
 import type { CharacterIdentityUpdateFields } from '../state/luanshiCommands';
 import { interpretAction } from './ActionInterpreter';
 
@@ -35,6 +42,171 @@ export interface NarratorTurnSummaryWriteback {
   visibleConsequence?: string;
   /** 记忆重要性只用于后续筛选，不直接决定剧情。 */
   memoryImportance?: 'low' | 'medium' | 'high';
+  /**
+   * 本回合结束时玩家当前场景的完整 NPC 在场名单。
+   * 这是结构化场景真值，不包含同城、远场关注或仅通过书信出现的人物。
+   */
+  scenePresence?: NarratorScenePresenceSnapshot;
+  /**
+   * 本回合已经完成、应进入私人产业账本的产权取得事实。
+   * 这里只提供事实门禁与稳定来源，不直接绕过严格的私产命令校验。
+   */
+  privateAssetAcquisitions?: NarratorPrivateAssetAcquisitionFact[];
+  /**
+   * 本回合已经成立的稳定身份变化事实。
+   * 本地只按该结构化事实补齐严格命令，不从正文关键词推断身份变化。
+   */
+  identityChanges?: NarratorIdentityChangeFact[];
+  /**
+   * 本回合已经跨过人物志长期准入边界的新人物事实。
+   * 当完整人物档案遗漏或未通过合同时，辅助建档只依据这里的结构化事实补全，
+   * 不扫描正文猜测人物重要性。
+   */
+  npcAdmissions?: NarratorNpcAdmissionFact[];
+  /**
+   * 本回合已经成立、应进入红颜或羁绊账本的长期关系事实。
+   * 本地只按该结构化事实补齐严格关系命令，不从正文关键词推断关系成立。
+   */
+  relationshipAdmissions?: NarratorRelationshipAdmissionFact[];
+  /**
+   * 正文已真实完成的寄信、回信或收信处理。书信正文只能从此结构化事实进入账本，
+   * 本地不扫描 narrativeText 猜测。
+   */
+  correspondenceActions?: NarratorCorrespondenceActionFact[];
+  /** 到期承诺在本回合正文中的结构化结算；本地会原子结算可确定的资源、人员与既有部队。 */
+  commitmentResolutions?: NarratorCommitmentResolutionFact[];
+}
+
+export interface NarratorScenePresenceSnapshot {
+  /** 本回合结束时的当前场景 ID；地点切换时应对应最终 toSceneId/toLocationId。 */
+  locationId: string;
+  /** 已有人物志稳定 NPC ID 的完整名单；无人时必须明确返回空数组。 */
+  presentNpcIds: string[];
+}
+
+export interface NarratorNpcAdmissionFact {
+  sourceRefId: string;
+  npcId: string;
+  name: string;
+  persistenceReason: NpcProfilePersistenceReason;
+  persistenceEvidence: string;
+  summary: string;
+}
+
+export interface NarratorCorrespondenceCommitmentFact {
+  commitmentId: string;
+  summary: string;
+  targetLocationId: string;
+  expectedAt: string;
+  originLocationId?: string;
+  deliverables: CorrespondenceCommitmentDeliverable[];
+  conditions?: string[];
+}
+
+export interface NarratorCorrespondenceActionFact {
+  sourceRefId: string;
+  action: 'send' | 'reply' | 'acknowledge' | 'noReply';
+  /** noReply 必须引用已经送达并等待 NPC 处理的玩家来信；acknowledge 仅兼容旧输出且不会关闭待回信状态。 */
+  sourceLetterId?: string;
+  /** 对被处理原信的简短事实概括；用于 NPC 长期记忆，不得复制原信或包含内部 ID。 */
+  sourceLetterSummary?: string;
+  /** 新建书信的稳定 ID；重试时必须保持不变。 */
+  letterId?: string;
+  direction?: 'player_to_npc' | 'npc_to_player';
+  /**
+   * sent 表示本回合只完成寄出，仍需按路程投递；received 表示最终正文已经明确展示
+   * 收件人实际收到/拆阅该信，本地必须立即落为已送达，不能再次制造一段虚假的在途时间。
+   */
+  deliveryState?: 'sent' | 'received';
+  senderNpcId?: string;
+  recipientNpcId?: string;
+  subject?: string;
+  body?: string;
+  summary?: string;
+  replyToLetterId?: string;
+  channel?: 'letter' | 'envoy';
+  originLocationId?: string;
+  targetLocationId?: string;
+  /** 本信直接讨论或提醒的既有承诺；用于承诺结束后取消尚未送达的过期提醒。 */
+  relatedCommitmentIds?: string[];
+  commitments?: NarratorCorrespondenceCommitmentFact[];
+}
+
+export interface NarratorCommitmentResolutionFact {
+  sourceRefId: string;
+  commitmentId: string;
+  status: 'fulfilled' | 'partial' | 'delayed' | 'failed' | 'cancelled';
+  summary: string;
+  nextExpectedAt?: string;
+  /** partial 必须列出本次真正交付的承诺子集/数量。 */
+  deliveredDeliverables?: CorrespondenceCommitmentDeliverable[];
+  appliedOperationIds?: string[];
+}
+
+export type NarratorRelationshipAdmissionFact =
+  | NarratorHeroineRelationshipAdmissionFact
+  | NarratorBondRelationshipAdmissionFact;
+
+export interface NarratorHeroineRelationshipAdmissionFact {
+  sourceRefId: string;
+  relationshipKind: 'heroine';
+  npcId: string;
+  stage: string;
+  relationshipRole: string;
+  summary: string;
+  currentPull?: string;
+  riskNotes?: string;
+  promiseNotes?: string;
+  source?: string;
+}
+
+export interface NarratorBondRelationshipAdmissionFact {
+  sourceRefId: string;
+  relationshipKind: 'bond';
+  targetNpcIds?: string[];
+  targetNames: string[];
+  bondType: BondThreadEntry['bondType'];
+  summary: string;
+  currentTension?: string;
+  promiseNotes?: string;
+  conflictNotes?: string;
+  source?: string;
+}
+
+export interface NarratorPrivateAssetAcquisitionFact {
+  sourceRefId: string;
+  /** 完整字段存在时，本地可直接物化严格私产命令；旧响应可继续只提供事实门禁字段。 */
+  privateAssetId?: string;
+  assetName: string;
+  type?: PrivateAssetEntry['type'];
+  ownerScope?: PrivateAssetEntry['ownerScope'];
+  status?: PrivateAssetEntry['status'];
+  kind: 'purchase' | 'grant' | 'inheritance' | 'construction' | 'seizure' | 'transfer';
+  summary: string;
+  locationId?: string;
+  locationDescription?: string;
+  managerNpcId?: string;
+  mu?: number;
+  households?: number;
+  workers?: number;
+  workshopScale?: PrivateAssetEntry['workshopScale'];
+  ranchCapacity?: number;
+  costMoney?: number;
+  costGrain?: number;
+}
+
+export interface NarratorIdentityChangeFact extends Omit<
+  CharacterIdentityUpdateFields,
+  'currentIdentity' | 'currentIdentityDescription' | 'identitySummary' | 'personalEscortEntitlement'
+> {
+  sourceRefId: string;
+  characterType: 'player' | 'npc';
+  characterId: string;
+  currentIdentity: string;
+  currentIdentityDescription: string;
+  identitySummary: string;
+  summary: string;
+  personalEscortEntitlement?: Omit<PersonalEscortEntitlement, 'updatedAt'>;
 }
 
 export interface NarratorProtagonistMemoryWriteback {
@@ -45,6 +217,7 @@ export interface NarratorProtagonistMemoryWriteback {
     locationId?: string;
   };
 }
+
 export type NarratorProtagonistProfileWriteback = CharacterIdentityUpdateFields;
 
 export interface NarratorNpcMemorySuggestion {
@@ -58,12 +231,18 @@ export interface NarratorNpcMemorySuggestion {
 export interface NarratorNpcProfileSuggestion {
   npcId: string;
   name: string;
+  /** 仅新建人物必填；已有 npcId/稳定身份更新时可省略。 */
+  persistenceReason?: NpcProfilePersistenceReason;
+  /** 仅新建人物必填；简述本回合中已经成立的长期承接事实。 */
+  persistenceEvidence?: string;
   courtesyName?: string | null;
   artName?: string | null;
   aliases?: string[] | null;
   commonAddress?: string | null;
   sex: '男' | '女' | '其他';
   age: number;
+  birthDate?: string | null;
+  ageKnownAtDate?: string | null;
   role: string;
   factionId?: string | null;
   factionName?: string | null;
@@ -255,12 +434,21 @@ export interface NarratorWorldEventUpdate {
   archiveReason?: string;
 }
 
+export interface NarratorFactionRecentActionSuggestion {
+  factionId: string;
+  summary: string;
+  knownLevel: '亲历' | '听闻' | '推测';
+  observedAt?: string;
+  sourceNote?: string;
+}
+
 export interface NarratorWritebackProtocol {
   turnSummary?: NarratorTurnSummaryWriteback | null;
   protagonistProfile?: NarratorProtagonistProfileWriteback | null;
   protagonistMemory?: NarratorProtagonistMemoryWriteback | null;
   npcProfileSuggestions?: NarratorNpcProfileSuggestion[];
   npcMemorySuggestions: NarratorNpcMemorySuggestion[];
+  factionRecentActionSuggestions?: NarratorFactionRecentActionSuggestion[];
   locationWriteSuggestions: NarratorLocationWriteSuggestion[];
   routeWriteSuggestions: NarratorRouteWriteSuggestion[];
   questChanges: NarratorQuestChangeSuggestion[];
@@ -268,6 +456,13 @@ export interface NarratorWritebackProtocol {
   plotPlanSuggestions?: NarratorPlotPlanSuggestion[];
   worldEventUpdates?: NarratorWorldEventUpdate[];
   worldEventSummary?: NarratorWorldEventSummary | null;
+  /** Required semantic routing decision for the current narrative boundary. */
+  encounterTransitionDecision?: EncounterTransitionDecision | null;
+  /**
+   * Main-narrator semantic authority for completed recovery in this turn.
+   * Local runtime owns all numeric HP/stamina settlement.
+   */
+  playerRecoveryKind?: PlayerRecoveryKind;
   /** Combat/War V2 only starts a local rules session; it never carries a model-authored outcome. */
   encounterStartIntent?: EncounterStartIntent | null;
   /** Persisted, locally validated candidates keyed by the stable sourceId of a trait/art/item/equipment entry. */
@@ -306,7 +501,30 @@ export function generateMockNarrative(context: MockContext): NarratorResponse {
 
   // 随机选取一个变体
   const idx = Math.floor(Math.random() * responses.length);
-  return responses[idx];
+  const response = responses[idx];
+  return {
+    ...response,
+    writeback: {
+      turnSummary: null,
+      protagonistProfile: null,
+      protagonistMemory: null,
+      npcProfileSuggestions: [],
+      npcMemorySuggestions: [],
+      factionRecentActionSuggestions: [],
+      locationWriteSuggestions: [],
+      routeWriteSuggestions: [],
+      questChanges: [],
+      signalChanges: [],
+      plotPlanSuggestions: [],
+      worldEventUpdates: [],
+      worldEventSummary: null,
+      encounterTransitionDecision: null,
+      encounterStartIntent: null,
+      semanticProjections: [],
+      playerRecoveryKind: intent === 'rest' ? 'rest' : 'none',
+      debugNotes: [],
+    },
+  };
 }
 
 function getResponsesByIntent(
@@ -390,7 +608,6 @@ function generateInquireResponses(ctx: MockContext): NarratorResponse[] {
     },
   }];
 }
-
 /** 互动类行动 */
 function generateInteractResponses(ctx: MockContext): NarratorResponse[] {
   const encounters = [
@@ -428,7 +645,6 @@ function generateInteractResponses(ctx: MockContext): NarratorResponse[] {
     },
   }];
 }
-
 /** 休息类行动 */
 function generateRestResponses(ctx: MockContext): NarratorResponse[] {
   return [{
@@ -444,7 +660,6 @@ function generateRestResponses(ctx: MockContext): NarratorResponse[] {
     },
   }];
 }
-
 /** 交易类行动 */
 function generateTradeResponses(ctx: MockContext): NarratorResponse[] {
   return [{
@@ -466,7 +681,6 @@ function generateTradeResponses(ctx: MockContext): NarratorResponse[] {
     },
   }];
 }
-
 /** 探索类行动 */
 function generateExploreResponses(ctx: MockContext): NarratorResponse[] {
   return [{
@@ -483,7 +697,6 @@ function generateExploreResponses(ctx: MockContext): NarratorResponse[] {
     },
   }];
 }
-
 /** 战斗类行动 */
 function generateCombatResponses(): NarratorResponse[] {
   return [{
@@ -499,7 +712,6 @@ function generateCombatResponses(): NarratorResponse[] {
     },
   }];
 }
-
 /** 默认响应 */
 function generateDefaultResponses(ctx: MockContext): NarratorResponse[] {
   return [{

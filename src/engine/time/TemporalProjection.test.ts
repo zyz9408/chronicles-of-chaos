@@ -93,6 +93,30 @@ describe('buildTemporalProjection', () => {
     expect(projection.text).toContain('foreshadow only');
   });
 
+  it.each(['已完成', '废弃'] as const)(
+    'does not project closed plot plans with status %s',
+    (status) => {
+      const state = makeState({
+        plotPlan: [
+          {
+            plotId: `plot_closed_${status}`,
+            title: 'Closed plot plan',
+            horizon: '中期',
+            status,
+            description: 'This plan must no longer enter temporal projection.',
+            priority: '高',
+            notBeforeAt: '0189-09-20 08:00',
+          },
+        ],
+      });
+
+      const projection = buildTemporalProjection(state);
+
+      expect(projection.lines).toEqual([]);
+      expect(projection.text).toBe('');
+    },
+  );
+
   it('keeps happenedAt and learnedAt distinct for delayed world chronicles', () => {
     const state = makeState({
       worldTrends: [

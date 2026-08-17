@@ -25,6 +25,27 @@ describe('gameClock', () => {
     expect(formatGameClock(clock)).toBe('公元189年09月01日 08:00（辰时）');
   });
 
+  it.each([
+    ['207年春', 1],
+    ['207年夏', 4],
+    ['207年秋', 7],
+    ['207年冬', 10],
+  ])('anchors the seasonal date %s to the first month of that season', (label, month) => {
+    const clock = createGameClockFromDateLabel(label);
+
+    expect(clock).toMatchObject({ year: 207, month, day: 1, hour: 8, minute: 0 });
+  });
+
+  it('keeps a recognizable historical year when the label omits both month and season', () => {
+    expect(createGameClockFromDateLabel('公元207年')).toMatchObject({
+      year: 207,
+      month: 1,
+      day: 1,
+      hour: 8,
+      minute: 0,
+    });
+  });
+
   it('advances by ancient time blocks and updates day/month rollover', () => {
     const clock = createGameClockFromDateLabel('公元189年09月30日 22:00（亥时）');
     const next = advanceGameClock(clock, { timeBlocksAdvanced: 2 });

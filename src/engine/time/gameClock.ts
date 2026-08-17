@@ -35,6 +35,12 @@ const MONTHS_PER_YEAR = 12;
 const MINUTES_PER_HOUR = 60;
 const MINUTES_PER_DAY = 24 * MINUTES_PER_HOUR;
 const MINUTES_PER_TIME_BLOCK = 2 * MINUTES_PER_HOUR;
+const SEASON_START_MONTH = {
+  春: 1,
+  夏: 4,
+  秋: 7,
+  冬: 10,
+} as const;
 
 const ancientTimeNames = [
   '子时',
@@ -75,6 +81,34 @@ export function tryCreateGameClockFromDateLabel(dateLabel: string): GameClock | 
       day: chineseMatch[3] ? Number(chineseMatch[3]) : DEFAULT_DAY,
       hour: chineseMatch[4] ? Number(chineseMatch[4]) : DEFAULT_HOUR,
       minute: chineseMatch[5] ? Number(chineseMatch[5]) : DEFAULT_MINUTE,
+    });
+  }
+
+  const chineseSeasonMatch = normalized.match(
+    /^(?:公元)?\s*(\d+)\s*年\s*(春|夏|秋|冬)(?:季)?(?:\s*(\d{1,2}):(\d{1,2}))?(?:\s*（[^）]+）)?\s*$/,
+  );
+
+  if (chineseSeasonMatch) {
+    return buildGameClock({
+      year: Number(chineseSeasonMatch[1]),
+      month: SEASON_START_MONTH[chineseSeasonMatch[2] as keyof typeof SEASON_START_MONTH],
+      day: DEFAULT_DAY,
+      hour: chineseSeasonMatch[3] ? Number(chineseSeasonMatch[3]) : DEFAULT_HOUR,
+      minute: chineseSeasonMatch[4] ? Number(chineseSeasonMatch[4]) : DEFAULT_MINUTE,
+    });
+  }
+
+  const chineseYearMatch = normalized.match(
+    /^(?:公元)?\s*(\d+)\s*年(?:\s*(\d{1,2}):(\d{1,2}))?(?:\s*（[^）]+）)?\s*$/,
+  );
+
+  if (chineseYearMatch) {
+    return buildGameClock({
+      year: Number(chineseYearMatch[1]),
+      month: 1,
+      day: DEFAULT_DAY,
+      hour: chineseYearMatch[2] ? Number(chineseYearMatch[2]) : DEFAULT_HOUR,
+      minute: chineseYearMatch[3] ? Number(chineseYearMatch[3]) : DEFAULT_MINUTE,
     });
   }
 

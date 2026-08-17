@@ -1,12 +1,18 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { RuntimeState } from '../engine/types';
-import { stageCombatEncounter } from '../engine/encounterV2/EncounterRuntimeIntegration';
+import { simulateCombatWithLocalAi } from '../engine/encounterV2/CombatAi';
+import { finalizeCombatResult } from '../engine/encounterV2/CombatEngine';
+import {
+  commitCombatResultToRuntime,
+  prepareCombatEncounterForPlay,
+  stageCombatEncounter,
+} from '../engine/encounterV2/EncounterRuntimeIntegration';
 import { makeCombatIntent } from '../engine/encounterV2/CombatTestFixtures';
 import { CombatEncounterScreen } from './CombatEncounterScreen';
 
-function makeState(): RuntimeState {
-  const base: RuntimeState = {
+function makeBaseState(): RuntimeState {
+  return {
     engineVersion: '0.1.0',
     worldBookId: 'sanguo',
     worldBookVersion: '1',
@@ -55,12 +61,35 @@ function makeState(): RuntimeState {
       memories: [],
     }],
   };
+}
+
+function makeState(): RuntimeState {
+  const base = makeBaseState();
   const intent = { ...makeCombatIntent(), sourceTurnNumber: 1, reason: '汉水大营遭遇战' };
   return stageCombatEncounter(base, {
     saveId: 'save_batch2',
     intent,
     projections: [],
     createdAt: '2026-07-20T01:00:00.000Z',
+  });
+}
+
+function makeNarrativePendingState(): RuntimeState {
+  const staged = makeState();
+  const prepared = prepareCombatEncounterForPlay(staged, {
+    selectedPlayerActorIds: ['player_liuping'],
+    startedAt: '2026-07-20T01:01:00.000Z',
+  });
+  const result = finalizeCombatResult(
+    simulateCombatWithLocalAi(prepared.engineState, { maxActions: 200 }),
+    '2026-07-20T01:02:00.000Z',
+    { playerActorId: staged.player.id },
+  );
+  return commitCombatResultToRuntime(staged, {
+    saveId: 'save_batch2',
+    session: prepared.session,
+    result,
+    committedAt: '2026-07-20T01:02:00.000Z',
   });
 }
 
@@ -89,5 +118,65 @@ describe('CombatEncounterScreen', () => {
     expect(markup).toContain('combat-v2-slot-heading');
     expect(markup).toContain('combat-v2-slot-resource');
     expect(markup).toContain('combat-v2-slot-gauge');
+    expect(markup).toContain('class="combat-v2-screen is-prestart"');
+    expect(markup).toContain('data-testid="combat-v2-stage-start"');
+    expect(markup).toContain('>进入战斗</button>');
+    expect(markup).not.toContain('class="combat-v2-lower"');
+  });
+
+  it('uses encounter-scoped names instead of internal actor ids before combat preparation', () => {
+    const encounterId = 'encounter_scoped_display';
+    const scopedActorId = `${encounterId}:scoped:routed_soldier_1`;
+    const state = stageCombatEncounter(makeBaseState(), {
+      saveId: 'save_scoped_display',
+      intent: {
+        ...makeCombatIntent(['player_liuping'], [scopedActorId]),
+        encounterId,
+        sourceTurnNumber: 1,
+        reason: '溃兵拦路。',
+        scopedCombatants: [{
+          actorId: scopedActorId,
+          name: '持刀溃兵',
+          archetype: 'militia',
+          weaponClass: 'standard',
+          armorClass: 'light',
+        }],
+      },
+      projections: [],
+      createdAt: '2026-07-30T05:30:00.000Z',
+    });
+
+    const markup = renderToStaticMarkup(
+      <CombatEncounterScreen
+        runtimeState={state}
+        locationLabel="林间驿道"
+        onResolved={async () => undefined}
+        onRequestNarrative={async () => undefined}
+      />,
+    );
+
+    expect(markup).toContain('持刀溃兵');
+    expect(markup).not.toContain(`combat-v2-slot-name">${scopedActorId}`);
+  });
+
+  it('shows active post-combat narrative generation in the battlefield center', () => {
+    const markup = renderToStaticMarkup(
+      <CombatEncounterScreen
+        runtimeState={makeNarrativePendingState()}
+        locationLabel="林间驿道"
+        onResolved={async () => undefined}
+        onRequestNarrative={async () => undefined}
+        narrativeBusy
+        onCancelNarrative={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="combat-v2-stage-narrative"');
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain('aria-busy="true"');
+    expect(markup).toContain('战斗已经结算');
+    expect(markup).toContain('正在生成战后正文');
+    expect(markup).toContain('>中止生成</button>');
+    expect(markup).not.toContain('class="combat-v2-stage-seal"');
   });
 });

@@ -27,6 +27,12 @@ export interface LlmTokenUsage {
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+  /** Provider-reported input tokens read from prompt/context cache. */
+  cacheReadTokens?: number;
+  /** Provider-reported input tokens written to prompt/context cache. */
+  cacheWriteTokens?: number;
+  /** Provider-reported input tokens that missed prompt/context cache. */
+  cacheMissTokens?: number;
 }
 
 export class LlmEmptyContentError extends Error {
@@ -40,6 +46,8 @@ export interface LlmGenerateResult {
   content: string;
   provider: ApiProviderId;
   model: string;
+  /** Provider-reported completion status for truncation and safety diagnostics. */
+  finishReason?: string;
   usage?: LlmTokenUsage;
   raw?: unknown;
 }
@@ -146,12 +154,20 @@ export class BrowserLlmClient implements LlmClient, EmbeddingClient {
 
     if (maxTokens !== undefined) body.max_tokens = maxTokens;
     if (temperature !== undefined) body.temperature = temperature;
-    if (request.responseFormat === 'json_object') {
+    if (isMiniMaxProvider(config)) {
+      body.reasoning_split = true;
+    } else if (request.responseFormat === 'json_object') {
       body.response_format = { type: 'json_object' };
+    }
+    if (isOfficialOpenAiEndpoint(config)) {
+      body.prompt_cache_key = buildPromptCacheKey(config.model, request.messages);
     }
 
     if (request.onContentDelta) {
       body.stream = true;
+      if (isOfficialOpenAiEndpoint(config)) {
+        body.stream_options = { include_usage: true };
+      }
       return this.generateOpenAiCompatibleStream(request, body);
     }
 
@@ -175,6 +191,7 @@ export class BrowserLlmClient implements LlmClient, EmbeddingClient {
       content,
       provider: config.provider,
       model: config.model,
+      finishReason: shouldReportFinishReason(config) ? parseOpenAiCompatibleFinishReason(response) : undefined,
       usage,
       raw: response,
     };
@@ -232,11 +249,17 @@ export class BrowserLlmClient implements LlmClient, EmbeddingClient {
       throw new Error(formatApiError(response.status, parseJsonOrText(text)));
     }
 
-    const streamResult = await readOpenAiCompatibleStream(response, request.onContentDelta, request.signal);
+    const streamResult = await readOpenAiCompatibleStream(
+      response,
+      request.onContentDelta,
+      request.signal,
+      isMiniMaxProvider(config),
+    );
     return {
       content: streamResult.content,
       provider: config.provider,
       model: config.model,
+      finishReason: shouldReportFinishReason(config) ? streamResult.finishReason : undefined,
       usage: streamResult.usage,
       raw: streamResult.raw,
     };
@@ -261,7 +284,11 @@ export class BrowserLlmClient implements LlmClient, EmbeddingClient {
       messages,
     };
     const temperature = request.temperature ?? config.temperature;
-    if (system) body.system = system;
+    if (system) {
+      body.system = isOfficialAnthropicEndpoint(config)
+        ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
+        : system;
+    }
     if (temperature !== undefined) body.temperature = temperature;
 
     const response = await this.fetchJson(
@@ -566,11 +593,40 @@ function parseOpenAiCompatibleContent(payload: unknown, usage?: LlmTokenUsage): 
 
 function parseOpenAiCompatibleUsage(payload: unknown): LlmTokenUsage | undefined {
   if (!isRecord(payload) || !isRecord(payload.usage)) return undefined;
+  const promptTokenDetails = isRecord(payload.usage.prompt_tokens_details)
+    ? payload.usage.prompt_tokens_details
+    : undefined;
+  const inputTokenDetails = isRecord(payload.usage.input_tokens_details)
+    ? payload.usage.input_tokens_details
+    : undefined;
   return normalizeUsage({
-    promptTokens: payload.usage.prompt_tokens,
+    promptTokens: firstDefined(
+      payload.usage.prompt_tokens,
+      payload.usage.input_tokens,
+    ),
     completionTokens: payload.usage.completion_tokens,
     totalTokens: payload.usage.total_tokens,
+    cacheReadTokens: firstDefined(
+      promptTokenDetails?.cached_tokens,
+      inputTokenDetails?.cached_tokens,
+      payload.usage.prompt_cache_hit_tokens,
+      payload.usage.total_cached_tokens,
+      payload.usage.cached_content_token_count,
+      payload.usage.cachedContentTokenCount,
+    ),
+    cacheWriteTokens: firstDefined(
+      promptTokenDetails?.cache_write_tokens,
+      inputTokenDetails?.cache_write_tokens,
+      payload.usage.cache_creation_input_tokens,
+    ),
+    cacheMissTokens: payload.usage.prompt_cache_miss_tokens,
   });
+}
+
+function parseOpenAiCompatibleFinishReason(payload: unknown): string | undefined {
+  if (!isRecord(payload) || !Array.isArray(payload.choices) || !isRecord(payload.choices[0])) return undefined;
+  const finishReason = payload.choices[0].finish_reason;
+  return typeof finishReason === 'string' && finishReason ? finishReason : undefined;
 }
 
 function parseOpenAiCompatibleEmbeddings(payload: unknown): number[][] {
@@ -605,7 +661,8 @@ async function readOpenAiCompatibleStream(
   response: Response,
   onContentDelta?: (delta: string) => void,
   signal?: AbortSignal,
-): Promise<{ content: string; usage?: LlmTokenUsage; raw: string[] }> {
+  normalizeCumulativeContent = false,
+): Promise<{ content: string; finishReason?: string; usage?: LlmTokenUsage; raw: string[] }> {
   if (!response.body) {
     const text = await readResponseText(response, signal);
     const payload = parseJsonOrText(text);
@@ -623,9 +680,45 @@ async function readOpenAiCompatibleStream(
   const decoder = new TextDecoder();
   let buffer = '';
   let content = '';
+  let finishReason: string | undefined;
   let usage: LlmTokenUsage | undefined;
   const raw: string[] = [];
   let cancellation: Promise<void> | undefined;
+
+  const consumeEventBlock = (block: string): void => {
+    const eventData = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trim())
+      .join('\n');
+
+    if (!eventData || eventData === '[DONE]') return;
+    raw.push(eventData);
+
+    const payload = parseJsonOrText(eventData);
+    if (!isRecord(payload)) return;
+
+    const chunkUsage = parseOpenAiCompatibleUsage(payload);
+    if (chunkUsage) usage = chunkUsage;
+
+    const choices = payload.choices;
+    if (!Array.isArray(choices) || choices.length === 0 || !isRecord(choices[0])) return;
+
+    const chunkFinishReason = choices[0].finish_reason;
+    if (typeof chunkFinishReason === 'string' && chunkFinishReason) finishReason = chunkFinishReason;
+
+    const delta = choices[0].delta;
+    const deltaContent = isRecord(delta) && typeof delta.content === 'string' ? delta.content : undefined;
+    if (!deltaContent) return;
+
+    throwIfSignalAborted(signal);
+    const normalizedDelta = normalizeCumulativeContent
+      ? getCumulativeContentDelta(content, deltaContent)
+      : deltaContent;
+    if (!normalizedDelta) return;
+    content += normalizedDelta;
+    onContentDelta?.(normalizedDelta);
+  };
 
   try {
     while (true) {
@@ -637,54 +730,31 @@ async function readOpenAiCompatibleStream(
       const blocks = buffer.split(/\r?\n\r?\n/);
       buffer = blocks.pop() ?? '';
 
-      for (const block of blocks) {
-        const eventData = block
-          .split(/\r?\n/)
-          .filter((line) => line.startsWith('data:'))
-          .map((line) => line.slice(5).trim())
-          .join('\n');
-
-        if (!eventData || eventData === '[DONE]') continue;
-        raw.push(eventData);
-
-        const payload = parseJsonOrText(eventData);
-        if (!isRecord(payload)) continue;
-
-        const chunkUsage = parseOpenAiCompatibleUsage(payload);
-        if (chunkUsage) usage = chunkUsage;
-
-        const choices = payload.choices;
-        if (!Array.isArray(choices) || choices.length === 0 || !isRecord(choices[0])) continue;
-
-        const delta = choices[0].delta;
-        const deltaContent = isRecord(delta) && typeof delta.content === 'string' ? delta.content : undefined;
-        if (deltaContent) {
-          throwIfSignalAborted(signal);
-          content += deltaContent;
-          onContentDelta?.(deltaContent);
-        }
-      }
+      for (const block of blocks) consumeEventBlock(block);
     }
 
     throwIfSignalAborted(signal);
     buffer += decoder.decode();
     const trailingData = buffer.trim();
-    if (trailingData.startsWith('data:')) {
-      const eventData = trailingData.slice(5).trim();
-      if (eventData && eventData !== '[DONE]') raw.push(eventData);
-    }
+    if (trailingData) consumeEventBlock(trailingData);
 
     if (!content.trim()) {
       throw new LlmEmptyContentError('API 流式返回缺少正文内容', usage);
     }
 
-    return { content, usage, raw };
+    return { content, finishReason, usage, raw };
   } catch (error) {
     cancellation = cancelReader(reader, error);
     throw error;
   } finally {
     releaseReaderLock(reader, cancellation);
   }
+}
+
+function getCumulativeContentDelta(current: string, next: string): string {
+  if (next.startsWith(current)) return next.slice(current.length);
+  if (current.startsWith(next)) return '';
+  return next;
 }
 
 function parseAnthropicContent(payload: unknown, usage?: LlmTokenUsage): string {
@@ -714,6 +784,8 @@ function parseAnthropicUsage(payload: unknown): LlmTokenUsage | undefined {
   return normalizeUsage({
     promptTokens: payload.usage.input_tokens,
     completionTokens: payload.usage.output_tokens,
+    cacheReadTokens: payload.usage.cache_read_input_tokens,
+    cacheWriteTokens: payload.usage.cache_creation_input_tokens,
   });
 }
 
@@ -721,9 +793,15 @@ function normalizeUsage(values: {
   promptTokens?: unknown;
   completionTokens?: unknown;
   totalTokens?: unknown;
+  cacheReadTokens?: unknown;
+  cacheWriteTokens?: unknown;
+  cacheMissTokens?: unknown;
 }): LlmTokenUsage | undefined {
   const promptTokens = normalizeUsageNumber(values.promptTokens);
   const completionTokens = normalizeUsageNumber(values.completionTokens);
+  const cacheReadTokens = normalizeUsageNumber(values.cacheReadTokens);
+  const cacheWriteTokens = normalizeUsageNumber(values.cacheWriteTokens);
+  const cacheMissTokens = normalizeUsageNumber(values.cacheMissTokens);
   const totalTokens = normalizeUsageNumber(
     values.totalTokens ?? (
       promptTokens !== undefined || completionTokens !== undefined
@@ -732,11 +810,76 @@ function normalizeUsage(values: {
     ),
   );
 
-  if (promptTokens === undefined && completionTokens === undefined && totalTokens === undefined) {
+  if (
+    promptTokens === undefined
+    && completionTokens === undefined
+    && totalTokens === undefined
+    && cacheReadTokens === undefined
+    && cacheWriteTokens === undefined
+    && cacheMissTokens === undefined
+  ) {
     return undefined;
   }
 
-  return { promptTokens, completionTokens, totalTokens };
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    cacheMissTokens,
+  };
+}
+
+function firstDefined(...values: unknown[]): unknown {
+  return values.find((value) => value !== undefined);
+}
+
+function isOfficialOpenAiEndpoint(config: ApiConfigArchive): boolean {
+  return config.provider === 'openai' && getEndpointHostname(config.baseUrl) === 'api.openai.com';
+}
+
+function isOfficialAnthropicEndpoint(config: ApiConfigArchive): boolean {
+  return config.provider === 'anthropic' && getEndpointHostname(config.baseUrl) === 'api.anthropic.com';
+}
+
+function isMiniMaxProvider(config: ApiConfigArchive): boolean {
+  return config.provider === 'minimax' || config.provider === 'minimax_international';
+}
+
+function shouldReportFinishReason(config: ApiConfigArchive): boolean {
+  return config.provider === 'zhipu'
+    || config.provider === 'zhipu_coding'
+    || isMiniMaxProvider(config);
+}
+
+function getEndpointHostname(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function buildPromptCacheKey(model: string, messages: LlmMessage[]): string {
+  const stableSystemPrefix = messages
+    .filter((message) => message.role === 'system')
+    .map((message) => message.content)
+    .join('\n\n');
+  return `coc-v2:${sanitizeCacheKeyPart(model)}:${fnv1aHash(stableSystemPrefix)}`;
+}
+
+function sanitizeCacheKeyPart(value: string): string {
+  return value.trim().replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 48) || 'model';
+}
+
+function fnv1aHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
 function normalizeUsageNumber(value: unknown): number | undefined {

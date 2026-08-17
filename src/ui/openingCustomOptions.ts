@@ -1,10 +1,12 @@
 import type { CharacterTrait, CharacterTraitRarity, OpeningCharacterOption } from '../engine/types';
+import { normalizeCharacterTraitRarity } from '../engine/character/TraitRarity';
 
 export type CustomOpeningOptionKind = 'birth' | 'identity';
 
 export interface PersistedCustomOpeningOptions {
   birthOrigins: OpeningCharacterOption[];
   identities: OpeningCharacterOption[];
+  traits: CharacterTrait[];
 }
 
 const STORAGE_KEY_PREFIX = 'coc-v2:opening-custom-options:';
@@ -12,6 +14,7 @@ const STORAGE_KEY_PREFIX = 'coc-v2:opening-custom-options:';
 const EMPTY_CUSTOM_OPTIONS: PersistedCustomOpeningOptions = {
   birthOrigins: [],
   identities: [],
+  traits: [],
 };
 
 export function openingCustomOptionsStorageKey(worldBookId: string): string {
@@ -26,6 +29,29 @@ function isOption(value: unknown): value is OpeningCharacterOption {
     && (record.description === undefined || typeof record.description === 'string');
 }
 
+function normalizeCustomTrait(value: unknown): CharacterTrait | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.id !== 'string'
+    || !record.id.startsWith('custom_trait_')
+    || typeof record.label !== 'string'
+    || typeof record.description !== 'string'
+  ) {
+    return null;
+  }
+
+  const rarity = normalizeCharacterTraitRarity(record.rarity);
+  return {
+    id: record.id,
+    label: record.label,
+    description: record.description,
+    source: 'custom',
+    ...(rarity ? { rarity } : {}),
+    ...(typeof record.promptHint === 'string' ? { promptHint: record.promptHint } : {}),
+  };
+}
+
 export function normalizeCustomOpeningOptions(raw: unknown): PersistedCustomOpeningOptions {
   if (!raw || typeof raw !== 'object') return { ...EMPTY_CUSTOM_OPTIONS };
   const record = raw as Record<string, unknown>;
@@ -36,6 +62,11 @@ export function normalizeCustomOpeningOptions(raw: unknown): PersistedCustomOpen
       : [],
     identities: Array.isArray(record.identities)
       ? record.identities.filter(isOption)
+      : [],
+    traits: Array.isArray(record.traits)
+      ? record.traits
+        .map(normalizeCustomTrait)
+        .filter((trait): trait is CharacterTrait => trait !== null)
       : [],
   };
 }
@@ -64,6 +95,39 @@ export function saveCustomOpeningOptions(
   storage.setItem(openingCustomOptionsStorageKey(worldBookId), JSON.stringify(normalizeCustomOpeningOptions(options)));
 }
 
+/**
+ * Freezes the first successful LLM rarity decision for custom opening traits.
+ * Existing resolved rarities remain authoritative until the player deletes the trait.
+ */
+export function persistResolvedCustomOpeningTraitRarities(
+  worldBookId: string,
+  resolvedTraits: CharacterTrait[],
+  storage: Pick<Storage, 'getItem' | 'setItem'> | null | undefined = typeof localStorage === 'undefined' ? undefined : localStorage,
+): number {
+  if (!storage) return 0;
+  const options = loadCustomOpeningOptions(worldBookId, storage);
+  const resolvedRarityById = new Map(
+    resolvedTraits
+      .map((trait) => [trait.id, normalizeCharacterTraitRarity(trait.rarity)] as const)
+      .filter((entry): entry is readonly [string, CharacterTraitRarity] => entry[1] !== null),
+  );
+  let persistedCount = 0;
+  const traits = options.traits.map((trait) => {
+    const existingRarity = normalizeCharacterTraitRarity(trait.rarity);
+    if (existingRarity) {
+      return existingRarity === trait.rarity ? trait : { ...trait, rarity: existingRarity };
+    }
+    const resolvedRarity = resolvedRarityById.get(trait.id);
+    if (!resolvedRarity) return trait;
+    persistedCount += 1;
+    return { ...trait, rarity: resolvedRarity };
+  });
+  if (persistedCount > 0 || traits.some((trait, index) => trait !== options.traits[index])) {
+    saveCustomOpeningOptions(worldBookId, { ...options, traits }, storage);
+  }
+  return persistedCount;
+}
+
 export function createCustomOpeningOption(
   kind: CustomOpeningOptionKind,
   label: string,
@@ -88,19 +152,54 @@ export function isCustomIdentityOption(option: Pick<OpeningCharacterOption, 'id'
   return option.id.startsWith('custom_identity_');
 }
 
+const fallbackCustomTraitDescription = '玩家自定义开局特质。';
+const fallbackCustomTraitPromptHint = '由 LLM 根据玩家自定义特质在合适场景中体现。';
+
+export function createCustomOpeningTrait(
+  label: string,
+  description: string,
+  now: number = Date.now(),
+): CharacterTrait {
+  const normalizedDescription = description.trim();
+  return {
+    id: `custom_trait_${now}`,
+    label: label.trim(),
+    description: normalizedDescription || fallbackCustomTraitDescription,
+    source: 'custom',
+    promptHint: normalizedDescription || fallbackCustomTraitPromptHint,
+  };
+}
+
+export function updateCustomOpeningTrait(
+  trait: CharacterTrait,
+  label: string,
+  description: string,
+): CharacterTrait {
+  const normalizedDescription = description.trim();
+  return {
+    ...trait,
+    label: label.trim(),
+    description: normalizedDescription || fallbackCustomTraitDescription,
+    source: 'custom',
+    promptHint: normalizedDescription || fallbackCustomTraitPromptHint,
+  };
+}
+
+export function isCustomOpeningTrait(trait: Pick<CharacterTrait, 'id' | 'source'>): boolean {
+  return trait.id.startsWith('custom_trait_') && trait.source === 'custom';
+}
+
 const rarityLabels: Record<CharacterTraitRarity, string> = {
   white: '白',
   green: '绿',
   blue: '蓝',
+  purple: '紫',
+  orange: '橙',
   red: '红',
-  gold: '金',
 };
 
 function normalizeRarity(rarity: CharacterTrait['rarity']): CharacterTraitRarity | null {
-  if (rarity === 'white' || rarity === 'green' || rarity === 'blue' || rarity === 'red' || rarity === 'gold') {
-    return rarity;
-  }
-  return null;
+  return normalizeCharacterTraitRarity(rarity);
 }
 
 export function traitRarityClassName(trait: Pick<CharacterTrait, 'rarity' | 'source'>): string {

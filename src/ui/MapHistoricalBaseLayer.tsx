@@ -182,20 +182,31 @@ const TERRAIN_TEXTURES: HistoricalMapFeature[] = [
   },
 ];
 
-export function MapHistoricalBaseLayer() {
+interface MapHistoricalBaseLayerProps {
+  mode?: 'art' | 'geographic';
+}
+
+export function MapHistoricalBaseLayer({ mode = 'art' }: MapHistoricalBaseLayerProps) {
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [attempt, setAttempt] = useState(0);
   const mapAsset = mapVisualManifest['three-kingdoms-map-v2-full-domain-base.png'];
   const retryToken = attempt > 0 ? `?retry=${attempt}` : '';
+  const activeBaseMode = state === 'ready' && mode === 'art' ? 'art' : 'geographic';
 
   return (
-    <div className="map-historical-base" data-visual-state={state} data-testid="map-historical-base-layer">
+    <div
+      className="map-historical-base"
+      data-base-mode={activeBaseMode}
+      data-visual-state={state}
+      data-testid="map-historical-base-layer"
+    >
       <picture className="map-v2-base-map-picture" aria-hidden="true">
         <source media="(max-width: 760px)" srcSet={`${mapAsset.mobile.url}${retryToken}`} />
         <img
           key={attempt}
           className="map-v2-base-map-art"
           src={`${mapAsset.display.url}${retryToken}`}
+          draggable={false}
           width={mapAsset.display.width}
           height={mapAsset.display.height}
           decoding="async"
@@ -205,39 +216,42 @@ export function MapHistoricalBaseLayer() {
         />
       </picture>
 
-      <svg
-        className="map-historical-base-layer"
-        viewBox="0 0 100 100"
-        preserveAspectRatio="none"
-        aria-hidden="true"
-        focusable="false"
-      >
-        <rect className="map-historical-sea" x="0" y="0" width="100" height="100" />
+      {activeBaseMode === 'geographic' && (
+        <svg
+          className="map-historical-base-layer"
+          data-render-role="geographic-base"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <rect className="map-historical-sea" x="0" y="0" width="100" height="100" />
 
-        <g className="map-historical-real-land-layer" data-testid="map-real-land-layer">
-          {MAP_GEO_LAND_PATHS.map((path, index) => (
-            <path key={`land-${index}`} d={path} />
-          ))}
-        </g>
+          <g className="map-historical-real-land-layer" data-testid="map-real-land-layer">
+            {MAP_GEO_LAND_PATHS.map((path, index) => (
+              <path key={`land-${index}`} d={path} />
+            ))}
+          </g>
 
-        <g className="map-historical-real-river-layer" data-testid="map-real-river-layer">
-          {MAP_GEO_RIVER_PATHS.map((path, index) => (
-            <path key={`river-${index}`} d={path} />
-          ))}
-        </g>
+          <g className="map-historical-real-river-layer" data-testid="map-real-river-layer">
+            {MAP_GEO_RIVER_PATHS.map((path, index) => (
+              <path key={`river-${index}`} d={path} />
+            ))}
+          </g>
 
-        <g className="map-historical-terrain-layer">
-          {TERRAIN_TEXTURES.map((feature) => (
-            <path key={feature.id} d={projectGeoPath(feature.points)} />
-          ))}
-        </g>
+          <g className="map-historical-terrain-layer">
+            {TERRAIN_TEXTURES.map((feature) => (
+              <path key={feature.id} d={projectGeoPath(feature.points)} />
+            ))}
+          </g>
 
-        <g className="map-historical-mountain-layer">
-          {MOUNTAINS.map((feature) => (
-            <path key={feature.id} d={projectGeoPath(feature.points)} />
-          ))}
-        </g>
-      </svg>
+          <g className="map-historical-mountain-layer">
+            {MOUNTAINS.map((feature) => (
+              <path key={feature.id} d={projectGeoPath(feature.points)} />
+            ))}
+          </g>
+        </svg>
+      )}
 
       {state !== 'ready' && (
         <div className={`map-base-visual-state map-base-visual-state--${state}`} role={state === 'error' ? 'alert' : 'status'}>

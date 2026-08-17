@@ -1,13 +1,38 @@
 .coc-admin-analytics-screen {
   min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
   box-sizing: border-box;
   padding: 28px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-color: rgba(198, 157, 81, 0.76) rgba(12, 8, 7, 0.86);
+  scrollbar-gutter: stable;
   color: #eadfc7;
   background:
     radial-gradient(circle at 10% 0%, rgba(150, 58, 40, 0.2), transparent 32%),
     radial-gradient(circle at 90% 8%, rgba(174, 126, 45, 0.14), transparent 36%),
     linear-gradient(145deg, #120d0b, #080706 58%, #130d09);
   font-family: "Noto Serif SC", "Source Han Serif SC", serif;
+}
+
+.coc-admin-analytics-screen::-webkit-scrollbar {
+  width: 10px;
+}
+
+.coc-admin-analytics-screen::-webkit-scrollbar-track {
+  background: rgba(12, 8, 7, 0.86);
+}
+
+.coc-admin-analytics-screen::-webkit-scrollbar-thumb {
+  border: 2px solid rgba(12, 8, 7, 0.86);
+  border-radius: 8px;
+  background: rgba(198, 157, 81, 0.76);
+}
+
+.coc-admin-analytics-screen::-webkit-scrollbar-thumb:hover {
+  background: #e1c17c;
 }
 
 .coc-admin-analytics-header {

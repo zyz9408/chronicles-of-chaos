@@ -144,7 +144,11 @@ export function buildMapVisualModel(worldBook: WorldBook, state: RuntimeState): 
     }
 
     const geographicSkeleton = isGeographicSkeletonPlace(node);
-    const location = resolveNodeLocation(node, index);
+    const location = resolveNodeLocation(node, index, {
+      allowRegionalFallback: node.id === currentPlaceId
+        || nearbyRouteTargetIds.has(node.id)
+        || dynamicNodeIds.has(node.id),
+    });
     if (!location) {
       if (dynamicNodeIds.has(node.id) && isStandableMapNode(node)) {
         unlocatedPlaces.push(toArchivePoint(node, index.parentIdByNodeId[node.id]));
@@ -226,6 +230,7 @@ export function buildMapVisualModel(worldBook: WorldBook, state: RuntimeState): 
 function resolveNodeLocation(
   node: MapNode,
   index: ReturnType<typeof buildRuntimeMapIndex>,
+  options: { allowRegionalFallback: boolean },
 ): MapVisualPointLocation | null {
   if (node.mapLayer !== 'region' && node.mapLayer !== 'place') return null;
   const directOrImmediate = resolveMapVisualPoint({
@@ -236,7 +241,7 @@ function resolveNodeLocation(
   if (directOrImmediate) return directOrImmediate;
 
   const nearestAnchorId = findNearestAnchoredAncestorId(node.id, index);
-  if (!nearestAnchorId) return null;
+  if (!nearestAnchorId || !options.allowRegionalFallback) return null;
   return resolveMapVisualPoint({
     id: node.id,
     parentId: nearestAnchorId,

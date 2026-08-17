@@ -9,6 +9,10 @@ import {
   resolveWarDecision,
 } from './WarEngine';
 import {
+  AGGRESSIVE_WAR_RULESET_VERSION,
+  COMMAND_WAR_RULESET_VERSION,
+} from './EncounterContracts';
+import {
   createValidatedWarProjectionBundle,
   createWarEncounterSnapshot,
 } from './WarSnapshotAdapter';
@@ -29,6 +33,8 @@ function makeSnapshot(options: {
   playerTroops?: ReturnType<typeof makeWarTroop>[];
   enemyTroops?: ReturnType<typeof makeWarTroop>[];
   includeWarArt?: boolean;
+  rulesetVersion?: WarEncounterSnapshot['intent']['rulesetVersion'];
+  warDifficulty?: 'story' | 'easy' | 'standard' | 'hard' | 'brutal';
 } = {}): WarEncounterSnapshot {
   const playerTroops = options.playerTroops ?? [makeWarTroop('troop_player_infantry')];
   const enemyTroops = options.enemyTroops ?? [makeWarTroop('troop_enemy_cavalry')];
@@ -37,6 +43,7 @@ function makeSnapshot(options: {
     enemyTroops.map((troop) => troop.troopId),
   );
   intent.seed = options.seed ?? intent.seed;
+  intent.rulesetVersion = options.rulesetVersion ?? intent.rulesetVersion;
   intent.environmentTags = options.environmentTags ?? intent.environmentTags;
   intent.objective = options.objective ?? intent.objective;
   if (intent.objective !== 'defeat_enemy') intent.targetHoldingId = 'holding_test_target';
@@ -52,6 +59,7 @@ function makeSnapshot(options: {
     playerTroops,
     enemyTroops,
     playerCommander: makeWarCommander('player_liuping'),
+    warDifficulty: options.warDifficulty,
     enemyCommander: makeWarCommander('npc_enemy_commander'),
     projections: createValidatedWarProjectionBundle(profiles),
   });
@@ -102,6 +110,23 @@ describe('WarEngine deterministic rounds', () => {
     }
   });
 
+  it('applies the frozen war difficulty through player effective strength', () => {
+    const orders: WarRoundOrders = {
+      player: { type: 'tactic', tactic: 'steady_advance' },
+      enemy: { type: 'tactic', tactic: 'steady_advance' },
+    };
+    const story = executeWarRound(createInitialWarState(makeSnapshot({ seed: 'war-difficulty', warDifficulty: 'story' })), orders);
+    const brutal = executeWarRound(createInitialWarState(makeSnapshot({ seed: 'war-difficulty', warDifficulty: 'brutal' })), orders);
+    const storyLog = story.actionLog[0]?.values;
+    const brutalLog = brutal.actionLog[0]?.values;
+
+    expect(story.snapshot.warDifficulty).toBe('story');
+    expect(storyLog?.warDifficulty).toBe('story');
+    expect(Number(storyLog?.playerEffective)).toBeGreaterThan(Number(brutalLog?.playerEffective));
+    expect(Number(storyLog?.playerCasualties)).toBeLessThanOrEqual(Number(brutalLog?.playerCasualties));
+    expect(Number(storyLog?.enemyCasualties)).toBeGreaterThanOrEqual(Number(brutalLog?.enemyCasualties));
+  });
+
   it('allows one explicit war art per side and rejects a second use', () => {
     const snapshot = makeSnapshot({ includeWarArt: true });
     const first = executeWarRound(createInitialWarState(snapshot), {
@@ -112,6 +137,95 @@ describe('WarEngine deterministic rounds', () => {
     expect(first.usedWarArt.player).toBe('player_liuping_art_decisive_order');
     expect(() => executeWarRound(first, {
       player: { type: 'war_art', artId: 'player_liuping_art_decisive_order' },
+      enemy: { type: 'tactic', tactic: 'steady_advance' },
+    })).toThrow(/每场战争只能使用一次/);
+  });
+
+  it('gives a blue warfare art a material one-round strength impact instead of a token bonus', () => {
+    const snapshot = makeSnapshot({ includeWarArt: true, seed: 'war-art-strength-impact' });
+    const baseline = executeWarRound(createInitialWarState(snapshot), {
+      player: { type: 'tactic', tactic: 'steady_advance' },
+      enemy: { type: 'tactic', tactic: 'steady_advance' },
+    });
+    const withArt = executeWarRound(createInitialWarState(snapshot), {
+      player: { type: 'war_art', artId: 'player_liuping_art_decisive_order' },
+      enemy: { type: 'tactic', tactic: 'steady_advance' },
+    });
+    const baselineEffective = Number(baseline.actionLog[0]?.values.playerEffective);
+    const artEffective = Number(withArt.actionLog[0]?.values.playerEffective);
+
+    // Numerical-superiority compression remains active after the raw +67.5% art budget,
+    // but even a blue art must still move the actually engaged strength by at least 20%.
+    expect(artEffective).toBeGreaterThanOrEqual(baselineEffective * 1.20);
+    expect(withArt.usedWarArt.player).toBe('player_liuping_art_decisive_order');
+  });
+
+  it('preserves frozen War V2.4 art resolution while War V2.5 applies the enhanced budget', () => {
+    const artOrders: WarRoundOrders = {
+      player: { type: 'war_art', artId: 'player_liuping_art_decisive_order' },
+      enemy: { type: 'tactic', tactic: 'steady_advance' },
+    };
+    const baselineOrders: WarRoundOrders = {
+      player: { type: 'tactic', tactic: 'steady_advance' },
+      enemy: { type: 'tactic', tactic: 'steady_advance' },
+    };
+    const v24Snapshot = makeSnapshot({
+      includeWarArt: true,
+      seed: 'war-art-ruleset-isolation',
+      rulesetVersion: AGGRESSIVE_WAR_RULESET_VERSION,
+    });
+    const currentSnapshot = makeSnapshot({
+      includeWarArt: true,
+      seed: 'war-art-ruleset-isolation',
+    });
+    const v24 = executeWarRound(createInitialWarState(v24Snapshot), artOrders);
+    const v24Baseline = executeWarRound(createInitialWarState(v24Snapshot), baselineOrders);
+    const current = executeWarRound(createInitialWarState(currentSnapshot), artOrders);
+    const currentBaseline = executeWarRound(createInitialWarState(currentSnapshot), baselineOrders);
+    const v24Uplift = Number(v24.actionLog[0]?.values.playerEffective)
+      / Number(v24Baseline.actionLog[0]?.values.playerEffective);
+    const currentUplift = Number(current.actionLog[0]?.values.playerEffective)
+      / Number(currentBaseline.actionLog[0]?.values.playerEffective);
+
+    expect(v24.snapshot.intent.rulesetVersion).toBe(AGGRESSIVE_WAR_RULESET_VERSION);
+    expect(currentUplift).toBeGreaterThan(v24Uplift);
+  });
+
+  it('allows a participating deputy war art while preserving the one-art-per-side limit', () => {
+    const intent = makeWarIntent();
+    const deputy = makeWarCommander('npc_zhao_yun', {
+      name: '赵云',
+      uniqueArts: [{
+        id: 'art_zhao_break_formation',
+        name: '七进七出',
+        rarity: 'orange',
+        domain: 'warfare',
+        level: 4,
+        description: '冲阵破敌。',
+        effectSummary: '提高有效战力。',
+        source: 'history',
+      }],
+    });
+    const snapshot = createWarEncounterSnapshot({
+      sessionId: 'session_war_deputy_art',
+      intent,
+      playerTroops: [makeWarTroop('troop_player_infantry')],
+      enemyTroops: [makeWarTroop('troop_enemy_cavalry')],
+      playerCommander: makeWarCommander('player_liuping'),
+      enemyCommander: makeWarCommander('npc_enemy_commander'),
+      playerOfficers: [{ source: deputy, role: 'deputy', troopIds: ['troop_player_infantry'] }],
+      projections: createValidatedWarProjectionBundle([
+        makeWarArtProfile('art_zhao_break_formation'),
+      ]),
+    });
+    const first = executeWarRound(createInitialWarState(snapshot), {
+      player: { type: 'war_art', artId: 'art_zhao_break_formation' },
+      enemy: { type: 'tactic', tactic: 'steady_advance' },
+    });
+
+    expect(first.usedWarArt.player).toBe('art_zhao_break_formation');
+    expect(() => executeWarRound(first, {
+      player: { type: 'war_art', artId: 'art_zhao_break_formation' },
       enemy: { type: 'tactic', tactic: 'steady_advance' },
     })).toThrow(/每场战争只能使用一次/);
   });
@@ -167,7 +281,7 @@ describe('WarEngine deterministic rounds', () => {
     expect(buffed.actionLog[0].values.playerEffective).toBe(baseline.actionLog[0].values.playerEffective);
   });
 
-  it('settles an accumulated class advantage at the strict ten-round cap', () => {
+  it('lets prepared anti-cavalry route cavalry within the strict ten-round cap', () => {
     const snapshot = makeSnapshot({ seed: 'war-ten-round-seed' });
     const orders: WarRoundOrders[] = Array.from({ length: 10 }, () => ({
       player: { type: 'tactic', tactic: 'hold_position' },
@@ -177,10 +291,24 @@ describe('WarEngine deterministic rounds', () => {
 
     expect(state.round).toBe(10);
     expect(state.phase).toBe('resolved');
-    expect(state.outcome).toBe('enemy_victory');
-    expect(state.exitReason).toBe('round_limit');
-    expect(state.actionLog[state.actionLog.length - 1]?.values.roundLimitOutcome).toBe('enemy_victory');
+    expect(state.outcome).toBe('player_victory');
+    expect(state.exitReason).toBe('force_routed');
+    expect(state.actionLog[state.actionLog.length - 1]?.values.roundLimitOutcome).toBeUndefined();
     expect(() => executeWarRound(state, orders[0])).toThrow(/等待战争轮次/);
+  });
+
+  it('keeps in-progress War V2.1 sessions on their original result path', () => {
+    const state = executeWarRound(createInitialWarState(makeSnapshot({
+      seed: 'war-v21-compatibility-seed',
+      rulesetVersion: COMMAND_WAR_RULESET_VERSION,
+    })), {
+      player: { type: 'tactic', tactic: 'all_out_assault' },
+      enemy: { type: 'tactic', tactic: 'steady_advance' },
+    });
+    const values = state.actionLog[0].values;
+
+    expect(values.playerOpeningShock).toBeUndefined();
+    expect(values.enemyOpeningShock).toBeUndefined();
   });
 });
 
@@ -259,6 +387,7 @@ describe('WarEngine decisions and immutable result', () => {
       objectiveAchieved: true,
       exitReason: 'surrender',
       roundsCompleted: 0,
+      experienceAward: 40,
     });
     expect(result.forces.find((force) => force.side === 'enemy')).toMatchObject({
       troopId: 'troop_enemy_cavalry',

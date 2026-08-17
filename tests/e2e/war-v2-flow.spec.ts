@@ -78,6 +78,34 @@ async function seedWarEncounter(page: Page): Promise<void> {
       updatedAt: state.currentDate,
     }];
     state.npcs = [{
+      npcId: 'npc_zhao_yun',
+      name: '赵云',
+      sex: '男',
+      age: 27,
+      role: '荆州军副将',
+      isPresent: true,
+      isFocused: true,
+      summary: '随军担任副将，负责精锐突击。',
+      appearance: '白袍银甲，手持长枪。',
+      personality: '沉着果敢',
+      motivation: '协助刘平攻取水门',
+      relationToPlayer: '友善',
+      contactLevel: 4,
+      recentAttitude: '已入列听令',
+      abilityScores: { 统率: 88, 智力: 76, 武力: 94, 魅力: 82, 政治: 54 },
+      traits: [],
+      uniqueArts: [{
+        id: 'art_zhao_yun_dragon_formation',
+        name: '龙胆破阵',
+        rarity: 'purple',
+        domain: 'warfare',
+        level: 4,
+        description: '率精锐突入敌阵后迅速重整队列。',
+        effectSummary: '提高我军有效战力。',
+        source: 'history',
+      }],
+      memories: [],
+    }, {
       npcId: 'npc_enemy_commander',
       name: '张绣',
       sex: '男',
@@ -111,6 +139,7 @@ async function seedWarEncounter(page: Page): Promise<void> {
         readiness: '高',
         supplies: 96,
         fatigue: '低',
+        ...(index === 0 ? { deputyNpcIds: ['npc_zhao_yun'] } : {}),
       })),
       ...enemyIds.map((troopId, index) => fixtures.makeWarTroop(troopId, {
         name: `新野守军第${index + 1}队`,
@@ -168,6 +197,7 @@ async function seedWarEncounter(page: Page): Promise<void> {
       projections: [
         ...playerIds.map((troopId) => fixtures.makeTroopProfile(troopId, 'infantry', ['heavy', 'assault'])),
         ...enemyIds.map((troopId) => fixtures.makeTroopProfile(troopId, 'infantry', ['defensive', 'anti_cavalry'])),
+        fixtures.makeWarArtProfile('art_zhao_yun_dragon_formation'),
       ],
       createdAt: '2026-07-20T04:00:00.000Z',
     });
@@ -200,9 +230,28 @@ test('War V2 preserves the full-screen layout, motion controls and exact-once wo
   const consoleProblems: string[] = [];
   page.on('console', (message) => {
     if (message.type() === 'error' || message.type() === 'warning') {
-      consoleProblems.push(`${message.type()}: ${message.text()}`);
+      const location = message.location().url;
+      consoleProblems.push(`${message.type()}: ${message.text()}${location ? ` @ ${location}` : ''}`);
     }
   });
+  await page.route('**/api/cloud/auth/session', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      ok: true,
+      configured: false,
+      authConfigured: false,
+      authenticated: false,
+      limits: {
+        globalBytes: 8_000_000_000,
+        userBytes: 50_000_000,
+        uploadBytes: 10_000_000,
+        slots: 5,
+        dailyUploads: 6_000,
+        userDailyUploads: 100,
+      },
+    }),
+  }));
 
   await page.setViewportSize({ width: 1920, height: 1080 });
   await seedWarEncounter(page);
@@ -240,15 +289,26 @@ test('War V2 preserves the full-screen layout, motion controls and exact-once wo
   await expect(screen.getByRole('button', { name: '进入战争' })).toBeVisible();
   await page.screenshot({ path: `${SCREENSHOT_DIR}/mobile-390x844.png`, fullPage: true });
 
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await screen.getByRole('button', { name: '进入战争' }).click();
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const reducedDuration = await screen.locator('.war-v2-center-seal').evaluate((seal) => getComputedStyle(seal).animationDuration);
   expect(parseFloat(reducedDuration)).toBeLessThanOrEqual(0.001);
   await page.emulateMedia({ reducedMotion: 'no-preference' });
-
-  await page.setViewportSize({ width: 1366, height: 768 });
-  await screen.getByRole('button', { name: '进入战争' }).click();
   await screen.getByRole('button', { name: '4×' }).click();
   await expect(screen.getByRole('button', { name: '4×' })).toHaveClass(/is-active/);
+  await expect(screen.getByRole('button', { name: /全军强攻：/ })).toHaveAttribute(
+    'title',
+    /提高进攻强度.*克制侧翼迂回/,
+  );
+  await expect(screen.getByRole('button', { name: /侧翼迂回：/ })).toHaveAttribute(
+    'title',
+    /当前不利：设防\/复杂地形/,
+  );
+  await expect(screen.getByRole('button', { name: '战争绝艺 龙胆破阵，来源：副将赵云' })).toHaveAttribute(
+    'title',
+    /副将赵云施展；每方每场只能主动使用一次.*有效战力/,
+  );
 
   const tacticCases = [
     ['全军强攻', 'is-assault'],
@@ -257,7 +317,7 @@ test('War V2 preserves the full-screen layout, motion controls and exact-once wo
     ['稳步推进', 'is-advance'],
   ] as const;
   for (const [label, motion] of tacticCases) {
-    const button = screen.getByRole('button', { name: label });
+    const button = screen.locator('button').filter({ hasText: new RegExp(`^${label}$`) });
     if (await button.isEnabled()) {
       await button.click();
       await expect(screen.locator('.war-v2-stage')).toHaveAttribute('data-motion', new RegExp(motion));
@@ -272,7 +332,7 @@ test('War V2 preserves the full-screen layout, motion controls and exact-once wo
     const pursue = screen.getByRole('button', { name: '追击', exact: true });
     const accept = screen.getByRole('button', { name: '接受投降', exact: true });
     const resume = screen.getByRole('button', { name: '确认风险并恢复手动指挥', exact: true });
-    const assault = screen.getByRole('button', { name: '全军强攻', exact: true });
+    const assault = screen.locator('button').filter({ hasText: /^全军强攻$/ });
     if (await pursue.isVisible().catch(() => false)) await pursue.click();
     else if (await accept.isVisible().catch(() => false)) await accept.click();
     else if (await resume.isVisible().catch(() => false)) await resume.click();

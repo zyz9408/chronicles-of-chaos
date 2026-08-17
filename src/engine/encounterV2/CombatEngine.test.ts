@@ -30,6 +30,7 @@ function buildSnapshot(options: {
   lootableItemIds?: string[];
   capturableEquipmentItemIds?: string[];
   lethality?: 'nonlethal' | 'standard' | 'fatal';
+  combatDifficulty?: 'story' | 'easy' | 'standard' | 'hard' | 'brutal';
 } = {}) {
   const playerIds = Array.from({ length: options.players ?? 1 }, (_, index) => `player_${index + 1}`);
   const enemyIds = Array.from({ length: options.enemies ?? 1 }, (_, index) => `enemy_${index + 1}`);
@@ -43,6 +44,7 @@ function buildSnapshot(options: {
     enemySources: enemyIds.map((id) => makeNpcCombatantSource(id, options.enemyOverrides)),
     projections: options.projections ?? bundle(),
     threatTier: 'standard',
+    combatDifficulty: options.combatDifficulty,
     lootableItemIds: options.lootableItemIds ?? [],
     capturableEquipmentItemIds: options.capturableEquipmentItemIds ?? [],
   });
@@ -78,8 +80,8 @@ describe('CombatEngine deterministic core', () => {
     const snapshot = buildSnapshot({ players, enemies, seed: `matrix-${players}v${enemies}` });
     const first = simulateCombatWithLocalAi(createCombatEngineState(snapshot), { maxActions: 500 });
     const second = simulateCombatWithLocalAi(createCombatEngineState(snapshot), { maxActions: 500 });
-    const firstResult = finalizeCombatResult(first, '2026-07-20T00:30:00.000Z');
-    const secondResult = finalizeCombatResult(second, '2026-07-20T00:30:00.000Z');
+    const firstResult = finalizeCombatResult(first, '2026-07-20T00:30:00.000Z', { playerActorId: 'player_1' });
+    const secondResult = finalizeCombatResult(second, '2026-07-20T00:30:00.000Z', { playerActorId: 'player_1' });
 
     expect(first.phase).toBe('resolved');
     expect(firstResult.resultHash).toBe(secondResult.resultHash);
@@ -102,6 +104,50 @@ describe('CombatEngine deterministic core', () => {
     expect(ready.phase).toBe('awaiting_action');
   });
 
+  it('settles a passive unique-art round recovery once when its owner gains an action slot', () => {
+    const passiveArt = makeDamageArtProfile('art_round_recovery', {
+      activation: 'passive',
+      targetMode: 'self',
+      purpose: 'healing',
+      powerClass: 'light',
+      powerMultiplier: 1.1,
+      staminaCost: 8,
+      accuracyModifier: 0,
+      maxHits: 1,
+      perEncounterLimit: 1,
+      allowAutoUse: false,
+      effects: [{
+        trigger: 'round_start',
+        condition: 'always',
+        operation: 'restore_hp',
+        target: 'self',
+        value: 7,
+        priority: 10,
+      }],
+    });
+    const snapshot = buildSnapshot({
+      playerOverrides: {
+        vitals: { hp: 50, maxHp: 100, stamina: 100, maxStamina: 100 },
+        uniqueArts: [{
+          id: 'art_round_recovery', name: '生生诀', rarity: 'purple', domain: 'survival', level: 1,
+          description: '', effectSummary: '个人战每轮恢复生命。', source: 'training',
+        }],
+      },
+      projections: bundle(passiveArt),
+    });
+    const state = createCombatEngineState(snapshot);
+    state.combatants[0].gauge = 1_000;
+    state.combatants[1].gauge = 0;
+
+    const ready = advanceCombatToNextAction(state);
+    expect(ready.currentActorId).toBe('player_1');
+    expect(ready.combatants[0].hp).toBe(57);
+    expect(advanceCombatToNextAction(ready).combatants[0].hp).toBe(57);
+    expect(() => executeCombatAction(ready, {
+      type: 'unique_art', actorId: 'player_1', artId: 'art_round_recovery', targetIds: ['player_1'],
+    })).toThrow('被动绝艺');
+  });
+
   it('defend restores six stamina, lasts until the next action and is logged', () => {
     let state = forceTurn(createCombatEngineState(buildSnapshot()), 'player_1', (combatants) => {
       combatants[0].stamina = 80;
@@ -114,6 +160,64 @@ describe('CombatEngine deterministic core', () => {
     state = executeCombatAction(state, { type: 'normal_attack', actorId: 'player_1', targetId: 'enemy_1' });
     expect(state.combatants[0].defending).toBe(false);
     expect(state.actionLog.map((entry) => entry.actionType)).toEqual(['defend', 'normal_attack']);
+  });
+
+  it('applies the frozen combat difficulty only to cross-side damage', () => {
+    const strike = (combatDifficulty: 'story' | 'brutal') => executeCombatAction(
+      forceTurn(createCombatEngineState(buildSnapshot({ combatDifficulty, seed: 'difficulty-strike' })), 'player_1'),
+      { type: 'normal_attack', actorId: 'player_1', targetId: 'enemy_1' },
+    );
+    const story = strike('story');
+    const brutal = strike('brutal');
+    const storyDamage = Number(story.actionLog[0]?.values.damage ?? 0);
+    const brutalDamage = Number(brutal.actionLog[0]?.values.damage ?? 0);
+
+    expect(story.snapshot.combatDifficulty).toBe('story');
+    expect(brutal.snapshot.combatDifficulty).toBe('brutal');
+    expect(storyDamage).toBeGreaterThan(brutalDamage);
+  });
+
+  it('makes an orange art materially stronger than the same fixed-seed normal attack', () => {
+    const art = makeDamageArtProfile('art_orange_strike', {
+      powerClass: 'light',
+      powerMultiplier: 1.10,
+      staminaCost: 8,
+      accuracyModifier: 0,
+      maxHits: 1,
+      armorPiercing: false,
+    });
+    const snapshot = buildSnapshot({
+      seed: 'orange-art-versus-normal',
+      playerOverrides: {
+        abilityScores: { 武力: 85, 机运: 50 },
+        uniqueArts: [{
+          id: 'art_orange_strike', name: '破军一击', rarity: 'orange', domain: 'personalCombat', level: 1,
+          description: '', effectSummary: '', source: 'opening',
+        }],
+      },
+      enemyOverrides: {
+        abilityScores: { 武力: 40, 机运: 30 },
+        vitals: { hp: 1_000, maxHp: 1_000, stamina: 100, maxStamina: 100 },
+      },
+      projections: bundle(art),
+    });
+    const normal = executeCombatAction(
+      forceTurn(createCombatEngineState(snapshot), 'player_1'),
+      { type: 'normal_attack', actorId: 'player_1', targetId: 'enemy_1' },
+    );
+    const uniqueArt = executeCombatAction(
+      forceTurn(createCombatEngineState(snapshot), 'player_1'),
+      { type: 'unique_art', actorId: 'player_1', artId: 'art_orange_strike', targetIds: ['enemy_1'] },
+    );
+    const normalDamage = Number(normal.actionLog[0]?.values.damage ?? 0);
+    const artDamage = Number(uniqueArt.actionLog[0]?.values.totalDamage ?? 0);
+
+    expect(normalDamage).toBeGreaterThan(0);
+    expect(artDamage).toBeGreaterThanOrEqual(normalDamage * 2);
+    expect(snapshot.combatants[0].uniqueArtProfiles[0]).toMatchObject({
+      powerClass: 'heavy',
+      armorPiercing: true,
+    });
   });
 
   it('spends stamina once for a multi-hit art and enforces its per-battle limit', () => {
@@ -161,7 +265,7 @@ describe('CombatEngine deterministic core', () => {
     expect(state.actionLog).toHaveLength(1);
 
     const resolved = { ...state, phase: 'resolved' as const, outcome: 'player_victory' as const };
-    const result = finalizeCombatResult(resolved, '2026-07-20T00:15:00.000Z');
+    const result = finalizeCombatResult(resolved, '2026-07-20T00:15:00.000Z', { playerActorId: 'player_1' });
     expect(result.deltas.filter((delta) => delta.targetKind === 'item')).toHaveLength(1);
     expect(result.deltas.find((delta) => delta.targetKind === 'item')).toMatchObject({ beforeValue: 2, afterValue: 1 });
   });
@@ -189,7 +293,9 @@ describe('CombatEngine deterministic core', () => {
     });
     state = executeCombatAction(state, { type: 'stabilize', actorId: 'player_2', targetId: 'player_1' });
     expect(state.combatants[0]).toMatchObject({ hp: 25, stamina: 20, revivedOnce: true });
+    expect(state.combatants[1].hp).toBe(75);
     expect(state.combatants[0].statuses).toContain('severely_wounded');
+    expect(state.actionLog[0].values).toMatchObject({ rescuerHpSpent: 25, hpRestored: 25, staminaRestored: 20 });
 
     state = forceTurn(state, 'player_2', (combatants) => {
       const target = combatants[0];
@@ -201,6 +307,42 @@ describe('CombatEngine deterministic core', () => {
     expect(() => executeCombatAction(state, {
       type: 'stabilize', actorId: 'player_2', targetId: 'player_1',
     })).toThrow('第二次倒地');
+  });
+
+  it('rejects stabilization at or below the 25 HP cost without changing either combatant', () => {
+    for (const rescuerHp of [25, 24, 1]) {
+      const state = forceTurn(createCombatEngineState(buildSnapshot({ players: 2 })), 'player_2', (combatants) => {
+        combatants[0].hp = 0;
+        combatants[0].downCount = 1;
+        combatants[0].statuses = ['downed'];
+        combatants[1].hp = rescuerHp;
+        return combatants;
+      });
+
+      expect(() => executeCombatAction(state, {
+        type: 'stabilize', actorId: 'player_2', targetId: 'player_1',
+      })).toThrow('生命必须高于 25 点');
+      expect(state.combatants[0].hp).toBe(0);
+      expect(state.combatants[1].hp).toBe(rescuerHp);
+      expect(state.actionLog).toHaveLength(0);
+    }
+  });
+
+  it('leaves a 26 HP rescuer at 1 HP instead of allowing a free rescue or self-down', () => {
+    const input = forceTurn(createCombatEngineState(buildSnapshot({ players: 2 })), 'player_2', (combatants) => {
+      combatants[0].hp = 0;
+      combatants[0].downCount = 1;
+      combatants[0].statuses = ['downed'];
+      combatants[1].hp = 26;
+      return combatants;
+    });
+
+    const state = executeCombatAction(input, {
+      type: 'stabilize', actorId: 'player_2', targetId: 'player_1',
+    });
+
+    expect(state.combatants[0].hp).toBe(25);
+    expect(state.combatants[1].hp).toBe(1);
   });
 
   it('replays retreat success or failure with the same seed and applies a fixed failure penalty', () => {
@@ -293,12 +435,12 @@ describe('CombatEngine deterministic core', () => {
         values: { damage: 1 },
       })),
     };
-    const first = finalizeCombatResult(state, '2026-07-20T00:30:00.000Z');
-    const second = finalizeCombatResult(state, '2026-07-20T00:30:00.000Z');
+    const first = finalizeCombatResult(state, '2026-07-20T00:30:00.000Z', { playerActorId: 'player_1' });
+    const second = finalizeCombatResult(state, '2026-07-20T00:30:00.000Z', { playerActorId: 'player_1' });
 
     expect(first).toMatchObject({
       elapsedMinutes: 30,
-      experienceAward: 30,
+      experienceAward: 60,
       lootItemIds: ['loot_real'],
       capturedEquipmentItemIds: ['equipment_real'],
     });

@@ -6,6 +6,7 @@ type BuildTurnCompletionMessage = (result: {
   generationModel?: string;
   locationWritebackErrors: string[];
   routeWritebackErrors: string[];
+  stateWritebackWarnings: string[];
   locationWritebackDiagnostics: Array<{
     code: 'location-canonical-ambiguous' | 'location-writeback-rolled-back';
     message: string;
@@ -31,6 +32,7 @@ describe('GameScreen turn completion message', () => {
       generationModel: 'test-model',
       locationWritebackErrors: [],
       routeWritebackErrors: [],
+      stateWritebackWarnings: [],
       locationWritebackDiagnostics: [],
     })).toBe('');
   });
@@ -45,6 +47,7 @@ describe('GameScreen turn completion message', () => {
       generationModel: 'test-model',
       locationWritebackErrors: ['地点 canonical 身份歧义：incoming_xinye'],
       routeWritebackErrors: ['route_candidate_a failed'],
+      stateWritebackWarnings: [],
       locationWritebackDiagnostics: [{
         code: 'location-canonical-ambiguous',
         message: 'incoming_xinye matches place_candidate_a and place_candidate_b',
@@ -71,6 +74,7 @@ describe('GameScreen turn completion message', () => {
       generationModel: 'test-model',
       locationWritebackErrors: ['因状态补丁校验失败，本回合地图写回已回滚。'],
       routeWritebackErrors: [],
+      stateWritebackWarnings: [],
       locationWritebackDiagnostics: [{
         code: 'location-writeback-rolled-back',
         message: '因状态补丁校验失败，本回合地图写回已回滚。',
@@ -84,5 +88,24 @@ describe('GameScreen turn completion message', () => {
     expect(message).not.toContain('AI 回合已生成并自动保存');
     expect(message).not.toContain('incoming_outpost');
     expect(message).not.toContain('place_candidate');
+  });
+
+  it('distinguishes a quarantined state patch from a map writeback warning', () => {
+    const buildMessage = getMessageBuilder();
+    expect(buildMessage).toBeTypeOf('function');
+    if (!buildMessage) return;
+
+    const message = buildMessage({
+      generationMode: 'llm',
+      generationModel: 'test-model',
+      locationWritebackErrors: [],
+      routeWritebackErrors: [],
+      stateWritebackWarnings: ['resourceChanged: conflicting fields'],
+      locationWritebackDiagnostics: [],
+    });
+
+    expect(message).toContain('部分状态写回未通过校验');
+    expect(message).toContain('地图与其余合法状态已保留');
+    expect(message).not.toContain('地图写回存在警告');
   });
 });

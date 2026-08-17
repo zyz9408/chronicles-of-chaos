@@ -10,7 +10,11 @@ import type {
 import { selectPromptContext } from '../state/selectPromptContext';
 import { buildCurrentLocationDisplayPath, buildCurrentMapProjection } from '../map/runtimeMap';
 import type { NarrativeRenderEntry } from './narrativeDisplay';
-import { formatElapsedTime } from './turnDisplay';
+import { formatElapsedTime, getPromptCacheHitRate } from './turnDisplay';
+import { getNarrativePerspectiveProfile } from '../settings/NarrativePerspective';
+import { getPromptOverride } from '../prompts/PromptOverrideStore';
+
+const ADULT_INTIMACY_PROMPT_ID = 'nsfw.adultIntimacy.commonProtocol';
 
 export interface NarrativeDiagnosticExportOptions {
   runtimeState: RuntimeState;
@@ -20,6 +24,13 @@ export interface NarrativeDiagnosticExportOptions {
   generatedAt?: string;
   getLocationName?: (locationId: string) => string;
   mode?: 'default' | 'full';
+  promptOverrideStorage?: Storage;
+  failedProcessingAttempt?: {
+    actionText: string;
+    failedAt: string;
+    error: string;
+    processingStages: TurnProcessingStageEvent[];
+  };
 }
 
 export function buildNarrativeDiagnosticExport({
@@ -30,6 +41,8 @@ export function buildNarrativeDiagnosticExport({
   generatedAt = new Date().toISOString(),
   getLocationName,
   mode = 'default',
+  promptOverrideStorage,
+  failedProcessingAttempt,
 }: NarrativeDiagnosticExportOptions): string {
   const mapLocationPath = buildCurrentLocationDisplayPath(worldBook, runtimeState);
   const legacyLocationName = getLocationName?.(runtimeState.currentLocationId);
@@ -37,6 +50,7 @@ export function buildNarrativeDiagnosticExport({
     ? legacyLocationName ?? mapLocationPath
     : mapLocationPath;
   const player = runtimeState.player;
+  const narrativePerspective = getNarrativePerspectiveProfile(runtimeState.narrativePerspective);
   const lines: string[] = [
     '# 乱世风云录诊断导出',
     `导出时间：${generatedAt}`,
@@ -46,6 +60,8 @@ export function buildNarrativeDiagnosticExport({
     `当前位置：${locationName}`,
     `玩家：${player.name}${player.courtesyName ? `（字${player.courtesyName}）` : ''}`,
     `当前身份：${player.currentIdentity ?? player.roleType ?? '未指定'}`,
+    `叙事人称：${narrativePerspective.label}（${narrativePerspective.marker}）`,
+    formatAdultIntimacyPromptSource(promptOverrideStorage),
     '',
     '---',
     '',
@@ -64,6 +80,22 @@ export function buildNarrativeDiagnosticExport({
     mapProjectionDiagnostic,
     '',
   );
+
+  if (failedProcessingAttempt) {
+    lines.push('## 最近失败的执行尝试（未写入存档）');
+    lines.push(`失败时间：${failedProcessingAttempt.failedAt}`);
+    if (failedProcessingAttempt.actionText) {
+      lines.push(`玩家输入：${failedProcessingAttempt.actionText}`);
+    }
+    lines.push(`错误：${failedProcessingAttempt.error}`);
+    if (failedProcessingAttempt.processingStages.length > 0) {
+      lines.push('');
+      lines.push(formatProcessingStages(failedProcessingAttempt.processingStages));
+    }
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+  }
 
   if (renderedEntries.length === 0) {
     lines.push('当前没有可导出的正文回合。');
@@ -93,6 +125,10 @@ export function buildNarrativeDiagnosticExport({
       lines.push('');
       lines.push(formatPromptTokenEstimate(meta.promptTokenEstimate));
     }
+    if (meta?.narrativeLength) {
+      lines.push('');
+      lines.push(formatNarrativeLengthDiagnostic(meta.narrativeLength));
+    }
     if (turnLog?.statePatchSummary) lines.push(`状态补丁摘要：${turnLog.statePatchSummary}`);
     if (meta?.holdingAnnualSettlement) {
       lines.push('');
@@ -110,12 +146,6 @@ export function buildNarrativeDiagnosticExport({
     lines.push('正文：');
     lines.push(entry.narrativeText || '（空）');
 
-    if (meta?.reasoningSummary) {
-      lines.push('');
-      lines.push('公开思路摘要：');
-      lines.push(meta.reasoningSummary);
-    }
-
     if (mode === 'full' && meta?.rawResponse) {
       lines.push('');
       lines.push('原文：');
@@ -130,6 +160,43 @@ export function buildNarrativeDiagnosticExport({
   return finalizeDiagnosticExport(lines, mode);
 }
 
+function formatAdultIntimacyPromptSource(storage?: Storage): string {
+  const override = getPromptOverride(ADULT_INTIMACY_PROMPT_ID, storage);
+  if (!override) return '成人亲密协议：内置默认版';
+  return `成人亲密协议：玩家覆盖版（v${override.version}，更新于 ${override.updatedAt}）`;
+}
+
+function formatNarrativeLengthDiagnostic(
+  meta: NonNullable<RuntimeState['turnLog'][number]['displayMeta']>['narrativeLength'],
+): string {
+  if (!meta) return '';
+  const status = meta.status === 'under_minimum'
+    ? meta.withinRetryTolerance
+      ? '低于目标下限，但在重写宽容范围内'
+      : '未达到重写阈值'
+    : meta.status === 'over_target'
+      ? '超过目标范围'
+      : '目标范围内';
+  return [
+    '正文篇幅诊断：',
+    `档位：${meta.label}（${meta.preference}）`,
+    `目标：${meta.minimumCharacters}-${meta.maximumCharacters} 个非空白字符`,
+    ...(meta.preference === 'rich' || meta.preference === 'long'
+      ? meta.retryMinimumCharacters !== undefined
+        ? [`自动重写：${meta.retryEnabled === false ? '关闭' : '开启'}；低于 ${meta.retryMinimumCharacters} 字才会重写`]
+        : []
+      : ['自动重写：此档位不启用']),
+    `实际：${meta.actualCharacters} 个非空白字符`,
+    `状态：${status}`,
+    ...(meta.regenerationAttempted
+      ? [
+          `整份重生成：已执行（首份 ${meta.firstAttemptCharacters ?? 0} 字，`
+          + `${meta.regenerationResolved ? '重生成后达标' : '重生成后仍未达标'}）`,
+        ]
+      : []),
+  ].join('\n');
+}
+
 function finalizeDiagnosticExport(lines: string[], mode: NonNullable<NarrativeDiagnosticExportOptions['mode']>): string {
   const text = lines.join('\n').trimEnd();
   if (mode === 'full') return redactCredentialText(text);
@@ -140,7 +207,7 @@ function redactCredentialText(text: string): string {
   return text
     .replace(/\bAuthorization\s*:\s*Bearer\s+[^"',\s}]+/gi, '[REDACTED_CREDENTIAL_HEADER]')
     .replace(/\bBearer\s+[^"',\s}]+/gi, '[REDACTED_BEARER_TOKEN]')
-    .replace(/\bsk-[A-Za-z0-9._-]+/gi, '[REDACTED_SECRET_KEY]')
+    .replace(/\b(?:sk|tp)-[A-Za-z0-9._-]+/gi, '[REDACTED_SECRET_KEY]')
     .replace(/"?x-api-key"?\s*:\s*"[^"]*"/gi, '"redactedKeyHeader":"[REDACTED]"')
     .replace(/\bx-api-key\b/gi, 'redactedKeyHeader')
     .replace(/"?apiKey"?\s*:\s*"[^"]*"/gi, '"redactedKey":"[REDACTED]"')
@@ -333,6 +400,14 @@ function formatProcessingStages(stages: TurnProcessingStageEvent[]): string {
     const parts = [`- ${stage.label}：${stage.status}`];
     if (typeof stage.elapsedMs === 'number') parts.push(`耗时 ${formatElapsedTime(stage.elapsedMs)}`);
     if (stage.model) parts.push(`模型 ${stage.model}`);
+    if (stage.usage) {
+      const usageParts: string[] = [];
+      if (typeof stage.usage.promptTokens === 'number') usageParts.push(`prompt=${stage.usage.promptTokens}`);
+      if (typeof stage.usage.completionTokens === 'number') usageParts.push(`completion=${stage.usage.completionTokens}`);
+      if (typeof stage.usage.totalTokens === 'number') usageParts.push(`total=${stage.usage.totalTokens}`);
+      appendCacheUsage(usageParts, stage.usage, stage.provider);
+      if (usageParts.length > 0) parts.push(`消耗 ${usageParts.join(', ')}`);
+    }
     if (stage.detail) parts.push(`详情：${stage.detail}`);
     lines.push(parts.join('，'));
   }
@@ -354,7 +429,7 @@ function formatNpcIntentSimulationMeta(
     lines.push(`模型：${meta.provider ?? 'unknown'} / ${meta.model ?? 'unknown'}`);
   }
 
-  const usage = formatNpcSimulationUsage(meta.usage);
+  const usage = formatNpcSimulationUsage(meta.usage, meta.provider);
   if (usage) lines.push(`消耗：${usage}`);
 
   if (meta.package?.intents.length) {
@@ -407,12 +482,14 @@ function formatDomesticResourceDelta(delta: DomesticReportResourceDelta): string
 
 function formatNpcSimulationUsage(
   usage: NonNullable<NonNullable<NarrativeRenderEntry['displayMeta']>['npcIntentSimulation']>['usage'],
+  provider?: string,
 ): string {
   if (!usage) return '';
   const parts: string[] = [];
   if (typeof usage.promptTokens === 'number') parts.push(`prompt=${usage.promptTokens}`);
   if (typeof usage.completionTokens === 'number') parts.push(`completion=${usage.completionTokens}`);
   if (typeof usage.totalTokens === 'number') parts.push(`total=${usage.totalTokens}`);
+  appendCacheUsage(parts, usage, provider);
   return parts.join(', ');
 }
 
@@ -423,6 +500,24 @@ function formatGenerationMeta(meta: NonNullable<NarrativeRenderEntry['displayMet
   if (typeof meta.promptTokens === 'number') parts.push(`prompt=${meta.promptTokens}`);
   if (typeof meta.completionTokens === 'number') parts.push(`completion=${meta.completionTokens}`);
   if (typeof meta.totalTokens === 'number') parts.push(`total=${meta.totalTokens}`);
+  appendCacheUsage(parts, meta, meta.provider);
   if (typeof meta.elapsedMs === 'number') parts.push(`elapsed=${formatElapsedTime(meta.elapsedMs)}`);
   return parts.length > 0 ? parts.join(', ') : '无统计信息';
+}
+
+function appendCacheUsage(
+  parts: string[],
+  usage: {
+    promptTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+    cacheMissTokens?: number;
+  },
+  provider?: string,
+): void {
+  if (typeof usage.cacheReadTokens === 'number') parts.push(`cacheRead=${usage.cacheReadTokens}`);
+  if (typeof usage.cacheWriteTokens === 'number') parts.push(`cacheWrite=${usage.cacheWriteTokens}`);
+  if (typeof usage.cacheMissTokens === 'number') parts.push(`cacheMiss=${usage.cacheMissTokens}`);
+  const rate = getPromptCacheHitRate({ ...usage, provider });
+  if (rate !== undefined) parts.push(`cacheHitRate=${Math.round(rate * 1000) / 10}%`);
 }

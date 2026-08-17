@@ -17,6 +17,12 @@ import { ensureLuanShiState } from '../state/createInitialRuntimeState';
 
 export type MemorySummaryTaskKind = 'recentTurnCompression';
 
+export type MemorySummaryCompressionScope =
+  | 'playerRecentToMid'
+  | 'playerMidToLong'
+  | 'npcRawToMid'
+  | 'npcMidToLong';
+
 export interface MemorySummaryNpcMemoryBlock {
   npcId: string;
   npcName: string;
@@ -43,6 +49,7 @@ export interface MemorySummaryTokenBudgetHint {
 
 export interface MemorySummaryTaskInput {
   kind: MemorySummaryTaskKind;
+  activeScopes: MemorySummaryCompressionScope[];
   apiTaskId: ApiTaskId;
   fallbackApiTaskId: ApiTaskId;
   createdAt: string;
@@ -87,48 +94,34 @@ const MID_TERM_TO_LONG_TERM_BATCH_SIZE = 10;
 const MAX_NPC_COMPRESSION_BATCHES_PER_TURN = 3;
 
 export function shouldCreateRecentTurnSummaryTask(state: RuntimeState): boolean {
-  const normalized = ensureLuanShiState(state);
-  const archive = normalized.memoryArchive;
-  if (!archive.settings.enableAutoMemorySummary) return false;
-
-  const coveredRecentIds = new Set(archive.midTermSummaries.flatMap((summary) => summary.sourceRecentTurnIds ?? []));
-  const hasStoryRecentBatch = archive.recentTurnSummaries
-    .filter((summary) => !coveredRecentIds.has(summary.id))
-    .length >= archive.settings.recentTurnCompressThreshold;
-  const hasStoryMidBatch = archive.midTermSummaries
-    .filter((summary) => !summary.foldedIntoLongTermSummaryId)
-    .length >= MID_TERM_TO_LONG_TERM_BATCH_SIZE;
-  const coveredNpcMemoryIds = new Set(archive.npcMidTermSummaries.flatMap((summary) => summary.sourceMemoryIds));
-  const hasNpcRecentBatch = normalized.npcs.some((npc) => (
-    npc.memories.filter((memory) => !coveredNpcMemoryIds.has(memory.memoryId)).length
-      >= archive.settings.npcMemoryCompressThreshold
-  ));
-  const hasNpcMidBatch = archive.npcMidTermSummaries.some((summary) => {
-    if (summary.foldedIntoLongTermSummaryId) return false;
-    return archive.npcMidTermSummaries.filter((item) => (
-      item.npcId === summary.npcId && !item.foldedIntoLongTermSummaryId
-    )).length >= MID_TERM_TO_LONG_TERM_BATCH_SIZE;
-  });
-
-  return hasStoryRecentBatch || hasStoryMidBatch || hasNpcRecentBatch || hasNpcMidBatch;
+  return buildRecentTurnMemorySummaryTask(state).activeScopes.length > 0;
 }
 
 export function buildRecentTurnMemorySummaryTask(state: RuntimeState): MemorySummaryTaskInput {
   const normalized = ensureLuanShiState(state);
   const archive = normalized.memoryArchive;
+  const enabled = archive.settings.enableAutoMemorySummary;
   const coveredRecentIds = new Set(archive.midTermSummaries.flatMap((summary) => summary.sourceRecentTurnIds ?? []));
-  const sourceRecentTurnSummaries = archive.recentTurnSummaries
-    .filter((summary) => !coveredRecentIds.has(summary.id))
-    .slice(0, archive.settings.recentTurnCompressThreshold);
+  const uncoveredRecentTurnSummaries = archive.recentTurnSummaries
+    .filter((summary) => !coveredRecentIds.has(summary.id));
+  const sourceRecentTurnSummaries = enabled
+    && uncoveredRecentTurnSummaries.length >= archive.settings.recentTurnCompressThreshold
+    ? uncoveredRecentTurnSummaries.slice(0, archive.settings.recentTurnCompressThreshold)
+    : [];
   const sourceTurnNumbers = new Set(sourceRecentTurnSummaries.map((summary) => summary.turnNumber));
-  const keptRecentTurnIds = archive.recentTurnSummaries
-    .slice(Math.max(0, archive.recentTurnSummaries.length - archive.settings.recentTurnKeepAfterCompress))
-    .map((summary) => summary.id);
-  const sourceMidTermSummaries = archive.midTermSummaries
-    .filter((summary) => !summary.foldedIntoLongTermSummaryId)
-    .slice(0, MID_TERM_TO_LONG_TERM_BATCH_SIZE);
+  const keptRecentTurnIds = sourceRecentTurnSummaries.length > 0
+    ? archive.recentTurnSummaries
+      .slice(Math.max(0, archive.recentTurnSummaries.length - archive.settings.recentTurnKeepAfterCompress))
+      .map((summary) => summary.id)
+    : [];
+  const unfoldedMidTermSummaries = archive.midTermSummaries
+    .filter((summary) => !summary.foldedIntoLongTermSummaryId);
+  const sourceMidTermSummaries = enabled
+    && unfoldedMidTermSummaries.length >= MID_TERM_TO_LONG_TERM_BATCH_SIZE
+    ? unfoldedMidTermSummaries.slice(0, MID_TERM_TO_LONG_TERM_BATCH_SIZE)
+    : [];
   const coveredNpcMemoryIds = new Set(archive.npcMidTermSummaries.flatMap((summary) => summary.sourceMemoryIds));
-  const relatedNpcMemoryBlocks = normalized.npcs
+  const relatedNpcMemoryBlocks = enabled ? normalized.npcs
     .map((npc): MemorySummaryNpcMemoryBlock => ({
       npcId: npc.npcId,
       npcName: npc.name,
@@ -139,8 +132,8 @@ export function buildRecentTurnMemorySummaryTask(state: RuntimeState): MemorySum
         .slice(0, archive.settings.npcMemoryCompressThreshold),
     }))
     .filter((block) => block.memories.length >= archive.settings.npcMemoryCompressThreshold)
-    .slice(0, MAX_NPC_COMPRESSION_BATCHES_PER_TURN);
-  const sourceNpcMidTermBlocks = Array.from(new Set(
+    .slice(0, MAX_NPC_COMPRESSION_BATCHES_PER_TURN) : [];
+  const sourceNpcMidTermBlocks = enabled ? Array.from(new Set(
     archive.npcMidTermSummaries
       .filter((summary) => !summary.foldedIntoLongTermSummaryId)
       .map((summary) => summary.npcId),
@@ -153,10 +146,24 @@ export function buildRecentTurnMemorySummaryTask(state: RuntimeState): MemorySum
       return { npcId, npcName: summaries[0].npcName, summaries };
     })
     .filter((block): block is MemorySummaryNpcMidTermBlock => Boolean(block))
-    .slice(0, MAX_NPC_COMPRESSION_BATCHES_PER_TURN);
+    .slice(0, MAX_NPC_COMPRESSION_BATCHES_PER_TURN) : [];
+  const activeScopes: MemorySummaryCompressionScope[] = [];
+  if (sourceRecentTurnSummaries.length > 0) activeScopes.push('playerRecentToMid');
+  if (sourceMidTermSummaries.length > 0) activeScopes.push('playerMidToLong');
+  if (relatedNpcMemoryBlocks.length > 0) activeScopes.push('npcRawToMid');
+  if (sourceNpcMidTermBlocks.length > 0) activeScopes.push('npcMidToLong');
+
+  const hasPlayerScope = activeScopes.includes('playerRecentToMid')
+    || activeScopes.includes('playerMidToLong');
+  const relevantNpcIds = new Set([
+    ...relatedNpcMemoryBlocks.map((block) => block.npcId),
+    ...sourceNpcMidTermBlocks.map((block) => block.npcId),
+  ]);
+  const relevantLocationIds = new Set([normalized.currentLocationId]);
 
   return {
     kind: 'recentTurnCompression',
+    activeScopes,
     apiTaskId: 'memorySummary',
     fallbackApiTaskId: 'mainNarrative',
     createdAt: normalized.currentDate,
@@ -169,13 +176,25 @@ export function buildRecentTurnMemorySummaryTask(state: RuntimeState): MemorySum
     sourceMidTermSummaries,
     relatedNpcMemoryBlocks,
     sourceNpcMidTermBlocks,
-    existingMidTermSummaries: archive.midTermSummaries,
-    existingLongTermStorySummaries: archive.longTermStorySummaries,
-    existingLongTermFacts: archive.longTermFacts,
-    existingNpcInteractionSummaries: archive.npcInteractionSummaries,
-    existingNpcMidTermSummaries: archive.npcMidTermSummaries,
-    existingNpcLongTermSummaries: archive.npcLongTermSummaries,
-    existingLocationMemorySummaries: archive.locationMemorySummaries,
+    existingMidTermSummaries: activeScopes.includes('playerRecentToMid')
+      ? archive.midTermSummaries.slice(-archive.settings.midTermSummaryLimit)
+      : [],
+    existingLongTermStorySummaries: hasPlayerScope
+      ? archive.longTermStorySummaries.slice(-3)
+      : [],
+    existingLongTermFacts: hasPlayerScope
+      ? archive.longTermFacts.slice(-archive.settings.longTermFactLimit)
+      : [],
+    existingNpcInteractionSummaries: activeScopes.includes('playerRecentToMid')
+      ? archive.npcInteractionSummaries.slice(-8)
+      : archive.npcInteractionSummaries.filter((summary) => relevantNpcIds.has(summary.npcId)),
+    existingNpcMidTermSummaries: archive.npcMidTermSummaries
+      .filter((summary) => relevantNpcIds.has(summary.npcId)),
+    existingNpcLongTermSummaries: archive.npcLongTermSummaries
+      .filter((summary) => relevantNpcIds.has(summary.npcId)),
+    existingLocationMemorySummaries: activeScopes.includes('playerRecentToMid')
+      ? archive.locationMemorySummaries.filter((summary) => relevantLocationIds.has(summary.locationId))
+      : [],
     tokenBudgetHint: buildTokenBudgetHint(archive.settings),
   };
 }
@@ -190,9 +209,12 @@ export function applyMemorySummaryResult(
   const appliedSummaries: string[] = [];
   const ignoredSummaries: string[] = [];
   const hasQualifiedPlayerRecentBatch = !task
-    || task.sourceRecentTurnSummaries.length >= task.recentTurnCompressThreshold;
+    || task.activeScopes.includes('playerRecentToMid');
   const hasQualifiedPlayerMidBatch = !task
-    || task.sourceMidTermSummaries.length >= MID_TERM_TO_LONG_TERM_BATCH_SIZE;
+    || task.activeScopes.includes('playerMidToLong');
+  const hasQualifiedNpcRawBatch = !task
+    || task.activeScopes.includes('npcRawToMid');
+  const hasQualifiedStoryContext = hasQualifiedPlayerRecentBatch || hasQualifiedPlayerMidBatch;
 
   const midTermInput = task && !hasQualifiedPlayerRecentBatch
     ? rejectUnexpectedEntries(
@@ -267,7 +289,10 @@ export function applyMemorySummaryResult(
     appliedSummaries.push(`长期档案记忆x${longTermFacts.length}`);
   }
 
-  const npcSummaries = filterValidNpcInteractionSummaries(result.npcInteractionSummaries ?? [], ignoredSummaries);
+  const npcInteractionInput = task && !hasQualifiedPlayerRecentBatch && !hasQualifiedNpcRawBatch
+    ? rejectUnexpectedEntries(result.npcInteractionSummaries ?? [], ignoredSummaries, '没有合格近期或 NPC 原始记忆批次，忽略 NPC 互动摘要')
+    : (result.npcInteractionSummaries ?? []);
+  const npcSummaries = filterValidNpcInteractionSummaries(npcInteractionInput, ignoredSummaries);
   if (npcSummaries.length > 0) {
     archive.npcInteractionSummaries = upsertByKey(archive.npcInteractionSummaries, npcSummaries, (summary) => summary.npcId);
     appliedSummaries.push(`NPC互动摘要x${npcSummaries.length}`);
@@ -345,7 +370,10 @@ export function applyMemorySummaryResult(
     appliedSummaries.push(`NPC长期记忆x${npcLongTermSummaries.length}`);
   }
 
-  const locationSummaries = filterValidLocationMemorySummaries(result.locationMemorySummaries ?? [], ignoredSummaries);
+  const locationInput = task && !hasQualifiedStoryContext
+    ? rejectUnexpectedEntries(result.locationMemorySummaries ?? [], ignoredSummaries, '没有合格玩家记忆批次，忽略地点记忆摘要')
+    : (result.locationMemorySummaries ?? []);
+  const locationSummaries = filterValidLocationMemorySummaries(locationInput, ignoredSummaries);
   if (locationSummaries.length > 0) {
     archive.locationMemorySummaries = upsertByKey(archive.locationMemorySummaries, locationSummaries, (summary) => summary.locationId);
     appliedSummaries.push(`地点记忆摘要x${locationSummaries.length}`);

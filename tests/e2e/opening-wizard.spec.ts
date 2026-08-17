@@ -4,6 +4,11 @@ import { seedMainNarrativeApi } from './e2eStorage';
 test('new journey opens the Three Kingdoms setup and keeps historical commanderies visible', async ({ page }) => {
   await seedMainNarrativeApi(page);
 
+  const changelogCloseButton = page.getByRole('button', { name: '关闭更新日志' });
+  if (await changelogCloseButton.isVisible()) {
+    await changelogCloseButton.click();
+  }
+
   await expect(page.getByText('乱世风云录')).toBeVisible();
   await page.getByRole('button', { name: '新的征程' }).click();
 

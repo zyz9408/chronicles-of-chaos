@@ -10,6 +10,7 @@ import {
   saveAutoSaveIntervalTurnsToStorage,
   saveAutoSaveLimitToStorage,
 } from '../engine/settings/SaveSettings';
+import { CloudSaveAccountPanel } from './CloudSaveAccountPanel';
 
 export function SaveSettingsPanel({ currentSaveId }: { currentSaveId?: string | null }) {
   const [autoSaveLimit, setAutoSaveLimit] = useState(
@@ -65,6 +66,10 @@ export function SaveSettingsPanel({ currentSaveId }: { currentSaveId?: string | 
           范围 {MIN_AUTO_SAVE_INTERVAL_TURNS}–{MAX_AUTO_SAVE_INTERVAL_TURNS}。默认每 1 回合生成一次；修改后从后续成功回合开始生效。
         </p>
       </div>
+
+      <div className="gs-divider-thin" />
+
+      <CloudSaveAccountPanel currentSaveId={currentSaveId} />
 
       <div className="gs-divider-thin" />
 

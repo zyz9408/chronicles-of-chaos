@@ -85,6 +85,13 @@ describe('MemorySummaryMaintenance', () => {
     expect(toPlayerSafeMemorySummaryFailureReason('429 rate limit exceeded')).toContain('请求受限');
     expect(toPlayerSafeMemorySummaryFailureReason('401 invalid API key')).toContain('鉴权失败');
     expect(toPlayerSafeMemorySummaryFailureReason('memory summary api not configured')).toContain('尚未配置');
+    expect(toPlayerSafeMemorySummaryFailureReason('TypeError: Failed to fetch')).toContain('网络连接失败');
+    expect(toPlayerSafeMemorySummaryFailureReason('API 请求失败（400）：response_format is unsupported'))
+      .toContain('接口或模型不兼容');
+    expect(toPlayerSafeMemorySummaryFailureReason('summary result had no valid entries'))
+      .toContain('返回格式不符合要求');
+    expect(toPlayerSafeMemorySummaryFailureReason('API 请求失败（503）：service unavailable'))
+      .toContain('上游服务暂时不可用');
     expect(toPlayerSafeMemorySummaryFailureReason('provider exploded at /private/path')).toBe(
       '记忆压缩 API 请求失败，请检查 API 设置后重试。',
     );

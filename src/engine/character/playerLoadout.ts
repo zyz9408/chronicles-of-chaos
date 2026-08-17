@@ -1,9 +1,22 @@
 import type { Actor, CharacterEquipmentItem, EquipmentSlot, InventoryItem } from '../types';
-import { cloneEquipmentItem, cloneInventoryItem } from './loadoutProtocol';
+import { projectEquippedItems } from './loadoutIdentity';
+import {
+  cloneEquipmentItem,
+  cloneInventoryItem,
+  equipmentItemToInventoryItem,
+} from './loadoutProtocol';
+
+export { equipmentItemToInventoryItem } from './loadoutProtocol';
 
 export interface EquipFromInventoryOptions {
   slot?: EquipmentSlot;
   treasureIndex?: number;
+}
+
+export interface UnequipInventoryItemOptions {
+  slot?: EquipmentSlot;
+  treasureIndex?: number;
+  itemName?: string;
 }
 
 export function inventoryItemToEquipmentItem(item: InventoryItem, slot?: EquipmentSlot): CharacterEquipmentItem | null {
@@ -15,24 +28,6 @@ export function inventoryItemToEquipmentItem(item: InventoryItem, slot?: Equipme
     name: item.name,
     quality: item.quality?.trim() ? item.quality : '普通',
     description: item.description?.trim() ? item.description : item.name,
-    ...(item.condition ? { condition: item.condition } : {}),
-    ...(item.statBonuses ? { statBonuses: { ...item.statBonuses } } : {}),
-    ...(item.promptHint ? { promptHint: item.promptHint } : {}),
-    ...(item.checkHooks ? { checkHooks: item.checkHooks.map((hook) => ({ ...hook })) } : {}),
-    ...(item.unlocks ? { unlocks: [...item.unlocks] } : {}),
-    ...(item.risks ? { risks: [...item.risks] } : {}),
-  };
-}
-
-export function equipmentItemToInventoryItem(item: CharacterEquipmentItem): InventoryItem {
-  return {
-    id: item.id,
-    name: item.name,
-    quantity: 1,
-    category: 'equipment',
-    equipSlot: item.slot,
-    quality: item.quality,
-    description: item.description,
     ...(item.condition ? { condition: item.condition } : {}),
     ...(item.statBonuses ? { statBonuses: { ...item.statBonuses } } : {}),
     ...(item.promptHint ? { promptHint: item.promptHint } : {}),
@@ -72,7 +67,11 @@ export function equipInventoryItem(
   const nextEquipmentItem = inventoryItemToEquipmentItem(source, options.slot);
   if (!nextEquipmentItem) return player;
 
-  const currentEquipment = player.equipment ?? [];
+  // Manual equipment must use the same six-slot projection as the UI. Legacy
+  // saves can contain hidden duplicate records that the panel correctly omits;
+  // counting those raw records would make visible treasure slots look empty
+  // while the equip action keeps replacing the first treasure.
+  const currentEquipment = projectEquippedItems(player.equipment ?? []);
   let nextEquipment: CharacterEquipmentItem[];
 
   if (nextEquipmentItem.slot === 'treasure') {
@@ -94,6 +93,74 @@ export function equipInventoryItem(
     ...player,
     equipment: nextEquipment,
     inventory: (player.inventory ?? []).map(cloneInventoryItem),
+  };
+}
+
+/**
+ * Clears one equipped item while retaining it in carried inventory.
+ *
+ * `treasureIndex` addresses one of the three projected treasure slots. The
+ * optional name disambiguates legacy saves that reused one ID for different
+ * equipment records. Equipment-only legacy records are restored to inventory
+ * before the slot is cleared, so manual unequip never makes an item disappear.
+ */
+export function unequipInventoryItem(
+  player: Actor,
+  itemId: string,
+  options: UnequipInventoryItemOptions = {},
+): Actor {
+  const normalizedItemId = itemId.trim();
+  if (!normalizedItemId) return player;
+
+  const currentEquipment = projectEquippedItems(player.equipment ?? []);
+  let targetIndex = -1;
+
+  if (
+    options.slot === 'treasure'
+    && typeof options.treasureIndex === 'number'
+    && Number.isInteger(options.treasureIndex)
+    && options.treasureIndex >= 0
+    && options.treasureIndex < 3
+  ) {
+    const treasureIndexes = currentEquipment
+      .map((item, index) => ({ item, index }))
+      .filter(({ item }) => item.slot === 'treasure');
+    const indexedTarget = treasureIndexes[options.treasureIndex];
+    if (
+      indexedTarget
+      && indexedTarget.item.id === normalizedItemId
+      && (!options.itemName || indexedTarget.item.name === options.itemName)
+    ) {
+      targetIndex = indexedTarget.index;
+    }
+  }
+
+  if (targetIndex < 0) {
+    targetIndex = currentEquipment.findIndex((item) => (
+      item.id === normalizedItemId
+      && (!options.slot || item.slot === options.slot)
+      && (!options.itemName || item.name === options.itemName)
+    ));
+  }
+  if (targetIndex < 0) return player;
+
+  const target = currentEquipment[targetIndex];
+  const inventory = (player.inventory ?? []).map(cloneInventoryItem);
+  const alreadyInInventory = inventory.some((item) => (
+    item.id === target.id
+    && item.name === target.name
+    && (!item.equipSlot || item.equipSlot === target.slot)
+  ));
+  if (!alreadyInInventory) {
+    inventory.push(equipmentItemToInventoryItem(target));
+  }
+
+  return {
+    ...player,
+    equipment: currentEquipment
+      .filter((_item, index) => index !== targetIndex)
+      .map(cloneEquipmentItem),
+    inventory,
   };
 }
 

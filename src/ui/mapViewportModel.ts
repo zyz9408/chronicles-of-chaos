@@ -37,7 +37,8 @@ export interface MapLabelLayout {
 }
 
 export const MAP_MIN_ZOOM = 0.65;
-export const MAP_MAX_ZOOM = 9.5;
+export const MAP_LOCAL_FOCUS_ZOOM = 12;
+export const MAP_MAX_ZOOM = 24;
 
 const tierRank: Record<MapVisualTier, number> = {
   far: 0,
@@ -186,6 +187,24 @@ export function getMapVisualTier(zoom: number): MapVisualTier {
   return 'far';
 }
 
+export function stepMapZoom(
+  currentZoom: number,
+  direction: number,
+  inputMode: 'button' | 'wheel' = 'button',
+): number {
+  const current = clampNumber(currentZoom, MAP_MIN_ZOOM, MAP_MAX_ZOOM);
+  if (!Number.isFinite(direction) || direction === 0) return current;
+
+  const sign = direction > 0 ? 1 : -1;
+  const step = current < 4.2
+    ? (inputMode === 'wheel' ? 0.28 : 0.45)
+    : inputMode === 'wheel'
+      ? Math.max(0.42, current * 0.08)
+      : Math.max(0.8, current * 0.18);
+
+  return Number(clampNumber(current + (sign * step), MAP_MIN_ZOOM, MAP_MAX_ZOOM).toFixed(2));
+}
+
 function getPanLimit(zoom: number): number {
   return Math.max(80, zoom * 62);
 }
@@ -257,7 +276,7 @@ function estimateMapLabelRect(
   const labelHeight = 25;
   const markerX = (point.x / 100) * viewportWidth * zoom;
   const markerY = (point.y / 100) * viewportHeight * zoom;
-  const labelLeft = markerX - (6.4 * zoom) + 12;
+  const labelLeft = markerX - 6.4 + 12;
 
   return {
     left: labelLeft - 4,

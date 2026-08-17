@@ -1,8 +1,9 @@
-import type { Actor, CharacterEquipmentItem, CharacterTraitRarity } from '../engine/types';
+import type { Actor, CharacterEquipmentItem, CharacterTraitRarity, CharacterUniqueArtRarity } from '../engine/types';
 import type { LongTermMemoryFact, MemoryArchive, MemoryImportance } from '../engine/types/memory';
 import { formatCurrency } from '../engine/character/currency';
 import { getFameTierLabel, getMoralityTierLabel } from '../engine/character/reputation';
-import { buildEquipmentTooltipTitle, buildTraitTooltipTitle, buildUniqueArtTooltipTitle, formatKnownSourceLabel, normalizeTraitRarity } from './gameTooltipText';
+import { deriveActorCurrentAge, normalizeCompleteBirthDate } from '../engine/time/npcAge';
+import { buildEquipmentTooltipTitle, buildTraitTooltipTitle, buildUniqueArtTooltipTitle, formatKnownSourceLabel, normalizeTraitRarity, normalizeUniqueArtRarity } from './gameTooltipText';
 
 export interface PlayerProfileRow {
   label: string;
@@ -15,7 +16,7 @@ export interface PlayerProfileCard {
   label: string;
   kind: 'trait' | 'uniqueArt' | 'buff' | 'debuff' | 'mixed';
   tooltip?: string;
-  rarity?: CharacterTraitRarity;
+  rarity?: CharacterTraitRarity | CharacterUniqueArtRarity;
 }
 
 export interface PlayerProfileMemorySection {
@@ -186,13 +187,22 @@ function buildSummaryRows(
   ];
 }
 
-export function buildPlayerProfilePanelModel(player: Actor, memoryArchive?: MemoryArchive): PlayerProfilePanelModel {
+export function buildPlayerProfilePanelModel(
+  player: Actor,
+  memoryArchive?: MemoryArchive,
+  currentDate?: string,
+): PlayerProfilePanelModel {
   const basicRows: PlayerProfileRow[] = [];
-  if (player.sex || player.age != null) {
+  const currentAge = currentDate ? deriveActorCurrentAge(player, currentDate) : player.age;
+  if (player.sex || currentAge != null) {
     basicRows.push({
       label: '基本',
-      value: [player.sex, player.age != null ? `${player.age}岁` : undefined].filter(hasText).join(' / '),
+      value: [player.sex, currentAge != null ? `${currentAge}岁` : undefined].filter(hasText).join(' / '),
     });
+  }
+  const normalizedBirthDate = normalizeCompleteBirthDate(player.birthDate);
+  if (normalizedBirthDate) {
+    basicRows.push({ label: '出生日期', value: normalizedBirthDate });
   }
   pushTextRow(basicRows, '别称', player.aliases?.filter(hasText).join('、 '));
   pushTextRow(basicRows, '常用称呼', player.commonAddress);
@@ -224,7 +234,7 @@ export function buildPlayerProfilePanelModel(player: Actor, memoryArchive?: Memo
     label: art.name,
     kind: 'uniqueArt' as const,
     tooltip: buildUniqueArtTooltipTitle(art),
-    rarity: normalizeTraitRarity(art.rarity),
+    rarity: normalizeUniqueArtRarity(art.rarity),
   }));
 
   const effectCards = (player.effects ?? []).map((effect) => ({

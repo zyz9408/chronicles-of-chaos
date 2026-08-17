@@ -48,7 +48,8 @@ async function installEncounterNarrativeStream(page: Page): Promise<void> {
       ].join('\n');
       const encoder = new TextEncoder();
       return new Response(new ReadableStream({
-        start(controller) {
+        async start(controller) {
+          await new Promise((resolve) => window.setTimeout(resolve, 900));
           controller.enqueue(encoder.encode(events));
           controller.close();
         },
@@ -114,7 +115,13 @@ async function seedCombatCheckpoint(page: Page): Promise<string> {
     state.player.vitals = { hp: 100, maxHp: 100, stamina: 100, maxStamina: 100 };
     state.player.traits = [];
     state.player.uniqueArts = [];
-    state.player.equipment = [];
+    state.player.equipment = [1, 2, 3].map((index) => ({
+      id: `player_treasure_e2e_${index}`,
+      slot: 'treasure' as const,
+      name: `战斗验收宝物${index}`,
+      quality: index === 3 ? '绝世' : '传说',
+      description: '验证三宝物槽不会阻断 Combat V2。',
+    }));
     state.player.inventory = [];
     state.turnLog = [{
       turnNumber: 1,
@@ -310,6 +317,7 @@ test.describe.serial('Combat and War V2 incremental continuity regression', () =
   const consoleProblems: string[] = [];
 
   test.beforeAll(async ({ browser }) => {
+    test.setTimeout(120_000);
     await mkdir(SCREENSHOT_DIR, { recursive: true });
     context = await browser.newContext({
       baseURL: `http://127.0.0.1:${process.env.PLAYWRIGHT_PORT ?? '41731'}`,
@@ -341,6 +349,10 @@ test.describe.serial('Combat and War V2 incremental continuity regression', () =
     const combatBriefing = page.getByRole('dialog', { name: '战斗简报' });
     await expect(combatBriefing).toBeVisible({ timeout: 30_000 });
     await combatBriefing.getByRole('button', { name: '继续' }).click();
+    const combatNarrativeWait = combatScreen.getByTestId('combat-v2-stage-narrative');
+    await expect(combatNarrativeWait).toBeVisible();
+    await expect(combatNarrativeWait).toHaveAttribute('aria-busy', 'true');
+    await expect(combatNarrativeWait).toContainText('正在生成战后正文');
     await expect(combatScreen).toBeHidden({ timeout: 30_000 });
     const afterCombat = await inspectSave(page, saveId);
     expect(afterCombat.activeStatus).toBeUndefined();
@@ -395,6 +407,10 @@ test.describe.serial('Combat and War V2 incremental continuity regression', () =
     expect(beforeRetry.warRequests).toBe(3);
 
     await warScreen.getByRole('button', { name: '生成战后正文' }).click();
+    const warNarrativeWait = warScreen.getByTestId('war-v2-stage-narrative');
+    await expect(warNarrativeWait).toBeVisible();
+    await expect(warNarrativeWait).toHaveAttribute('aria-busy', 'true');
+    await expect(warNarrativeWait).toContainText('正在生成战后正文');
     await expect(warScreen).toBeHidden({ timeout: 30_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/continuity-complete-1366x768.png`, fullPage: true });
 

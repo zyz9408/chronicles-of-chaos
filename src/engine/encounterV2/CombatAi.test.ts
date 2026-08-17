@@ -71,6 +71,54 @@ describe('CombatAi', () => {
     });
   });
 
+  it('does not choose stabilization when the acting ally cannot pay 25 HP', () => {
+    for (const rescuerHp of [25, 24, 1]) {
+      const state = buildAiState();
+      state.phase = 'awaiting_action';
+      state.currentActorId = 'player';
+      state.combatants.find((combatant) => combatant.actorId === 'player')!.hp = rescuerHp;
+      const ally = state.combatants.find((combatant) => combatant.actorId === 'ally')!;
+      ally.hp = 0;
+      ally.downCount = 1;
+      ally.statuses = ['downed'];
+
+      expect(chooseCombatAiAction(state, 'player').type).not.toBe('stabilize');
+    }
+  });
+
+  it('applies the same rescue threshold to an enemy retainer protecting a downed commander', () => {
+    const intent = makeCombatIntent(['player'], ['enemy_commander', 'enemy_retainer']);
+    const snapshot = createCombatEncounterSnapshot({
+      sessionId: 'session_enemy_rescue',
+      intent,
+      playerSources: [makeCombatantSource('player')],
+      enemySources: [
+        makeNpcCombatantSource('enemy_commander'),
+        makeNpcCombatantSource('enemy_retainer'),
+      ],
+      projections: bundle(),
+      threatTier: 'minor',
+      lootableItemIds: [],
+      capturableEquipmentItemIds: [],
+    });
+    const state = createCombatEngineState(snapshot);
+    state.phase = 'awaiting_action';
+    state.currentActorId = 'enemy_retainer';
+    const commander = state.combatants.find((combatant) => combatant.actorId === 'enemy_commander')!;
+    const retainer = state.combatants.find((combatant) => combatant.actorId === 'enemy_retainer')!;
+    commander.hp = 0;
+    commander.downCount = 1;
+    commander.statuses = ['downed'];
+    retainer.hp = 25;
+
+    expect(chooseCombatAiAction(state, 'enemy_retainer').type).not.toBe('stabilize');
+
+    retainer.hp = 26;
+    expect(chooseCombatAiAction(state, 'enemy_retainer')).toEqual({
+      type: 'stabilize', actorId: 'enemy_retainer', targetId: 'enemy_commander',
+    });
+  });
+
   it('pauses automatic combat on low player HP, any player down or disposition decisions', () => {
     const lowHp = buildAiState();
     lowHp.combatants[0].hp = 24;

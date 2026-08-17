@@ -38,7 +38,7 @@ describe('turnJudgementCards', () => {
         details: [{ label: '基础', value: 14, text: '智力' }],
         tags: ['日常'],
       },
-    ]);
+    ], { check_gate_probe: 12 });
 
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({
@@ -50,6 +50,7 @@ describe('turnJudgementCards', () => {
       difficulty: 16,
       total: 23,
       result: '成功',
+      experienceAward: 12,
     });
   });
 

@@ -14,9 +14,12 @@ import {
   NPC_PRESENCE_HINTS_ENABLED_KEY,
   DEFAULT_NARRATIVE_LENGTH,
   GAME_NARRATIVE_LENGTH_KEY,
+  GAME_NARRATIVE_LENGTH_RETRY_ENABLED_KEY,
   loadNarrativeLengthFromStorage,
+  loadNarrativeLengthRetryEnabledFromStorage,
   normalizeNarrativeLength,
   saveNarrativeLengthToStorage,
+  saveNarrativeLengthRetryEnabledToStorage,
   DEFAULT_ADULT_INTIMACY_STYLE,
   GAME_ADULT_INTIMACY_STYLE_KEY,
   loadAdultIntimacyStyleFromStorage,
@@ -28,16 +31,21 @@ import {
   normalizePregnancyMode,
   savePregnancyModeToStorage,
   DEFAULT_MOTION_PREFERENCE,
+  DEFAULT_COLOR_THEME,
+  GAME_COLOR_THEME_KEY,
   GAME_MOTION_PREFERENCE_KEY,
   GAME_NARRATIVE_FONT_SIZE_KEY,
   GAME_NARRATIVE_LINE_HEIGHT_KEY,
   loadMotionPreferenceFromStorage,
+  loadColorThemeFromStorage,
   loadNarrativeFontSizeFromStorage,
   loadNarrativeLineHeightFromStorage,
   normalizeMotionPreference,
+  normalizeColorTheme,
   normalizeNarrativeFontSize,
   normalizeNarrativeLineHeight,
   saveMotionPreferenceToStorage,
+  saveColorThemeToStorage,
   saveNarrativeFontSizeToStorage,
   saveNarrativeLineHeightToStorage,
 } from './DisplaySettings';
@@ -135,19 +143,31 @@ describe('DisplaySettings', () => {
     expect(loadNarrativeLengthFromStorage()).toBe('standard');
   });
 
-  it('defaults adult intimacy style to relationship immersion and rejects unknown values', () => {
-    expect(DEFAULT_ADULT_INTIMACY_STYLE).toBe('relationshipImmersion');
-    expect(normalizeAdultIntimacyStyle(undefined)).toBe('relationshipImmersion');
-    expect(normalizeAdultIntimacyStyle('skip-intimacy')).toBe('relationshipImmersion');
-  });
-
-  it('loads and saves adult intimacy style settings', () => {
+  it('defaults narrative length retry to enabled and persists the player choice', () => {
     const storage = new MemoryStorage();
 
-    expect(loadAdultIntimacyStyleFromStorage(storage)).toBe('relationshipImmersion');
-    expect(saveAdultIntimacyStyleToStorage('directRealism', storage)).toBe('directRealism');
-    expect(storage.getItem(GAME_ADULT_INTIMACY_STYLE_KEY)).toBe('directRealism');
-    expect(loadAdultIntimacyStyleFromStorage(storage)).toBe('directRealism');
+    expect(loadNarrativeLengthRetryEnabledFromStorage(storage)).toBe(true);
+    expect(saveNarrativeLengthRetryEnabledToStorage(false, storage)).toBe(false);
+    expect(storage.getItem(GAME_NARRATIVE_LENGTH_RETRY_ENABLED_KEY)).toBe('0');
+    expect(loadNarrativeLengthRetryEnabledFromStorage(storage)).toBe(false);
+    expect(saveNarrativeLengthRetryEnabledToStorage(true, storage)).toBe(true);
+    expect(loadNarrativeLengthRetryEnabledFromStorage(storage)).toBe(true);
+  });
+
+  it('uses one adaptive adult intimacy style and rejects unknown values', () => {
+    expect(DEFAULT_ADULT_INTIMACY_STYLE).toBe('adaptive');
+    expect(normalizeAdultIntimacyStyle(undefined)).toBe('adaptive');
+    expect(normalizeAdultIntimacyStyle('skip-intimacy')).toBe('adaptive');
+  });
+
+  it('migrates legacy adult intimacy style settings to the adaptive style', () => {
+    const storage = new MemoryStorage();
+
+    storage.setItem(GAME_ADULT_INTIMACY_STYLE_KEY, 'directRealism');
+    expect(loadAdultIntimacyStyleFromStorage(storage)).toBe('adaptive');
+    expect(storage.getItem(GAME_ADULT_INTIMACY_STYLE_KEY)).toBe('adaptive');
+    expect(saveAdultIntimacyStyleToStorage('relationshipImmersion', storage)).toBe('adaptive');
+    expect(loadAdultIntimacyStyleFromStorage(storage)).toBe('adaptive');
   });
 
   it('defaults pregnancy mode to standard and persists all four modes', () => {
@@ -186,5 +206,17 @@ describe('DisplaySettings', () => {
     expect(saveMotionPreferenceToStorage('reduced', storage)).toBe('reduced');
     expect(storage.getItem(GAME_MOTION_PREFERENCE_KEY)).toBe('reduced');
     expect(loadMotionPreferenceFromStorage(storage)).toBe('reduced');
+  });
+
+  it('keeps dark as the default theme and persists an explicit light choice', () => {
+    const storage = new MemoryStorage();
+
+    expect(DEFAULT_COLOR_THEME).toBe('dark');
+    expect(normalizeColorTheme(undefined)).toBe('dark');
+    expect(normalizeColorTheme('inverted')).toBe('dark');
+    expect(loadColorThemeFromStorage(storage)).toBe('dark');
+    expect(saveColorThemeToStorage('light', storage)).toBe('light');
+    expect(storage.getItem(GAME_COLOR_THEME_KEY)).toBe('light');
+    expect(loadColorThemeFromStorage(storage)).toBe('light');
   });
 });

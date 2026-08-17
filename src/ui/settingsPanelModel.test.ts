@@ -22,6 +22,7 @@ describe('settingsPanelModel', () => {
       '游戏设定',
       '阅读与动效',
       '存档管理',
+      '变量管理',
       '数据管理',
       'API 配置',
       '功能配置',
@@ -30,6 +31,7 @@ describe('settingsPanelModel', () => {
       'Token 估算',
     ]);
     expect(navItems.map((item) => item.group)).toEqual([
+      'common',
       'common',
       'common',
       'common',
@@ -46,6 +48,10 @@ describe('settingsPanelModel', () => {
     });
     expect(navItems.find((item) => item.tab === 'save')).toMatchObject({
       label: '存档管理',
+      disabled: false,
+    });
+    expect(navItems.find((item) => item.tab === 'variables')).toMatchObject({
+      label: '变量管理',
       disabled: false,
     });
   });
@@ -66,7 +72,14 @@ describe('settingsPanelModel', () => {
   it('moves feature-specific API routes into their own feature config panels', () => {
     expect(getFunctionConfigPanel('memory')?.routeTaskIds).toEqual(['memorySummary']);
     expect(getFunctionConfigPanel('vector')?.routeTaskIds).toEqual(['embedding']);
-    expect(getFunctionConfigPanel('npcProfile')?.routeTaskIds).toEqual(['npcCompletion']);
+    expect(getFunctionConfigPanel('npcProfile')?.routeTaskIds).toEqual([
+      'npcCompletion',
+      'npcCompletionFallback',
+    ]);
+    expect(getFunctionConfigPanel('stateWriteback')?.routeTaskIds).toEqual([
+      'stateWriteback',
+      'stateWritebackFallback',
+    ]);
   });
 
   it('describes memory config as story and protagonist memory, not NPC-only memory', () => {
@@ -86,10 +99,11 @@ describe('settingsPanelModel', () => {
     expect(npcProfile?.routeTaskIds).not.toContain('npcSimulation');
   });
 
-  it('hides unused or future routes instead of showing them in the crowded API page', () => {
-    expect(getHiddenRouteTaskIds()).toEqual(['quickInteraction', 'worldEvolution', 'imagePrompt']);
+  it('exposes the active world evolution route and hides only unused routes', () => {
+    expect(getHiddenRouteTaskIds()).toEqual(['quickInteraction', 'imagePrompt']);
     expect(FUNCTION_CONFIG_PANELS.flatMap((panel) => panel.routeTaskIds)).not.toContain('quickInteraction');
-    expect(FUNCTION_CONFIG_PANELS.flatMap((panel) => panel.routeTaskIds)).not.toContain('worldEvolution');
+    expect(getFunctionConfigPanel('worldEvolution')?.routeTaskIds).toEqual(['worldEvolution']);
+    expect(getFunctionConfigPanel('worldEvolution')?.description).toContain('独立于当前回合 NPC 反应模拟');
     expect(FUNCTION_CONFIG_PANELS.flatMap((panel) => panel.routeTaskIds)).not.toContain('imagePrompt');
   });
 
@@ -134,30 +148,14 @@ describe('settingsPanelModel', () => {
     expect(control?.options.find((option) => option.value === 'standard')?.description).toContain('约 600-1000 字');
   });
 
-  it('exposes adult intimacy style as a game setting', () => {
-    const controls = getGameSettingsControls() as Array<{
-      id: string;
-      type: string;
-      label: string;
-      description: string;
-      defaultValue?: string;
-      options?: Array<{ value: string; label: string; description: string }>;
-    }>;
-    const control = controls.find((item) => item.id === 'adultIntimacyStyle');
-
-    expect(control).toMatchObject({
-      id: 'adultIntimacyStyle',
-      type: 'select',
-      label: '成人描写风格',
-      defaultValue: 'relationshipImmersion',
+  it('exposes narrative length retry as a separate enabled-by-default toggle', () => {
+    expect(getGameSettingsControls()).toContainEqual({
+      id: 'narrativeLengthRetry',
+      type: 'toggle',
+      label: '字数不足时自动重写',
+      description: expect.stringContaining('目标下限的 90%'),
+      defaultEnabled: true,
     });
-    expect(control?.description).toContain('只影响已通过门禁的成人内容');
-    expect(control?.options?.map((option) => option.value)).toEqual(['relationshipImmersion', 'directRealism']);
-    expect(control?.options?.map((option) => option.label)).toEqual(['关系沉浸', '直白写实']);
-    expect(control?.options?.find((option) => option.value === 'relationshipImmersion')?.description)
-      .toContain('具体部位和动作仍使用直白词汇，不使用委婉比喻');
-    expect(control?.options?.find((option) => option.value === 'directRealism')?.description)
-      .toContain('禁止用比喻或含蓄代称遮蔽具体部位和动作');
   });
 
   it('exposes pregnancy and child continuation without adding a separate management system', () => {

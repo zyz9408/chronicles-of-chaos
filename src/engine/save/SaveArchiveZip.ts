@@ -78,23 +78,45 @@ function snapshotPath(snapshot: StoredTurnSnapshot, index: number): string {
 }
 
 async function zipAsync(entries: Record<string, Uint8Array>): Promise<Uint8Array> {
-  const { zip } = await loadSaveArchiveCodec();
-  return new Promise((resolve, reject) => {
-    zip(entries, { level: 6 }, (error, data) => {
-      if (error) reject(error);
-      else resolve(data);
+  const { zip, zipSync } = await loadSaveArchiveCodec();
+  const zipSynchronously = () => zipSync(entries, { level: 6 });
+  if (typeof Worker !== 'function') return zipSynchronously();
+
+  try {
+    return await new Promise((resolve, reject) => {
+      zip(entries, { level: 6 }, (error, data) => {
+        if (error) reject(error);
+        else resolve(data);
+      });
     });
-  });
+  } catch (asyncError) {
+    try {
+      return zipSynchronously();
+    } catch {
+      throw asyncError;
+    }
+  }
 }
 
 async function unzipAsync(data: Uint8Array): Promise<Record<string, Uint8Array>> {
-  const { unzip } = await loadSaveArchiveCodec();
-  return new Promise((resolve, reject) => {
-    unzip(data, (error, entries) => {
-      if (error) reject(error);
-      else resolve(entries);
+  const { unzip, unzipSync } = await loadSaveArchiveCodec();
+  const unzipSynchronously = () => unzipSync(data);
+  if (typeof Worker !== 'function') return unzipSynchronously();
+
+  try {
+    return await new Promise((resolve, reject) => {
+      unzip(data, (error, entries) => {
+        if (error) reject(error);
+        else resolve(entries);
+      });
     });
-  });
+  } catch (asyncError) {
+    try {
+      return unzipSynchronously();
+    } catch {
+      throw asyncError;
+    }
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -250,8 +272,37 @@ function isZipBytes(data: Uint8Array): boolean {
   return data.length >= 4 && data[0] === 0x50 && data[1] === 0x4b;
 }
 
+function readFileWithFileReader(file: File): Promise<ArrayBuffer> {
+  if (typeof FileReader !== 'function') {
+    return Promise.reject(new Error('当前浏览器无法读取所选存档文件。'));
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (reader.result instanceof ArrayBuffer) resolve(reader.result);
+      else reject(new Error('所选存档文件没有返回可读取的数据。'));
+    };
+    reader.onerror = () => reject(new Error('所选存档文件读取失败，请确认文件已完整下载。'));
+    reader.onabort = () => reject(new Error('存档文件读取已取消。'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+async function readSaveArchiveBytes(file: File): Promise<Uint8Array> {
+  if (typeof file.arrayBuffer === 'function') {
+    try {
+      return new Uint8Array(await file.arrayBuffer());
+    } catch {
+      return new Uint8Array(await readFileWithFileReader(file));
+    }
+  }
+
+  return new Uint8Array(await readFileWithFileReader(file));
+}
+
 export async function readSaveArchiveFile(file: File): Promise<unknown> {
-  const bytes = new Uint8Array(await file.arrayBuffer());
+  const bytes = await readSaveArchiveBytes(file);
   if (isZipBytes(bytes)) return parsePortableSaveZip(bytes);
   const { strFromU8 } = await loadSaveArchiveCodec();
   return JSON.parse(strFromU8(bytes));

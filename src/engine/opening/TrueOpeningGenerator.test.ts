@@ -189,7 +189,7 @@ describe('generateTrueOpening', () => {
     const llmClient = {
       generate: vi.fn(async () => ({
         content: JSON.stringify({
-          narrativeText: 'The first true opening scene.',
+          narrativeText: `The first true opening scene. ${'叙'.repeat(1600)}`,
           suggestedActions: [{ label: 'Look around', description: 'Read the situation.', actionType: 'explore' }],
           statePatches: [
             {
@@ -226,9 +226,9 @@ describe('generateTrueOpening', () => {
     expect(promptText).toContain('upsertTroopLedger');
     expect(promptText).toContain('relationToPlayer 必须写简短关系文本');
     expect(promptText).toContain('不得写数字评分');
-    expect(promptText).toContain('玩家亲自统领');
-    expect(promptText).toContain('leaderNpcId 写 player');
-    expect(promptText).toContain('副将、军侯、带兵副手');
+    expect(promptText).toContain('leaderNpcId 记录实际带兵将领');
+    expect(promptText).toContain('deputyNpcIds（最多两名）');
+    expect(promptText).toContain('军师写 strategistNpcId');
     expect(promptText).toContain('新建部队必须包含 quality、readiness、fatigue、lifecycleStatus');
     expect(promptText).toContain('KnowledgeBase');
     expect(promptText).toContain('model knowledge');
@@ -239,10 +239,14 @@ describe('generateTrueOpening', () => {
     expect(promptText).toContain('不要生成天下所有势力');
     expect(promptText).toContain('真开局势力账本不得为空');
     expect(promptText).toContain('主角当前归属/直接接触势力');
-    expect(promptText).toContain('即使其不在场，也应建立简要人物志');
+    expect(promptText).toContain('一次性普通斥候、流民、守门兵');
+    expect(promptText).toContain('persistenceReason');
+    expect(promptText).toContain('persistenceEvidence');
     expect(promptText).toContain('traits[].source 不得省略或写空字符串');
     expect(promptText).not.toContain('worldBook.factionsSeed 只是稳定 factionId');
     expect(promptText).toContain('protagonistProfile');
+    expect(promptText).toContain('personalEscortEntitlement');
+    expect(promptText).toContain('official_position/military_command/nobility');
     expect(promptText).toContain('concretize conceptual birthOrigin/currentIdentity');
     expect(promptText).toContain('appearance/personality');
     expect(promptText).toContain('稳定身份事实不得只写入记忆');
@@ -287,8 +291,12 @@ describe('generateTrueOpening', () => {
     expect(promptText).toContain('updateCharacterUniqueArts');
     expect(promptText).toContain('openingUniqueArts');
     expect(promptText).toContain('personalCombat');
-    expect(promptText).toContain('white/green/blue/red/gold');
+    expect(promptText).toContain('white/green/blue/purple/orange/red');
     expect(promptText).toContain('初始行装');
+    expect(promptText).toContain('每个逻辑物品 id 必须唯一');
+    expect(promptText).toContain('personalMoney 的底层单位是钱');
+    expect(promptText).toContain('黄金不是 personalMoney 的高位单位');
+    expect(promptText).toContain('金饼、马蹄金');
     expect(promptText).toContain('出身身份');
     expect(promptText).toContain('开局领地与私人产业边界');
     expect(promptText).toContain('没有实际控制、临时控制或争夺的具体领地时，不得输出 upsertHoldingLedger');
@@ -369,6 +377,11 @@ describe('generateTrueOpening', () => {
               currentIdentity: '北军军侯',
               currentIdentityDescription: '统带北军一部的低阶军官，正被洛阳乱局卷入。',
               militaryTitle: '北军军侯',
+              personalEscortEntitlement: {
+                status: 'customary',
+                bases: ['military_command'],
+                updatedAt: '公元189年09月01日 12:00（午时）',
+              },
               appearance: '年少而清瘦，甲衣尚新，眉眼里有压不住的警觉。',
               personality: '谨慎敏锐，重承诺，也知道乱局里不能轻信人。',
               identitySummary: '汉室远支出身的北军军侯。',
@@ -395,6 +408,10 @@ describe('generateTrueOpening', () => {
       birthOrigin: '汉室远支',
       currentIdentity: '北军军侯',
       militaryTitle: '北军军侯',
+      personalEscortEntitlement: {
+        status: 'customary',
+        bases: ['military_command'],
+      },
       appearance: '年少而清瘦，甲衣尚新，眉眼里有压不住的警觉。',
       personality: '谨慎敏锐，重承诺，也知道乱局里不能轻信人。',
       identitySummary: '汉室远支出身的北军军侯。',
@@ -409,7 +426,70 @@ describe('generateTrueOpening', () => {
         apiConfig: null,
         llmClient: { generate: vi.fn() },
       }),
-    ).rejects.toThrow('真开局需要先配置主剧情 API');
+    ).rejects.toThrow('开局前请先配置主剧情 API');
+  });
+
+  it('commits opening trait rarity independently when an unrelated state patch rejects the atomic batch', async () => {
+    const state = makeState();
+    state.player.traits = [{
+      id: 'custom_trait_destined_presence',
+      label: '天命威仪',
+      description: '具有足以震动常人的霸主威压。',
+      source: 'custom',
+      promptHint: '在他人感知主角气场时体现。',
+    }];
+    state.worldStateDelta.openingTraitDetails = state.player.traits.map((trait) => ({
+      ...trait,
+      rarity: '待开局 LLM 判定',
+    }));
+
+    const llmClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify({
+          narrativeText: '众人感到主角身上有近乎传说的压迫感，却仍以现实利害审视其行动。',
+          suggestedActions: [],
+          statePatches: [
+            {
+              type: 'timeAdvance',
+              payload: { minutesAdvanced: 15, reason: 'opening setup', category: 'opening' },
+            },
+            {
+              type: 'luanshiCommand',
+              payload: {
+                command: {
+                  action: 'updatePlayerTraits',
+                  characterId: 'player',
+                  characterName: 'A Yuan',
+                  traits: [{
+                    ...state.player.traits?.[0],
+                    rarity: 'orange',
+                  }],
+                  summary: '开局判定为传说特质。',
+                },
+              },
+            },
+            {
+              type: 'locationChange',
+              payload: { toLocationId: 'missing_location' },
+            },
+          ],
+          statePatch: null,
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      })),
+    };
+
+    const result = await generateTrueOpening(worldBook, state, { apiConfig, llmClient });
+
+    expect(result.patchValidation?.valid).toBe(false);
+    expect(llmClient.generate).toHaveBeenCalledOnce();
+    expect(result.newRuntimeState.player.traits?.[0]?.rarity).toBe('orange');
+    expect(result.newRuntimeState.worldStateDelta.openingTraitDetails).toMatchObject([
+      { id: 'custom_trait_destined_presence', rarity: 'orange' },
+    ]);
+    expect(result.newRuntimeState.turnLog[result.newRuntimeState.turnLog.length - 1]?.statePatchSummary)
+      .toContain('开局特质品级已独立核验');
   });
 
   it('rejects a late main result before true-opening compliance or state commit', async () => {
@@ -489,6 +569,7 @@ describe('generateTrueOpening', () => {
     expect(promptText).toContain('npcProfileSuggestions[].equipment');
     expect(promptText).toContain('npcProfileSuggestions[].inventory');
     expect(promptText).toContain('开局重要 NPC 行装');
+    expect(promptText).toContain('禁止重复装备和非宝物同槽并列');
   });
 
   it('preserves opening NPC profile writeback when timeAdvance repair is needed', async () => {
@@ -502,6 +583,8 @@ describe('generateTrueOpening', () => {
           {
             npcId: 'npc_opening_woman',
             name: 'Opening Woman',
+            persistenceReason: 'opening_cast',
+            persistenceEvidence: 'She is an established principal member of the opening cast and the player household.',
             sex: '女',
             age: 33,
             role: 'opening important NPC',
@@ -525,6 +608,24 @@ describe('generateTrueOpening', () => {
                 description: 'Anchors the opening scene and later NPC continuity.',
                 source: 'opening',
                 rarity: 'blue',
+              },
+            ],
+            uniqueArts: [
+              {
+                id: 'art_opening_woman_social',
+                name: '持家周旋',
+                rarity: 'blue',
+                domain: 'social',
+                level: 2,
+                description: '在危局中维持家门关系并与各方周旋。',
+                effectSummary: '强化相关交涉与关系维系。',
+                source: 'opening',
+                acquisition: {
+                  kind: 'background',
+                  occurredAt: '公元189年09月01日 08:00（辰时）',
+                  sourceRefId: 'npc-profile:npc_opening_woman:background',
+                  summary: '开局已经确立的乡里身份与持家经历支持该能力。',
+                },
               },
             ],
             femaleProfile: {
@@ -624,11 +725,18 @@ describe('generateTrueOpening', () => {
               payload: {
                 command: {
                   action: 'upsertHoldingLedger',
+                  operation: 'create',
                   holdingId: 'holding_bad_default',
                   name: '错误默认领地',
                   type: 'county',
                   status: 'controlled',
                   summary: '模型误把无领地开局写成了控制县邑。',
+                  controlEvidence: {
+                    kind: 'opening',
+                    occurredAt: '184-03',
+                    sourceRefId: 'opening_bad_default',
+                    summary: '模型错误声称开局已经控制县邑。',
+                  },
                   civilAdministrationScope: 'territorial',
                   scaleLevel: 2,
                   agriculture: 45,
@@ -684,11 +792,18 @@ describe('generateTrueOpening', () => {
               payload: {
                 command: {
                   action: 'upsertHoldingLedger',
+                  operation: 'create',
                   holdingId: 'holding_yangdi_county',
                   name: '阳翟县',
                   type: 'county',
                   status: 'controlled',
                   summary: '主角以县令身份刚刚接掌阳翟县，实际治理状况尚待清查。',
+                  controlEvidence: {
+                    kind: 'opening',
+                    occurredAt: '184-03',
+                    sourceRefId: 'opening_yangdi_identity',
+                    summary: '开局身份明确主角已到任并接掌阳翟县。',
+                  },
                   civilAdministrationScope: 'territorial',
                   scaleLevel: 2,
                   agriculture: 48,
@@ -751,11 +866,18 @@ describe('generateTrueOpening', () => {
               payload: {
                 command: {
                   action: 'upsertHoldingLedger',
+                  operation: 'create',
                   holdingId: 'holding_yangdi_county',
                   name: '阳翟县',
                   type: 'county',
                   status: 'controlled',
                   summary: '主角以县令身份接掌阳翟县，主簿已交出府库与官仓清册。',
+                  controlEvidence: {
+                    kind: 'opening',
+                    occurredAt: '184-03',
+                    sourceRefId: 'opening_yangdi_handover',
+                    summary: '主簿已经交出县衙、府库和官仓清册。',
+                  },
                   civilAdministrationScope: 'territorial',
                   scaleLevel: 2,
                   agriculture: 48,
@@ -818,11 +940,18 @@ describe('generateTrueOpening', () => {
               payload: {
                 command: {
                   action: 'upsertHoldingLedger',
+                  operation: 'create',
                   holdingId: 'holding_yangdi_county',
                   name: '阳翟县',
                   type: 'county',
                   status: 'controlled',
                   summary: '主角以县令身份接掌阳翟县，地方豪族捐赠军饷入县中守备账。',
+                  controlEvidence: {
+                    kind: 'opening',
+                    occurredAt: '184-03',
+                    sourceRefId: 'opening_yangdi_donation',
+                    summary: '开局事实明确主角已经接掌阳翟县。',
+                  },
                   civilAdministrationScope: 'territorial',
                   scaleLevel: 2,
                   agriculture: 48,
@@ -915,11 +1044,18 @@ describe('generateTrueOpening', () => {
               payload: {
                 command: {
                   action: 'upsertHoldingLedger',
+                  operation: 'create',
                   holdingId: 'holding_jiangzhou_camp_liuping',
                   name: '江州郡兵营（刘平部）',
                   type: 'camp',
                   status: 'controlled',
                   summary: '刘平以军侯身份统领两百郡兵驻扎于此。',
+                  controlEvidence: {
+                    kind: 'opening',
+                    occurredAt: '184-03',
+                    sourceRefId: 'opening_bad_camp_claim',
+                    summary: '模型错误声称驻军事实构成领地控制。',
+                  },
                   civilAdministrationScope: 'none',
                   scaleLevel: 1,
                   agriculture: 0,
@@ -1040,7 +1176,7 @@ describe('generateTrueOpening', () => {
     expect(result.newRuntimeState.privateAssets ?? []).toHaveLength(0);
     expect(result.newRuntimeState.turnLog[0].narrativeText).toBe(openingNarrative);
     expect(result.newRuntimeState.turnLog[0].statePatchSummary).toContain('开局账本合规修复空响应，已保留开场');
-    expect(result.turnDisplayMeta.reasoningSummary).toContain('开局账本合规修复空响应，已保留开场');
+    expect(result.turnDisplayMeta.reasoningSummary).toBeUndefined();
     expect(result.turnDisplayMeta.promptTokens).toBe(130);
     expect(result.turnDisplayMeta.completionTokens).toBe(60);
     expect(result.turnDisplayMeta.totalTokens).toBe(190);
@@ -1125,6 +1261,7 @@ describe('generateTrueOpening', () => {
                 type: 'luanshiCommand',
                 action: 'upsertPrivateAsset',
                 payload: {
+                  operation: 'create',
                   privateAssetId: 'asset_family_estate',
                   name: '县南祖传庄园',
                   type: 'estate',
@@ -1136,6 +1273,12 @@ describe('generateTrueOpening', () => {
                   households: 8,
                   conditionNotes: ['田产薄弱', '依赖佃户维持'],
                   sourceNote: '开局正文明确家族私产',
+                  acquisition: {
+                    kind: 'opening',
+                    occurredAt: '184-03',
+                    sourceRefId: 'opening:family-estate',
+                    summary: '开局档案确认祖传庄园。',
+                  },
                   updatedAt: '184-03',
                 },
                 reason: '补写开局私产账本',
@@ -1216,11 +1359,18 @@ describe('generateTrueOpening', () => {
                 payload: {
                   command: {
                     action: 'upsertHoldingLedger',
+                    operation: 'create',
                     holdingId: 'holding_yangdi_county',
                     name: '阳翟县',
                     type: 'county',
                     status: 'active',
                     summary: '主角以县令身份实际掌管阳翟县，但府库粮仓尚未完成查点。',
+                    controlEvidence: {
+                      kind: 'opening',
+                      occurredAt: '184-03',
+                      sourceRefId: 'opening_compliance_yangdi',
+                      summary: '开局身份与正文都明确主角已经到任并掌管县衙。',
+                    },
                     civilAdministrationScope: 'territorial',
                     locationId: 'loc_yangdi',
                     scaleLevel: 2,

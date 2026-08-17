@@ -1052,8 +1052,8 @@
 }
 
 .creation-page .worldbook-list,
-.creation-page .bookmark-layout {
-  max-width: min(1320px, 100%);
+.creation-page .bookmark-list {
+  max-width: min(1180px, 100%);
   margin: 0 auto;
 }
 
@@ -1125,36 +1125,38 @@
   font-size: 0.86rem;
 }
 
-.creation-page .bookmark-layout {
+.creation-page .bookmark-list {
   display: grid;
-  grid-template-columns: minmax(280px, 0.7fr) minmax(0, 1.3fr);
-  gap: clamp(1rem, 2vw, 1.8rem);
-  align-items: stretch;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.8rem;
 }
 
-.bookmark-timeline {
+.creation-page .bookmark-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
-  min-height: 0;
-}
-
-.bookmark-timeline-item {
-  position: relative;
-  display: grid;
-  grid-template-columns: 7.2rem minmax(0, 1fr);
-  gap: 0.2rem 0.8rem;
   width: 100%;
-  padding: 0.75rem 0.9rem 0.75rem 1.1rem;
-  border: 1px solid rgba(184, 138, 42, 0.22);
-  background: rgba(11, 14, 19, 0.72);
+  min-height: 136px;
+  margin: 0;
+  padding: 1rem;
+  overflow: hidden;
+  border: 1px solid rgba(184, 138, 42, 0.34);
+  border-radius: 4px;
+  background:
+    linear-gradient(145deg, rgba(184, 138, 42, 0.055), transparent 44%),
+    rgba(11, 14, 19, 0.82);
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
 }
 
-.bookmark-timeline-item::before {
+.creation-page .bookmark-card::before {
   content: "";
   position: absolute;
   inset: -1px auto -1px -1px;
@@ -1162,133 +1164,85 @@
   background: transparent;
 }
 
-.bookmark-timeline-item:hover,
-.bookmark-timeline-item.selected {
+.creation-page .bookmark-card:hover,
+.creation-page .bookmark-card:focus-visible {
   border-color: rgba(218, 184, 82, 0.72);
-  background: rgba(184, 138, 42, 0.09);
+  background:
+    linear-gradient(145deg, rgba(184, 138, 42, 0.11), transparent 48%),
+    rgba(14, 17, 22, 0.92);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
+  transform: translateY(-1px);
 }
 
-.bookmark-timeline-item.selected::before {
+.creation-page .bookmark-card:focus-visible {
+  outline: 2px solid rgba(242, 214, 111, 0.78);
+  outline-offset: 2px;
+}
+
+.creation-page .bookmark-card.selected {
+  border-color: rgba(242, 214, 111, 0.86);
+  background:
+    linear-gradient(145deg, rgba(242, 214, 111, 0.14), rgba(184, 138, 42, 0.055) 48%, rgba(9, 12, 17, 0.94)),
+    rgba(11, 14, 19, 0.9);
+  box-shadow:
+    inset 0 0 0 1px rgba(242, 214, 111, 0.22),
+    0 12px 30px rgba(0, 0, 0, 0.24);
+}
+
+.creation-page .bookmark-card.selected::before {
   background: #f2d66f;
 }
 
-.bookmark-timeline-date {
-  grid-row: 1 / span 2;
-  align-self: center;
-  color: var(--accent);
-  font-size: 0.78rem;
+.creation-page .bookmark-card .bm-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  border: 0;
 }
 
-.bookmark-timeline-label {
-  color: var(--text-primary);
-  font-weight: 700;
-}
-
-.bookmark-timeline-description {
+.creation-page .bookmark-card .bm-label {
+  min-width: 0;
+  color: #f2d66f;
+  font-size: 1.1rem;
+  line-height: 1.35;
   overflow: hidden;
-  color: var(--text-muted);
-  font-size: 0.78rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.bookmark-detail {
-  position: sticky;
-  top: 0;
-  align-self: start;
-  min-height: 100%;
-  padding: clamp(1.2rem, 2.4vw, 2rem);
-  border: 1px solid rgba(184, 138, 42, 0.42);
-  background:
-    linear-gradient(135deg, rgba(184, 138, 42, 0.07), transparent 46%),
-    rgba(9, 12, 17, 0.82);
+.creation-page .bookmark-card .bm-date {
+  flex: 0 0 auto;
+  padding: 0;
+  color: var(--accent);
+  font-size: 0.8rem;
 }
 
-.bookmark-detail-head {
+.creation-page .bookmark-card .bm-description {
+  display: block;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.creation-page .bookmark-card .bm-meta {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  padding-bottom: 1rem;
-  border-bottom: 1px solid rgba(184, 138, 42, 0.2);
-}
-
-.bookmark-detail-kicker {
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  margin: 0;
   color: var(--text-muted);
-  font-size: 0.7rem;
-  letter-spacing: 0.16em;
+  font-size: 0.8rem;
 }
 
-.bookmark-detail h3 {
-  margin-top: 0.25rem;
-  color: #f2d66f;
-  font-size: clamp(1.35rem, 2vw, 1.8rem);
-}
-
-.bookmark-detail time {
-  color: var(--accent);
-  font-size: 0.85rem;
-}
-
-.bookmark-detail-description {
-  margin: 1.1rem 0;
-  color: var(--text-secondary);
-  line-height: 1.7;
-}
-
-.bookmark-detail-situation {
-  padding: 1rem 1.1rem;
-  border-left: 2px solid rgba(218, 184, 82, 0.72);
-  background: rgba(0, 0, 0, 0.18);
-}
-
-.bookmark-detail-situation h4 {
-  margin-bottom: 0.55rem;
-  color: var(--accent);
-  font-size: 0.88rem;
-}
-
-.bookmark-detail-situation p {
-  color: var(--text-primary);
-  line-height: 1.75;
-}
-
-.bookmark-detail-meta {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
-  margin-top: 1.2rem;
-}
-
-.bookmark-detail-meta div {
-  padding-top: 0.75rem;
-  border-top: 1px solid rgba(184, 138, 42, 0.16);
-}
-
-.bookmark-detail-meta dt {
-  color: var(--text-muted);
-  font-size: 0.74rem;
-}
-
-.bookmark-detail-meta dd {
-  margin: 0.3rem 0 0;
-  color: var(--text-secondary);
-  line-height: 1.55;
-}
-
-.bookmark-detail-empty {
-  display: grid;
-  place-content: center;
-  text-align: center;
-}
-
-.bookmark-detail-empty span {
-  color: var(--accent);
-}
-
-.bookmark-detail-empty p {
-  margin-top: 0.5rem;
-  color: var(--text-muted);
+.creation-page .bookmark-card .bm-meta > span {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  line-height: 1.45;
 }
 
 .setup-block {
@@ -1516,6 +1470,26 @@
 
 .archive-column {
   min-width: 0;
+}
+
+.opening-demographics-grid {
+  grid-template-columns: minmax(190px, 1.25fr) minmax(88px, 0.7fr) minmax(96px, 0.75fr) minmax(96px, 0.75fr);
+  align-items: end;
+}
+
+.opening-demographics-grid .age-input {
+  max-width: none;
+}
+
+.opening-derived-birth-date {
+  margin: 0.55rem 0 1.45rem;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.opening-derived-birth-date strong {
+  color: var(--accent-bright);
+  font-weight: 500;
 }
 
 .archive-column h2 {
@@ -1836,6 +1810,21 @@
   font-weight: 700;
 }
 
+.trait-card-wrap {
+  position: relative;
+  min-width: 0;
+  min-height: 4.4rem;
+}
+
+.trait-card-wrap .trait-chip {
+  width: 100%;
+  height: 100%;
+}
+
+.trait-card-wrap.custom-trait-card .trait-chip {
+  padding-bottom: 2.15rem;
+}
+
 .option-card-wrap {
   position: relative;
   width: 12.2rem;
@@ -1928,8 +1917,26 @@
   color: #82b7ff;
 }
 
+.trait-chip.trait-rarity-purple {
+  border-color: rgba(166, 93, 220, 0.86);
+}
+
+.trait-chip.trait-rarity-purple .trait-rarity-tag {
+  color: #c995ff;
+}
+
+.trait-chip.trait-rarity-orange {
+  border-color: rgba(232, 139, 48, 0.9);
+  background: rgba(220, 116, 30, 0.1);
+}
+
+.trait-chip.trait-rarity-orange .trait-rarity-tag {
+  color: #ffb15e;
+}
+
 .trait-chip.trait-rarity-red {
   border-color: rgba(214, 86, 76, 0.88);
+  background: rgba(214, 75, 70, 0.12);
 }
 
 .trait-chip.trait-rarity-red .trait-rarity-tag {
@@ -1937,12 +1944,12 @@
 }
 
 .trait-chip.trait-rarity-gold {
-  border-color: rgba(242, 214, 111, 0.96);
-  background: rgba(184, 138, 42, 0.12);
+  border-color: rgba(214, 86, 76, 0.88);
+  background: rgba(214, 75, 70, 0.12);
 }
 
 .trait-chip.trait-rarity-gold .trait-rarity-tag {
-  color: #f2d66f;
+  color: #ff857c;
 }
 
 .trait-chip.trait-rarity-pending {

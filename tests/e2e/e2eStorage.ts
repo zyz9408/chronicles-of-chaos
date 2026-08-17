@@ -4,7 +4,6 @@ import { E2E_STORAGE_MARKER } from '../../src/engine/storage/E2eStorageGuard';
 export { E2E_STORAGE_MARKER };
 export const E2E_DATABASE_NAME = 'coc_v2_local_data';
 export const E2E_DATABASE_VERSION = 4;
-const E2E_MAIN_API_URL = 'https://example.test/v1/chat/completions';
 
 const RESERVED_DEVELOPMENT_PORTS = new Set(['3000', '3001', '5173']);
 
@@ -68,9 +67,8 @@ export async function resetE2eCoreStores(page: Page): Promise<void> {
       });
 
       await new Promise<void>((resolve, reject) => {
-        const tx = db.transaction(['saves', 'saveSummaries', 'apiConfigs', 'meta'], 'readwrite');
+        const tx = db.transaction(['saves', 'apiConfigs', 'meta'], 'readwrite');
         tx.objectStore('saves').clear();
-        tx.objectStore('saveSummaries').clear();
         tx.objectStore('apiConfigs').clear();
         tx.objectStore('meta').clear();
         tx.oncomplete = () => {
@@ -85,6 +83,26 @@ export async function resetE2eCoreStores(page: Page): Promise<void> {
 }
 
 export async function seedMainNarrativeApi(page: Page): Promise<void> {
+  await page.route('**/api/cloud/auth/session', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      status: 200,
+      body: JSON.stringify({
+        ok: true,
+        configured: false,
+        authConfigured: false,
+        authenticated: false,
+        limits: {
+          globalBytes: 0,
+          userBytes: 0,
+          uploadBytes: 0,
+          slots: 0,
+          dailyUploads: 0,
+          userDailyUploads: 0,
+        },
+      }),
+    });
+  });
   await page.goto('/');
   await resetE2eCoreStores(page);
   await page.evaluate(
@@ -129,37 +147,4 @@ export async function seedMainNarrativeApi(page: Page): Promise<void> {
     { databaseName: E2E_DATABASE_NAME, databaseVersion: E2E_DATABASE_VERSION },
   );
   await page.reload();
-}
-
-export async function installSuccessfulTurnApi(page: Page): Promise<void> {
-  await page.route(E2E_MAIN_API_URL, async (route) => {
-    const content = JSON.stringify({
-      protocolVersion: 'lsfy.turn.v1',
-      narrativeText: 'E2E 回合正文：行动已被世界接纳，局势随之向前推进。',
-      suggestedActions: [],
-      statePatches: [{
-        type: 'timeAdvance',
-        payload: { minutesAdvanced: 15, reason: 'E2E 回合推进', category: 'test' },
-        reason: 'E2E 浏览器回归',
-      }],
-      statePatch: null,
-      writeback: {},
-    });
-    const body = [
-      `data: ${JSON.stringify({
-        choices: [{ delta: { content } }],
-        usage: { prompt_tokens: 120, completion_tokens: 40, total_tokens: 160 },
-      })}`,
-      '',
-      'data: [DONE]',
-      '',
-      '',
-    ].join('\n');
-
-    await route.fulfill({
-      status: 200,
-      contentType: 'text/event-stream',
-      body,
-    });
-  });
 }

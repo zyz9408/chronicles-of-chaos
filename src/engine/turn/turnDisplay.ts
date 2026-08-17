@@ -3,11 +3,13 @@ import type { TurnDisplayMeta, TurnLogEntry, TurnNpcIntentSimulationMeta } from 
 export interface BuildTurnDisplayMetaInput {
   turnNumber: number;
   title?: string;
-  reasoningSummary?: string;
   rawResponse?: string;
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cacheMissTokens?: number;
   elapsedMs?: number;
   provider?: string;
   model?: string;
@@ -15,6 +17,7 @@ export interface BuildTurnDisplayMetaInput {
   promptTokenEstimate?: TurnDisplayMeta['promptTokenEstimate'];
   processingStages?: TurnDisplayMeta['processingStages'];
   memoryRecall?: TurnDisplayMeta['memoryRecall'];
+  narrativeLength?: TurnDisplayMeta['narrativeLength'];
 }
 
 export function formatTokenCount(value?: number): string {
@@ -31,6 +34,30 @@ export function formatElapsedTime(elapsedMs?: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}m ${seconds}s`;
+}
+
+export function getPromptCacheHitRate(input: {
+  provider?: string;
+  promptTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cacheMissTokens?: number;
+}): number | undefined {
+  const cacheReadTokens = normalizeOptionalCount(input.cacheReadTokens);
+  if (cacheReadTokens === undefined) return undefined;
+
+  const cacheMissTokens = normalizeOptionalCount(input.cacheMissTokens);
+  if (cacheMissTokens !== undefined) {
+    const measuredTotal = cacheReadTokens + cacheMissTokens;
+    return measuredTotal > 0 ? cacheReadTokens / measuredTotal : 0;
+  }
+
+  const promptTokens = normalizeOptionalCount(input.promptTokens);
+  const cacheWriteTokens = normalizeOptionalCount(input.cacheWriteTokens) ?? 0;
+  const totalInputTokens = input.provider === 'anthropic'
+    ? cacheReadTokens + cacheWriteTokens + (promptTokens ?? 0)
+    : promptTokens;
+  return totalInputTokens && totalInputTokens > 0 ? cacheReadTokens / totalInputTokens : 0;
 }
 
 export function getTurnDisplayTitle(log: Pick<TurnLogEntry, 'turnNumber' | 'displayMeta'>): string {
@@ -50,11 +77,13 @@ export function buildTurnDisplayMeta(input: BuildTurnDisplayMetaInput): TurnDisp
 
   return {
     title: input.title?.trim() || `第 ${input.turnNumber} 回合`,
-    reasoningSummary: input.reasoningSummary?.trim() || undefined,
     rawResponse: input.rawResponse,
     promptTokens,
     completionTokens,
     totalTokens,
+    cacheReadTokens: normalizeOptionalCount(input.cacheReadTokens),
+    cacheWriteTokens: normalizeOptionalCount(input.cacheWriteTokens),
+    cacheMissTokens: normalizeOptionalCount(input.cacheMissTokens),
     elapsedMs: normalizeOptionalCount(input.elapsedMs),
     provider: input.provider,
     model: input.model,
@@ -62,6 +91,7 @@ export function buildTurnDisplayMeta(input: BuildTurnDisplayMetaInput): TurnDisp
     promptTokenEstimate: input.promptTokenEstimate,
     processingStages: input.processingStages,
     memoryRecall: input.memoryRecall,
+    narrativeLength: input.narrativeLength,
   };
 }
 

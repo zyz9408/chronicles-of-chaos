@@ -26,6 +26,7 @@ describe('interpretAction', () => {
     ['我与陈衡讨论之后的防守安排', 'interact'],
     ['我询问陈衡，敌军出现后立即迎战是否妥当', 'inquire'],
     ['我询问陈衡：随后攻击敌人是否可行', 'inquire'],
+    ['领取药品，说明此物可在非战斗时直接使用', 'other'],
   ])('keeps explicit discussion context out of combat for %s', (input, expected) => {
     expect(interpretAction(input)).toBe(expected);
   });

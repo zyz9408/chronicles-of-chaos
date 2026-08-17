@@ -2,7 +2,20 @@ export const ENCOUNTER_CONTRACT_VERSION = 1 as const;
 export const SEMANTIC_PROJECTION_VERSION = 1 as const;
 
 export const COMBAT_RULESET_VERSION = 'combat-v2.0.0' as const;
-export const WAR_RULESET_VERSION = 'war-v2.0.0' as const;
+export const LEGACY_WAR_RULESET_VERSION = 'war-v2.0.0' as const;
+export const COMMAND_WAR_RULESET_VERSION = 'war-v2.1.0' as const;
+export const BALANCED_WAR_RULESET_VERSION = 'war-v2.2.0' as const;
+export const THEATER_WAR_RULESET_VERSION = 'war-v2.3.0' as const;
+export const AGGRESSIVE_WAR_RULESET_VERSION = 'war-v2.4.0' as const;
+export const WAR_RULESET_VERSION = 'war-v2.5.0' as const;
+export const SUPPORTED_WAR_RULESET_VERSIONS = [
+  LEGACY_WAR_RULESET_VERSION,
+  COMMAND_WAR_RULESET_VERSION,
+  BALANCED_WAR_RULESET_VERSION,
+  THEATER_WAR_RULESET_VERSION,
+  AGGRESSIVE_WAR_RULESET_VERSION,
+  WAR_RULESET_VERSION,
+] as const;
 
 export const ENCOUNTER_SAVE_POLICY = Object.freeze({
   allowMidEncounterSave: false,
@@ -23,6 +36,7 @@ export const ENCOUNTER_ENVIRONMENT_TAGS = [
 ] as const;
 
 export const SEMANTIC_EFFECT_TRIGGERS = [
+  'after_runtime_turn',
   'battle_start',
   'round_start',
   'before_action',
@@ -125,11 +139,57 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
 export type EncounterKind = 'personal_combat' | 'war';
-export type EncounterRulesetScope = EncounterKind;
-export type EncounterRulesetVersion = typeof COMBAT_RULESET_VERSION | typeof WAR_RULESET_VERSION;
+/**
+ * `runtime_turn` is the normal narrative-turn ruleset. It is deliberately
+ * separate from personal combat and war so recurring local effects never
+ * depend on prose matching or on opening an encounter first.
+ */
+export type EncounterRulesetScope = EncounterKind | 'runtime_turn';
+export type WarRulesetVersion = typeof SUPPORTED_WAR_RULESET_VERSIONS[number];
+export type EncounterRulesetVersion = typeof COMBAT_RULESET_VERSION | WarRulesetVersion;
 export type EncounterSide = 'player' | 'enemy';
 export type EncounterOutcome = 'player_victory' | 'enemy_victory' | 'draw' | 'player_retreat' | 'enemy_retreat' | 'surrender';
 export type EncounterEnvironmentTag = typeof ENCOUNTER_ENVIRONMENT_TAGS[number];
+export type EncounterTransitionMode = 'none' | 'offer' | 'start';
+
+export interface EncounterTransitionDecision {
+  mode: EncounterTransitionMode;
+  reason: string;
+}
+
+export const ENCOUNTER_SCOPED_COMBATANT_ARCHETYPES = [
+  'rabble',
+  'militia',
+  'regular',
+  'veteran',
+  'elite',
+] as const;
+
+export const ENCOUNTER_SCOPED_WEAPON_CLASSES = [
+  'unarmed',
+  'light',
+  'standard',
+  'polearm',
+  'heavy',
+  'ranged',
+] as const;
+
+export const ENCOUNTER_SCOPED_ARMOR_CLASSES = [
+  'none',
+  'light',
+  'medium',
+  'heavy',
+] as const;
+
+export interface EncounterScopedCombatant {
+  actorId: string;
+  name: string;
+  archetype: typeof ENCOUNTER_SCOPED_COMBATANT_ARCHETYPES[number];
+  weaponClass: typeof ENCOUNTER_SCOPED_WEAPON_CLASSES[number];
+  armorClass: typeof ENCOUNTER_SCOPED_ARMOR_CLASSES[number];
+  /** Local-only provenance marker. Narrator output may not create this role. */
+  systemRole?: 'temporary_escort';
+}
 
 export interface EncounterPolicy {
   lethality: 'nonlethal' | 'standard' | 'fatal';
@@ -158,17 +218,39 @@ export interface PersonalCombatStartIntent extends EncounterStartIntentBase {
   playerParty: { actorIds: string[] };
   enemyParty: { actorIds: string[] };
   partySelection: 'player_choice' | 'locked';
+  /** Current scene truth. Missing legacy values conservatively receive no local escorts. */
+  escortAvailability?: 'normal' | 'explicitly_solo';
+  /** Anonymous or short-lived combatants that exist only inside this encounter. */
+  scopedCombatants?: EncounterScopedCombatant[];
 }
 
 export interface WarStartIntent extends EncounterStartIntentBase {
   kind: 'war';
-  rulesetVersion: typeof WAR_RULESET_VERSION;
+  rulesetVersion: WarRulesetVersion;
   playerForce: { troopIds: string[]; commanderActorId?: string };
   enemyForce: { troopIds: string[]; commanderActorId?: string };
   objective: 'defeat_enemy' | 'capture_holding' | 'break_siege' | 'relieve_siege';
   /** Required for objectives that deterministically mutate a holding or its siege state. */
   targetHoldingId?: string;
   environmentTags: EncounterEnvironmentTag[];
+  /**
+   * War V2.3：区分玩家直接指挥的局部交战与整个会战背景。
+   * 旧规则缺省时仍按独立、全建制投入处理。
+   */
+  participation?: {
+    commandScope: 'overall_command' | 'subordinate_sector' | 'independent';
+    mission: 'defeat_local_force' | 'hold_position' | 'assault_position' | 'escort' | 'raid' | 'screen' | 'pursuit' | 'breakout';
+    playerCommitments: WarForceCommitment[];
+    enemyCommitments: WarForceCommitment[];
+    alliedMainForceIds?: string[];
+    enemyMainForceIds?: string[];
+    superiorCommanderActorId?: string;
+  };
+}
+
+export interface WarForceCommitment {
+  troopId: string;
+  committedStrength: number;
 }
 
 export type EncounterStartIntent = PersonalCombatStartIntent | WarStartIntent;
@@ -214,7 +296,8 @@ export type UniqueArtPurpose = 'damage' | 'healing' | 'protection' | 'control' |
 export interface UniqueArtSemanticProfile extends SemanticProjectionBase {
   profileKind: 'ability';
   sourceType: 'unique_art';
-  activation: 'active';
+  /** Active skills appear in the action list; passive effects are trigger driven. */
+  activation: 'active' | 'passive' | 'hybrid';
   targetMode: UniqueArtTargetMode;
   purpose: UniqueArtPurpose;
   powerClass: UniqueArtPowerClass;
@@ -259,6 +342,15 @@ export interface TroopSemanticProfile extends SemanticProjectionBase {
   profileKind: 'troop';
   primaryClass: typeof TROOP_PRIMARY_CLASSES[number];
   tags: Array<typeof TROOP_SEMANTIC_TAGS[number]>;
+  /**
+   * War V2.2 的稳定混编比例。旧投影可缺省并退化为 primaryClass=100%；
+   * 新 mixed 投影应提供总和恰为 100 的构成，禁止在开战时按名称临时猜测。
+   */
+  composition?: Array<{
+    primaryClass: Exclude<typeof TROOP_PRIMARY_CLASSES[number], 'mixed'>;
+    sharePercent: number;
+    tags?: Array<typeof TROOP_SEMANTIC_TAGS[number]>;
+  }>;
 }
 
 export type SemanticProjection =
@@ -355,7 +447,7 @@ export interface UnsealedCombatResult extends EncounterResultBase {
 
 export interface UnsealedWarResult extends EncounterResultBase {
   kind: 'war';
-  rulesetVersion: typeof WAR_RULESET_VERSION;
+  rulesetVersion: WarRulesetVersion;
   objective: WarStartIntent['objective'];
   objectiveAchieved: boolean;
   exitReason: 'objective_achieved' | 'force_routed' | 'force_destroyed' | 'retreat' | 'surrender' | 'round_limit';
@@ -363,6 +455,7 @@ export interface UnsealedWarResult extends EncounterResultBase {
   roundsCompleted: number;
   pursuit: WarPursuitResult;
   commanders: WarCommanderResultState[];
+  experienceAward: number;
   capturedItemIds: string[];
 }
 
@@ -428,9 +521,16 @@ export interface EncounterRuntimeActiveState {
   checkpoint: EncounterCheckpoint;
 }
 
+export interface EncounterTransitionOffer {
+  offerId: string;
+  intent: PersonalCombatStartIntent;
+  createdAt: string;
+}
+
 export interface EncounterRuntimeLedger {
   semanticProjections: SemanticProjection[];
   active?: EncounterRuntimeActiveState;
+  pendingOffer?: EncounterTransitionOffer;
   appliedResultHashes: string[];
   narratedResultHashes: string[];
 }

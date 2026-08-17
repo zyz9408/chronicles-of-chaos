@@ -1,11 +1,10 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { seedMainNarrativeApi } from './e2eStorage';
 
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
 
 async function startDebugGame(page: Page): Promise<void> {
   await page.setViewportSize(MOBILE_VIEWPORT);
-  await seedMainNarrativeApi(page);
+  await page.goto('/');
   await page.getByRole('button', { name: '新的征程' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
@@ -68,12 +67,9 @@ test('390x844 core flow uses explicit regions and keeps narrative, settings, sav
   await expect(page.locator('.game-panel-left')).toBeHidden();
   await expect(page.locator('.game-panel-right')).toBeHidden();
   await expect(page.locator('.narrative-scroll .context-box')).toContainText('时代背景');
-  const actionInput = page.getByRole('button', { name: '打开行动编辑器' });
-  await actionInput.click();
-  const actionEditor = page.getByRole('dialog', { name: '编辑玩家行动' });
-  await actionEditor.getByLabel('编辑行动内容').fill('巡视营地并整顿军纪');
-  await actionEditor.getByRole('button', { name: '确定' }).click();
-  await expect(actionInput).toContainText('巡视营地并整顿军纪');
+  const actionInput = page.getByPlaceholder(/输入你的行动/);
+  await actionInput.fill('巡视营地并整顿军纪');
+  await expect(actionInput).toHaveValue('巡视营地并整顿军纪');
   await expectNoDocumentHorizontalOverflow(page);
 
   await page.getByTestId('mobile-region-profile').click();
@@ -147,13 +143,13 @@ test('390x844 core flow uses explicit regions and keeps narrative, settings, sav
     element.clientHeight === element.scrollHeight
   ))).toBe(true);
   await mapPanel.getByRole('button', { name: '聚焦当前位置' }).click();
-  await expect(mapPanel.locator('.map-v2-zoom-level')).toHaveText('详图');
+  await expect(mapPanel.locator('.map-v2-zoom-level')).toHaveText('详图 12.0×');
   await expectMapLabelsNotToOverlap(mapPanel);
   await expectNoDocumentHorizontalOverflow(page);
   await mapPanel.getByRole('button', { name: '关闭' }).click();
 
   await page.getByTestId('mobile-region-narrative').click();
   await expect(page.locator('.game-panel-center')).toBeVisible();
-  await expect(actionInput).toContainText('巡视营地并整顿军纪');
+  await expect(actionInput).toHaveValue('巡视营地并整顿军纪');
   await expectNoDocumentHorizontalOverflow(page);
 });

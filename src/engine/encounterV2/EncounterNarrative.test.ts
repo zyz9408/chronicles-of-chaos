@@ -36,13 +36,18 @@ function makeResult() {
   return finalizeCombatResult(
     simulateCombatWithLocalAi(createCombatEngineState(snapshot), { maxActions: 200 }),
     '2026-07-20T02:00:00.000Z',
+    { playerActorId: 'player_liuping' },
   );
 }
 
 function makeWarResult() {
   const snapshot = createWarEncounterSnapshot({
     sessionId: 'session_war_narrative_test',
-    intent: makeWarIntent(),
+    intent: makeWarIntent(
+      ['troop_player_infantry'],
+      ['troop_enemy_cavalry'],
+      { player: [4_000], enemy: [100] },
+    ),
     playerTroops: [makeWarTroop('troop_player_infantry', { size: 4_000, morale: 90, training: 90 })],
     enemyTroops: [makeWarTroop('troop_enemy_cavalry', { size: 100, morale: 20, training: 30 })],
     playerCommander: makeWarCommander('player_liuping'),
@@ -91,6 +96,9 @@ describe('Combat V2 result-only narrative', () => {
       encounterReason: '汉水大营遭遇战',
       locationLabel: '荆州 - 南郡 - 襄阳城 - 汉水大营',
       participantNames: { player_liuping: '刘平', npc_enemy_guard: '西凉悍卒' },
+      playerName: '刘平',
+      playerSex: '男',
+      narrativePerspective: 'third_person',
       recentNarratives: ['上一回合敌军突入营门。'],
       persistentPromptGuide: '## 玩家启用的永久提示词\n1. 战斗描写保持简练。',
     });
@@ -101,6 +109,9 @@ describe('Combat V2 result-only narrative', () => {
     expect(prompt).toContain('不得修改胜负');
     expect(prompt).toContain('只返回 JSON');
     expect(prompt).toContain('战斗描写保持简练');
+    expect(prompt).toContain('本局正文叙事人称：第三人称');
+    expect(prompt).toContain('姓名“刘平”');
+    expect(prompt).toContain('不得用主角表字');
   });
 
   it('uses a generous timeout and retries without ever asking the model to recalculate combat', async () => {
@@ -150,6 +161,9 @@ describe('War V2 result-only narrative', () => {
         troop_enemy_cavalry: '西凉骑兵',
       },
       commanderNames: { player_liuping: '刘平', npc_enemy_commander: '张绣' },
+      playerName: '刘平',
+      playerSex: '男',
+      narrativePerspective: 'first_person',
       recentNarratives: ['两军在枯林坡列阵。'],
       persistentPromptGuide: '## 玩家启用的永久提示词\n1. 战争描写避免机械复述数值。',
     });
@@ -159,6 +173,8 @@ describe('War V2 result-only narrative', () => {
     expect(prompt).toContain('不得修改胜负');
     expect(prompt).toContain('不得输出 statePatches');
     expect(prompt).toContain('战争描写避免机械复述数值');
+    expect(prompt).toContain('本局正文叙事人称：第一人称');
+    expect(prompt).toContain('统一使用“我”');
   });
 
   it('uses the same generous retry budget for slow public endpoints', async () => {

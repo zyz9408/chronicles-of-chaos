@@ -1,9 +1,41 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  createNarrativeDisplayRegexRule,
+  saveNarrativeDisplayRegexRules,
+} from '../engine/settings/NarrativeDisplayRegex';
 import { NarrativeTextView } from './NarrativeTextView';
 import { readUiStyleSource } from './readUiStyleSource.test-helper';
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe('NarrativeTextView', () => {
+  it('applies local display regex rules only at the narrative render boundary', () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    };
+    vi.stubGlobal('localStorage', storage);
+    saveNarrativeDisplayRegexRules([
+      createNarrativeDisplayRegexRule({
+        pattern: '敌军',
+        replacement: '来敌',
+        flags: 'gu',
+        enabled: true,
+      }),
+    ], storage);
+    const source = '敌军已经抵达。';
+
+    const markup = renderToStaticMarkup(<NarrativeTextView text={source} />);
+
+    expect(markup).toContain('来敌已经抵达。');
+    expect(markup).not.toContain('敌军已经抵达。');
+    expect(source).toBe('敌军已经抵达。');
+  });
+
   it('renders narration blocks and dialogue bubbles from speaker-prefixed text', () => {
     const markup = renderToStaticMarkup(
       <NarrativeTextView text={'旁白: 夜风压过宫墙。\n萧行: 「传令。」'} />,

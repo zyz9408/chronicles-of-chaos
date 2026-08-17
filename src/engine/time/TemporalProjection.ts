@@ -169,7 +169,7 @@ function temporalToMinutes(anchor: GameClock): number {
 }
 
 function isClosedPlotStatus(status: string): boolean {
-  return ['已完成', '废弃', '宸插畬鎴?', '搴熷純'].includes(status);
+  return status === '已完成' || status === '废弃';
 }
 
 function isClosedNpcActivityStatus(status: string): boolean {

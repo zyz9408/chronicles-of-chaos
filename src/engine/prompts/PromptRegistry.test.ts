@@ -157,7 +157,7 @@ describe('PromptRegistry', () => {
     const entry = getPromptRegistry().find((item) => item.id === 'npc.profileWritebackProtocol');
 
     expect(entry?.defaultContentTemplate).toContain('traits[].source 不得省略或写空字符串');
-    expect(entry?.defaultContentTemplate).toContain('traits[].rarity 必须使用 white/green/blue/red/gold');
+    expect(entry?.defaultContentTemplate).toContain('traits[].rarity 必须使用 white/green/blue/purple/orange/red');
   });
 
   it('documents consumable and one-use inventory lifecycle writeback', () => {
@@ -175,6 +175,14 @@ describe('PromptRegistry', () => {
     expect(entry?.defaultContentTemplate).toContain('终态旧建制只保留历史');
     expect(entry?.defaultContentTemplate).toContain('不得继续计入当前兵力');
     expect(entry?.defaultContentTemplate).toContain('逐一复用旧 troopId');
+  });
+
+  it('documents structured troop fatigue recovery instead of prose inference', () => {
+    const entry = getPromptRegistry().find((item) => item.id === 'main.stateWriterProtocol');
+
+    expect(entry?.defaultContentTemplate).toContain('复用稳定 troopId 更新 fatigue');
+    expect(entry?.defaultContentTemplate).toContain('真实经过的休整时间且补给可用');
+    expect(entry?.defaultContentTemplate).toContain('不得直接编造 warFatiguePercent');
   });
 
   it('keeps female profile protocol explicit about long-term private anchors', () => {
@@ -205,7 +213,8 @@ describe('PromptRegistry', () => {
       worldbookBound: true,
     });
     expect(entry?.contentViewType).toBe('lockedProtocol');
-    expect(entry?.defaultContentTemplate).toContain('本局事实 > 玩家行动');
+    expect(entry?.defaultContentTemplate).toContain('当前存档与动态系统已落库真值');
+    expect(entry?.defaultContentTemplate).toContain('玩家行动意图或主张');
     expect(entry?.defaultContentTemplate).toContain('KnowledgeBase');
     expect(entry?.defaultContentTemplate).toContain('不是铁轨');
   });
@@ -244,6 +253,20 @@ describe('PromptRegistry', () => {
     expect(entry?.defaultContentTemplate).toContain('confidence');
     expect(entry?.defaultContentTemplate).toContain('signalType');
     expect(entry?.defaultContentTemplate).toContain('不得只写入风声线索');
+  });
+
+  it('documents the global fact and evidence gate', () => {
+    const entry = getPromptRegistry().find((item) => item.id === 'main.factEvidenceGate');
+
+    expect(entry).toMatchObject({
+      riskLevel: 'high',
+      editLevel: 'locked',
+      runtimeUsed: true,
+      protocolBound: true,
+    });
+    expect(entry?.defaultContentTemplate).toContain('玩家输入首先是行动意图');
+    expect(entry?.defaultContentTemplate).toContain('不得机械拒绝玩家');
+    expect(entry?.defaultContentTemplate).toContain('缺少任一关键依据时省略该写回');
   });
 
   it('documents concrete story resource changes as resource ledger writeback', () => {
@@ -293,12 +316,17 @@ describe('PromptRegistry', () => {
     expect(holding?.defaultContentTemplate).toContain('farmlandMu / registeredHouseholds');
     expect(holding?.defaultContentTemplate).toContain('eliteControlledShare / localEliteRelation');
     expect(holding?.defaultContentTemplate).toContain('地方豪强关系');
+    expect(holding?.defaultContentTemplate).toContain('stewardNpcId / governanceOfficerNpcIds');
+    expect(holding?.defaultContentTemplate).toContain('仅在正文明确发生任命、调任或免职时更新');
+    expect(holding?.defaultContentTemplate).toContain('不得仅因 NPC 能力高、与玩家亲近或当前在场就自动任命');
     expect(holding?.defaultContentTemplate).toContain('没有实际控制、临时控制、争夺、治理或失去具体领地时，不得输出 upsertHoldingLedger');
     expect(holding?.defaultContentTemplate).toContain('私人庄园、田产、工坊、马场、铺面等应使用 upsertPrivateAsset');
     expect(holding?.defaultContentTemplate).toContain('不得输出 localTreasury/localGranary');
     expect(holding?.defaultContentTemplate).toContain('可支撑回合由本地计算');
     expect(holding?.defaultContentTemplate).toContain('不得直接写 estimatedOutput/actualCollection/collectionRate');
     expect(holding?.defaultContentTemplate).toContain('默认守城士卒不自动写入部队账本');
+    expect(holding?.defaultContentTemplate).toContain('previousMoneyGuan、moneyDeltaGuan、moneyGuan');
+    expect(holding?.defaultContentTemplate).toContain('府库/势力公共钱财固定以贯为底层单位');
     expect(report).toMatchObject({
       category: 'main.stateWriter',
       riskLevel: 'high',
@@ -307,7 +335,6 @@ describe('PromptRegistry', () => {
       protocolBound: true,
     });
     expect(report?.defaultContentTemplate).toContain('upsertDomesticReport');
-    expect(report?.defaultContentTemplate).toContain('money、grain、horses、arms、recruits');
     expect(report?.defaultContentTemplate).toContain('system: 命名空间只由本地规则写入');
     expect(report?.defaultContentTemplate).toContain("合法模型报告统一使用 source='llm'");
     expect(report?.defaultContentTemplate).toContain('本地九月年度结算报告无需模型生成');
@@ -326,7 +353,9 @@ describe('PromptRegistry', () => {
       protocolBound: true,
     });
     expect(entry?.defaultContentTemplate).toContain('updateCharacterUniqueArts');
-    expect(entry?.defaultContentTemplate).toContain('white/green/blue/red/gold');
+    expect(entry?.defaultContentTemplate).toContain('acquisition');
+    expect(entry?.defaultContentTemplate).toContain('kind:"opening"');
+    expect(entry?.defaultContentTemplate).toContain('white/green/blue/purple/orange/red');
     expect(entry?.defaultContentTemplate).toContain('personalCombat/warfare/strategy/social/governance/survival/craft/other');
   });
 
@@ -368,9 +397,9 @@ describe('PromptRegistry', () => {
     expect(entry?.defaultContentTemplate).toContain('stanceToPlayer 必须写简短关系文本');
     expect(entry?.defaultContentTemplate).toContain('upsertTroopLedger');
     expect(entry?.defaultContentTemplate).toContain('relationToPlayer 必须写简短关系文本');
-    expect(entry?.defaultContentTemplate).toContain('玩家亲自统领');
-    expect(entry?.defaultContentTemplate).toContain('leaderNpcId 写 player');
-    expect(entry?.defaultContentTemplate).toContain('副将、军侯、带兵副手');
+    expect(entry?.defaultContentTemplate).toContain('leaderNpcId 记录实际带兵将领');
+    expect(entry?.defaultContentTemplate).toContain('deputyNpcIds（最多两名）');
+    expect(entry?.defaultContentTemplate).toContain('军师使用 strategistNpcId');
     expect(entry?.defaultContentTemplate).toContain('新建部队必须包含 quality、readiness、fatigue、lifecycleStatus');
     expect(entry?.defaultContentTemplate).toContain('KnowledgeBase');
     expect(entry?.defaultContentTemplate).toContain('model knowledge');
@@ -433,62 +462,35 @@ describe('PromptRegistry', () => {
     });
   });
 
-  it('registers adult intimacy prompt style entries as runtime-overridable advanced prompts', () => {
+  it('registers one adaptive adult intimacy prompt instead of two competing styles', () => {
     const registry = getPromptRegistry();
     const ids = registry.map((entry) => entry.id);
-    const adultPromptIds = [
-      'nsfw.adultIntimacy.commonProtocol',
-      'nsfw.adultIntimacy.relationshipImmersion',
-      'nsfw.adultIntimacy.directRealism',
-    ];
-
-    expect(ids).toEqual(expect.arrayContaining(adultPromptIds));
-
-    for (const id of adultPromptIds) {
-      const entry = registry.find((item) => item.id === id);
-      expect(entry, id).toMatchObject({
-        category: 'nsfw.adultIntimacy',
-        riskLevel: 'medium',
-        editLevel: 'advanced',
-        runtimeUsed: true,
-        protocolBound: false,
-        worldbookBound: false,
-      });
-      expect(entry?.defaultContentTemplate?.trim(), id).not.toBe('');
-    }
+    expect(ids).toContain('nsfw.adultIntimacy.commonProtocol');
+    expect(ids).not.toContain('nsfw.adultIntimacy.relationshipImmersion');
+    expect(ids).not.toContain('nsfw.adultIntimacy.directRealism');
 
     const commonProtocol = registry.find((item) => item.id === 'nsfw.adultIntimacy.commonProtocol');
-    expect(commonProtocol?.defaultContentTemplate).toContain('adultPrivateProfile 已被投喂且当前剧情自然进入亲密/成人场景');
-    expect(commonProtocol?.defaultContentTemplate).toContain('不得忽略已记录的稳定私密信息');
-    expect(commonProtocol?.defaultContentTemplate).toContain('当前剧情事实 > 当前人物状态 > 女性档案稳定锚点 > 风格指南');
-    expect(commonProtocol?.defaultContentTemplate).toContain('正文 NSFW 与档案信息分工');
-    expect(commonProtocol?.defaultContentTemplate).toContain('正文写正在发生的动作、接触、摩擦');
-    expect(commonProtocol?.defaultContentTemplate).toContain('身体字段是长期私密锚点和未来文生图锚点');
-    expect(commonProtocol?.defaultContentTemplate).toContain('偏好、边界、敏感、风险、子宫和初夜字段是长期信息');
-    expect(commonProtocol?.defaultContentTemplate).toContain('避免诗化比喻、审美套话');
-    expect(commonProtocol?.defaultContentTemplate).toContain('直白用语是两种成人描写风格的共同最低要求');
-    expect(commonProtocol?.defaultContentTemplate).toContain('禁止委婉语、含蓄代称、文学化代称与以景代事');
-    expect(commonProtocol?.defaultContentTemplate).toContain('年龄是角色事实和门禁依据，不是情色风格标签');
-    expect(commonProtocol?.defaultContentTemplate).toContain('“三十多岁”“四十出头”“熟女”“熟透”等年龄或成熟描述词都允许，不设禁词');
-    expect(commonProtocol?.defaultContentTemplate).toContain('近期正文已经连续或高频使用同一年龄描述');
-    expect(commonProtocol?.defaultContentTemplate).toContain('不得再次机械复述');
-
-    const relationshipImmersion = registry.find((item) => item.id === 'nsfw.adultIntimacy.relationshipImmersion');
-    expect(commonProtocol?.defaultContentTemplate).toContain('先立当前近景、双方站位或姿势、衣物状态与正在发生的动作');
-    expect(commonProtocol?.defaultContentTemplate).toContain('不要重演最近正文已经反复使用的动作顺序和反应套路');
-    expect(commonProtocol?.defaultContentTemplate).toContain('直接词表只在当前动作确实涉及对应部位时选用');
-    expect(relationshipImmersion?.defaultContentTemplate).toContain('关系沉浸只改变叙事重心，不降低用语直白程度');
-    expect(relationshipImmersion?.defaultContentTemplate).toContain('关系沉浸同样使用直白身体词和明确动作');
-    expect(relationshipImmersion?.defaultContentTemplate).toContain('肉棒、龟头、阴茎、小穴、阴蒂、乳头、蜜液、精液、穴口');
-    expect(relationshipImmersion?.defaultContentTemplate).toContain('禁止委婉语、含蓄代称与比喻遮蔽');
-    expect(relationshipImmersion?.defaultContentTemplate).toContain('心理、关系或现实后果');
-
-    const directRealism = registry.find((item) => item.id === 'nsfw.adultIntimacy.directRealism');
-    expect(directRealism?.defaultContentTemplate).toContain('直白写实是成人场景内的最高文体约束');
-    expect(directRealism?.defaultContentTemplate).toContain('禁止委婉语、含蓄代称与以景代事');
-    expect(directRealism?.defaultContentTemplate).toContain('肉棒、龟头、阴茎、小穴、阴蒂、乳头、蜜液、精液、穴口、臀缝');
-    expect(directRealism?.defaultContentTemplate).toContain('当前动作 → 接触部位 → 力度与节奏 → 摩擦、湿度与体液');
-    expect(directRealism?.defaultContentTemplate).toContain('禁止用“像、仿佛、如同、宛如、似”等比喻句作替代');
+    expect(commonProtocol).toMatchObject({
+      category: 'nsfw.adultIntimacy',
+      riskLevel: 'medium',
+      editLevel: 'advanced',
+      runtimeUsed: true,
+      protocolBound: false,
+      worldbookBound: false,
+    });
+    expect(commonProtocol?.defaultContentTemplate).toContain('未进入成人场景时完全忽略本协议');
+    expect(commonProtocol?.defaultContentTemplate).toContain('乳房、乳头、阴茎、龟头、阴蒂、阴唇、阴道、肛门、精液');
+    expect(commonProtocol?.defaultContentTemplate).toContain('只有人物对白、身份和现场语气确实粗俗时');
+    expect(commonProtocol?.defaultContentTemplate).toContain('奶子、小穴、逼、鸡巴、屁眼');
+    expect(commonProtocol?.defaultContentTemplate).not.toContain('蜜液');
+    expect(commonProtocol?.defaultContentTemplate).toContain('不要把这些项目写成逐项检查表');
+    expect(commonProtocol?.defaultContentTemplate).toContain('不用固定的景物、器物或身体轮廓意象代替实际部位与动作');
+    expect(commonProtocol?.defaultContentTemplate).toContain('白腻、雪乳、红梅、蓓蕾、花心、花径、花穴、甬道、蜜壶、玉峰、肉刃、天鹅颈、弓起如满弓');
+    expect(commonProtocol?.defaultContentTemplate).toContain('不做脱离上下文的全局禁词');
+    expect(commonProtocol?.defaultContentTemplate).toContain('同一身体部位在同一段动作中使用一个符合场景的稳定称谓');
+    expect(commonProtocol?.defaultContentTemplate).toContain('私密档案只提供事实连续性，不是文风范本');
+    expect(commonProtocol?.defaultContentTemplate).toContain('当前剧情事实 > 当前人物状态 > 私密档案事实锚点 > 本协议');
+    expect(commonProtocol?.defaultContentTemplate).not.toContain('动作—接触变化—可观察反馈—顺势调整—关系或局面变化');
   });
 
   it('registers narrative prose style guide as a runtime-overridable advanced prompt', () => {
@@ -504,26 +506,20 @@ describe('PromptRegistry', () => {
     });
     expect(entry?.displayTitleZh).toBe('【正文文风】普通正文描写指南');
     expect(entry?.displayCategoryZh).toBe('主剧情 / 正文文风');
-    expect(entry?.defaultContentTemplate).toContain('改善正文单薄');
-    expect(entry?.defaultContentTemplate).toContain('只选一至两种最适合当前因果的推进方式');
-    expect(entry?.defaultContentTemplate).toContain('不得按“场面铺陈 → 玩家行动复述 → NPC 反馈 → 总结变化”的固定顺序');
-    expect(entry?.defaultContentTemplate).toContain('默认从本回合最先发生变化的答复、动作、阻力或账目开始');
-    expect(entry?.defaultContentTemplate).toContain('人物反应的表达顺序');
+    expect(entry?.defaultContentTemplate).toContain('让 narrativeText 既准确推进事实');
+    expect(entry?.defaultContentTemplate).toContain('先静默判断当前场景的主要功能');
+    expect(entry?.defaultContentTemplate).toContain('空间要可理解');
+    expect(entry?.defaultContentTemplate).toContain('行动要连续');
+    expect(entry?.defaultContentTemplate).toContain('感官细节服务当下行动与判断');
     expect(entry?.defaultContentTemplate).toContain('从“近期正文回放”中先识别已经用过的人物反应方式');
     expect(entry?.defaultContentTemplate).toContain('改用近期未出现');
-    expect(entry?.defaultContentTemplate).toContain('普通正文优先直述事实');
-    expect(entry?.defaultContentTemplate).toContain('问话、陈述、谈判、汇报或请示回合');
-    expect(entry?.defaultContentTemplate).toContain('NPC 的明确答复、条件或反对理由必须在前两段出现');
-    expect(entry?.defaultContentTemplate).toContain('第一句 NPC 台词之前最多一条短旁白');
-    expect(entry?.defaultContentTemplate).toContain('玩家方案只用一句话承接');
-    expect(entry?.defaultContentTemplate).toContain('答复型回合的 narrativeText 第一段必须是被问 NPC 的台词');
-    expect(entry?.defaultContentTemplate).toContain('表情姿态与环境氛围合计最多一处');
-    expect(entry?.defaultContentTemplate).toContain('至少一半正文用于具体条件、账目、执行动作或可见后果');
+    expect(entry?.defaultContentTemplate).toContain('不要把正文压缩成干巴巴的问答纪要');
+    expect(entry?.defaultContentTemplate).toContain('治理、账目和军政回合');
+    expect(entry?.defaultContentTemplate).toContain('探索和战斗衔接回合');
     expect(entry?.defaultContentTemplate).toContain('不列举需要避开的词语');
     expect(entry?.defaultContentTemplate).not.toContain('目光、眼神、视线、眼底或眸色');
     expect(entry?.defaultContentTemplate).toContain('没有逐字引号时，不得把它扩写成 `【主角名】` 直接台词');
     expect(entry?.defaultContentTemplate).not.toContain('每回合至少给出');
-    expect(entry?.defaultContentTemplate).toContain('行动尝试必须写出可观察反馈');
     expect(entry?.defaultContentTemplate).toContain('NPC 要保留自己的事务、节奏、顾虑和边界');
     expect(entry?.defaultContentTemplate).toContain('只写玩家当前能看见、听见或合理感知到的信息');
     expect(entry?.defaultContentTemplate).toContain('对照“近期正文回放”检查重复模式');
@@ -548,14 +544,10 @@ describe('PromptRegistry', () => {
     expect(entry?.defaultContentTemplate).toContain('不得新增第二次正文 API');
     expect(entry?.defaultContentTemplate).toContain('近期正文回放');
     expect(entry?.defaultContentTemplate).toContain('若没有，narrativeText 中 `【主角名】` 台词段数量必须为 0');
-    expect(entry?.defaultContentTemplate).toContain('整组删去，直接从答复、动作、阻力或账目开始');
-    expect(entry?.defaultContentTemplate).toContain('先概括近期已经使用过的反应方式');
-    expect(entry?.defaultContentTemplate).toContain('改写为近期未出现且能提供新信息的');
-    expect(entry?.defaultContentTemplate).toContain('删去仅用于增强程度的修辞性比较');
-    expect(entry?.defaultContentTemplate).toContain('只写气氛、沉默、表情或天气而没有新事实的旁白段落');
-    expect(entry?.defaultContentTemplate).toContain('答复型回合第一段不是被问 NPC 的台词时');
-    expect(entry?.defaultContentTemplate).toContain('表情姿态与环境氛围合计不得超过一处');
-    expect(entry?.defaultContentTemplate).not.toContain('目光、眼神、视线、眼底或眸色');
+    expect(entry?.defaultContentTemplate).toContain('空间与行动连续性');
+    expect(entry?.defaultContentTemplate).toContain('保留能让现场可理解、可感知的必要细节');
+    expect(entry?.defaultContentTemplate).toContain('关键场景至少应有明确空间锚点');
+    expect(entry?.defaultContentTemplate).toContain('治理与对话回合也应让数字、条件和执行阻力落到人物行动中');
     expect(entry?.defaultContentTemplate).toContain('不是词语黑名单');
   });
 

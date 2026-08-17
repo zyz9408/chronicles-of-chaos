@@ -21,7 +21,7 @@ export function getOpeningAbilityPointsUsed(
   return uniqueKeys(adjustableKeys).reduce((total, key) => {
     const base = normalizeScore(baseScores[key]);
     const current = normalizeScore(currentScores[key], base);
-    return total + Math.max(0, current - base);
+    return total + current - base;
   }, 0);
 }
 
@@ -36,6 +36,7 @@ export function getOpeningAbilityPointsRemaining(
 
 /**
  * 将开局五维收口到“所选预设/补全结果 + 固定可分配点数”。
+ * 低于初始值的点数会先返还到共享池，再供其他能力分配。
  * adjustableKeys 之外的隐藏能力保持 currentScores 原值，不参与点数预算。
  */
 export function normalizeOpeningAbilityAllocation(
@@ -45,13 +46,29 @@ export function normalizeOpeningAbilityAllocation(
   budget = OPENING_ABILITY_POINT_BUDGET,
 ): OpeningAbilityScores {
   const normalized = { ...baseScores, ...currentScores };
+  const keys = uniqueKeys(adjustableKeys);
+  const requestedScores = new Map<string, number>();
   let remaining = Math.max(0, Math.floor(budget));
 
-  for (const key of uniqueKeys(adjustableKeys)) {
+  for (const key of keys) {
     const base = normalizeScore(baseScores[key]);
     const requested = normalizeScore(currentScores[key], base);
+    requestedScores.set(key, requested);
+    if (requested < base) {
+      normalized[key] = requested;
+      remaining += base - requested;
+    } else {
+      normalized[key] = base;
+    }
+  }
+
+  for (const key of keys) {
+    const base = normalizeScore(baseScores[key]);
+    const requested = requestedScores.get(key) ?? base;
     const allocated = Math.min(Math.max(0, requested - base), remaining, OPENING_ABILITY_MAX - base);
-    normalized[key] = base + allocated;
+    if (requested >= base) {
+      normalized[key] = base + allocated;
+    }
     remaining -= allocated;
   }
 
@@ -82,7 +99,7 @@ export function adjustOpeningAbilityAllocation(
     return { ...normalized, [key]: current + applied };
   }
 
-  const applied = Math.min(requestedSteps, Math.max(0, current - base));
+  const applied = Math.min(requestedSteps, Math.max(0, current - OPENING_ABILITY_MIN));
   if (applied <= 0) return normalized;
   return { ...normalized, [key]: current - applied };
 }
@@ -106,5 +123,5 @@ export function canDecreaseOpeningAbility(
   key: string,
 ): boolean {
   return adjustableKeys.includes(key)
-    && normalizeScore(currentScores[key], normalizeScore(baseScores[key])) > normalizeScore(baseScores[key]);
+    && normalizeScore(currentScores[key], normalizeScore(baseScores[key])) > OPENING_ABILITY_MIN;
 }

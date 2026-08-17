@@ -1,14 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import type { CharacterEquipmentItem } from '../engine/types';
-import { TRAIT_RARITY_LEGEND_TITLE, buildEquipmentTooltipTitle, formatEquipmentQualityLabel, formatKnownSourceLabel } from './gameTooltipText';
+import type { CharacterEquipmentItem, CharacterUniqueArt } from '../engine/types';
+import {
+  TRAIT_RARITY_LEGEND_TITLE,
+  buildEquipmentTooltipTitle,
+  buildUniqueArtTooltipTitle,
+  formatEquipmentQualityLabel,
+  formatKnownSourceLabel,
+  normalizeTraitRarity,
+  normalizeUniqueArtRarity,
+} from './gameTooltipText';
 
 describe('game tooltip text', () => {
   it('explains trait rarity levels and their narrative weight', () => {
     expect(TRAIT_RARITY_LEGEND_TITLE).toContain('白');
     expect(TRAIT_RARITY_LEGEND_TITLE).toContain('绿');
     expect(TRAIT_RARITY_LEGEND_TITLE).toContain('蓝');
+    expect(TRAIT_RARITY_LEGEND_TITLE).toContain('紫');
+    expect(TRAIT_RARITY_LEGEND_TITLE).toContain('橙');
     expect(TRAIT_RARITY_LEGEND_TITLE).toContain('红');
-    expect(TRAIT_RARITY_LEGEND_TITLE).toContain('金');
+    expect(TRAIT_RARITY_LEGEND_TITLE).not.toContain('金：');
     expect(TRAIT_RARITY_LEGEND_TITLE).toContain('叙事权重');
     expect(TRAIT_RARITY_LEGEND_TITLE).toContain('不等于固定数值加成');
   });
@@ -62,5 +72,26 @@ describe('game tooltip text', () => {
     expect(formatKnownSourceLabel('runtime.story')).toBe('剧情推进');
     expect(formatKnownSourceLabel('opening')).toBe('开局');
     expect(formatKnownSourceLabel('writeback')).toBe('剧情记录');
+  });
+
+  it('renders the shared six-tier trait and unique-art quality scale', () => {
+    const art: CharacterUniqueArt = {
+      id: 'art_legendary_command',
+      name: '神机节制',
+      rarity: 'orange',
+      domain: 'warfare',
+      level: 3,
+      description: '在复杂战局中稳定调度各部。',
+      effectSummary: '强化军略与临阵调度。',
+      source: 'history',
+    };
+
+    expect(normalizeUniqueArtRarity('purple')).toBe('purple');
+    expect(normalizeUniqueArtRarity('orange')).toBe('orange');
+    expect(normalizeUniqueArtRarity('gold')).toBe('red');
+    expect(normalizeTraitRarity('purple')).toBe('purple');
+    expect(normalizeTraitRarity('orange')).toBe('orange');
+    expect(normalizeTraitRarity('gold')).toBe('red');
+    expect(buildUniqueArtTooltipTitle(art)).toContain('品级：传说');
   });
 });

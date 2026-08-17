@@ -12,7 +12,7 @@ const bookmarks: StartBookmark[] = [
     description: '天下将乱，州郡尚未全面失序。',
     recommendedRegions: [],
     recommendedOrigins: ['寒门子弟'],
-    situationSummary: '第一条完整局势说明，只应在选中时展示。',
+    situationSummary: '第一条完整局势说明，应始终保留在自己的卡片内。',
   },
   {
     id: 'red-cliffs',
@@ -22,12 +22,12 @@ const bookmarks: StartBookmark[] = [
     description: '江汉之间，三方兵势汇聚。',
     recommendedRegions: [],
     recommendedOrigins: ['军中吏士'],
-    situationSummary: '第二条完整局势说明，只应在选中时展示。',
+    situationSummary: '第二条完整局势说明，应始终保留在自己的卡片内。',
   },
 ];
 
 describe('StartBookmarkSelect', () => {
-  it('keeps every bookmark in a compact timeline and expands only the selected detail', () => {
+  it('renders every opening period as an independent complete card', () => {
     const html = renderToStaticMarkup(
       <StartBookmarkSelect
         bookmarks={bookmarks}
@@ -36,11 +36,13 @@ describe('StartBookmarkSelect', () => {
       />,
     );
 
-    expect(html).toContain('class="bookmark-timeline"');
-    expect(html.match(/class="bookmark-timeline-item/g)).toHaveLength(2);
+    expect(html).toContain('class="bookmark-list"');
+    expect(html.match(/class="bookmark-card/g)).toHaveLength(2);
     expect(html).toContain('aria-pressed="true"');
-    expect(html).toContain('第二条完整局势说明，只应在选中时展示。');
-    expect(html).not.toContain('第一条完整局势说明，只应在选中时展示。');
-    expect(html.match(/class="bookmark-detail"/g)).toHaveLength(1);
+    expect(html).toContain('第一条完整局势说明，应始终保留在自己的卡片内。');
+    expect(html).toContain('第二条完整局势说明，应始终保留在自己的卡片内。');
+    expect(html.match(/class="bm-situation-viewport"/g)).toHaveLength(2);
+    expect(html.match(/class="bm-situation-content"/g)).toHaveLength(2);
+    expect(html).not.toContain('bookmark-detail');
   });
 });

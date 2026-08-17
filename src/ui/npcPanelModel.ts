@@ -1,9 +1,17 @@
-import type { CharacterTraitRarity, CharacterUniqueArt, LuanShiNpc, RuntimeState } from '../engine/types';
-import { deriveNpcCurrentAge, isAdultFemaleNpcAt } from '../engine/time/npcAge';
+import type { CharacterTraitRarity, CharacterUniqueArt, CharacterUniqueArtRarity, LuanShiNpc, RuntimeState } from '../engine/types';
+import { normalizeCharacterTraitRarity } from '../engine/character/TraitRarity';
+import {
+  deriveNpcCurrentAge,
+  isAdultFemaleNpcAt,
+  normalizeCompleteBirthDate,
+} from '../engine/time/npcAge';
 import { getPregnancyMonth, getPregnancyStatusLabel } from '../engine/pregnancy/PregnancyLifecycle';
 import { filterProtagonistNpcClones } from '../engine/state/playerNpcBoundary';
 import { isNpcPhysicallyPresent } from '../engine/state/npcPresence';
-import { buildTraitTooltipTitle, buildUniqueArtTooltipTitle, formatKnownSourceLabel, formatUniqueArtDomainLabel } from './gameTooltipText';
+import { projectEquippedItems } from '../engine/character/loadoutIdentity';
+import { buildTraitTooltipTitle, buildUniqueArtTooltipTitle, formatKnownSourceLabel, formatUniqueArtDomainLabel, normalizeUniqueArtRarity } from './gameTooltipText';
+import { normalizeCharacterTraits } from '../engine/character/CharacterTraitNormalization';
+import { mergeStableCharacterUniqueArts } from '../engine/character/NpcUniqueArtPolicy';
 
 export interface NpcPanelRow {
   id?: string;
@@ -35,6 +43,7 @@ export interface NpcPanelSection {
 }
 
 export interface NpcTraitChip {
+  id: string;
   label: string;
   description: string;
   promptHint?: string;
@@ -45,13 +54,14 @@ export interface NpcTraitChip {
 }
 
 export interface NpcUniqueArtChip {
+  id: string;
   label: string;
   description: string;
   effectSummary: string;
   promptHint?: string;
   source?: string;
   sourceLabel?: string;
-  rarity: CharacterTraitRarity;
+  rarity: CharacterUniqueArtRarity;
   domain: string;
   domainLabel: string;
   levelText: string;
@@ -93,6 +103,22 @@ export interface NpcPresenceUpdatePreview {
   readByPlayer: boolean;
 }
 
+export type NpcMemoryLayerKey = 'recent' | 'mid' | 'long';
+
+export interface NpcMemoryLayerEntry {
+  id: string;
+  meta: string;
+  content: string;
+  detail?: string;
+}
+
+export interface NpcMemoryLayer {
+  key: NpcMemoryLayerKey;
+  label: string;
+  description: string;
+  entries: NpcMemoryLayerEntry[];
+}
+
 export interface NpcPanelCard {
   id: string;
   name: string;
@@ -113,6 +139,7 @@ export interface NpcPanelCard {
   uniqueArtLabels: string[];
   effectLabels: string[];
   memoryPreview: string[];
+  memoryLayers: NpcMemoryLayer[];
   presenceUpdates: NpcPresenceUpdatePreview[];
   femaleProfile?: NpcFemaleProfilePanel;
   isPresent: boolean;
@@ -162,8 +189,6 @@ export interface NpcPanelModel {
 function hasText(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
-const traitRarityValues: CharacterTraitRarity[] = ['white', 'green', 'blue', 'red', 'gold'];
-const traitRaritySet = new Set<string>(traitRarityValues);
 const missingTraitDescription = '\u6682\u65e0\u8bf4\u660e\u3002';
 
 const certaintyLabels: Record<string, string> = {
@@ -204,17 +229,16 @@ function isUnderageFemaleNpc(npc: LuanShiNpc, currentDate: string): boolean {
 }
 
 function normalizeTraitRarity(value?: string | null): CharacterTraitRarity {
-  if (!hasText(value)) return 'white';
-  const normalized = value.trim().toLocaleLowerCase();
-  return traitRaritySet.has(normalized) ? (normalized as CharacterTraitRarity) : 'white';
+  return normalizeCharacterTraitRarity(value) ?? 'white';
 }
 
 
 
 function buildTraitChips(npc: LuanShiNpc): NpcTraitChip[] {
-  return (npc.traits ?? [])
+  return normalizeCharacterTraits(npc.traits)
     .filter((trait) => hasText(trait.label))
     .map((trait) => ({
+      id: trait.id,
       label: trait.label.trim(),
       description: hasText(trait.description) ? trait.description.trim() : missingTraitDescription,
       promptHint: hasText(trait.promptHint) ? trait.promptHint.trim() : undefined,
@@ -235,16 +259,17 @@ function buildUniqueArtProgressText(progress?: number): string | undefined {
 }
 
 function buildUniqueArtChips(npc: LuanShiNpc): NpcUniqueArtChip[] {
-  return (npc.uniqueArts ?? [])
+  return mergeStableCharacterUniqueArts(npc.uniqueArts, [])
     .filter((art) => hasText(art.name))
     .map((art) => ({
+      id: art.id,
       label: art.name.trim(),
       description: hasText(art.description) ? art.description.trim() : missingTraitDescription,
       effectSummary: hasText(art.effectSummary) ? art.effectSummary.trim() : missingTraitDescription,
       promptHint: hasText(art.promptHint) ? art.promptHint.trim() : undefined,
       source: hasText(art.source) ? art.source.trim() : undefined,
       sourceLabel: hasText(art.source) ? formatKnownSourceLabel(art.source) : undefined,
-      rarity: normalizeTraitRarity(art.rarity),
+      rarity: normalizeUniqueArtRarity(art.rarity),
       domain: hasText(art.domain) ? art.domain.trim() : 'other',
       domainLabel: formatUniqueArtDomainLabel(art.domain),
       levelText: buildUniqueArtLevelText(art),
@@ -307,12 +332,14 @@ function buildSubtitle(npc: LuanShiNpc): string {
 
 function buildStatusBadges(npc: LuanShiNpc, currentDate: string, isPresent: boolean): string[] {
   const age = getCurrentNpcAge(npc, currentDate);
+  const birthDate = normalizeCompleteBirthDate(npc.birthDate);
+  const sexAndAge = npc.sex && age !== undefined ? `${npc.sex} ${age}岁` : npc.sex;
   return [
     isPresent ? '在场' : '',
     npc.isFocused ? '关注' : '',
     npc.factionName,
     isUnderageFemaleNpc(npc, currentDate) ? '未成年' : '',
-    npc.sex && age ? `${npc.sex} ${age}岁` : npc.sex,
+    birthDate && sexAndAge ? `${sexAndAge} · ${birthDate}生` : sexAndAge,
   ].filter(hasText);
 }
 
@@ -345,7 +372,7 @@ function buildNpcRowDetail(parts: Array<string | undefined>): string | undefined
 }
 
 function buildNpcEquipmentRows(npc: LuanShiNpc): NpcPanelRow[] {
-  return (npc.equipment ?? [])
+  return projectEquippedItems(npc.equipment ?? [])
     .filter((item) => hasText(item.name))
     .map((item) => {
       const slot = hasText(item.slot) ? item.slot.trim() : '';
@@ -459,6 +486,73 @@ function buildMemoryPreview(npc: LuanShiNpc): string[] {
         ? `${formatKnownSourceLabel(memory.source)}｜${memory.createdAt.trim()}：${memory.content}`
         : `${formatKnownSourceLabel(memory.source)}：${memory.content}`
     ));
+}
+
+function formatMemoryRange(fromCreatedAt?: string, toCreatedAt?: string): string {
+  const from = hasText(fromCreatedAt) ? fromCreatedAt.trim() : '';
+  const to = hasText(toCreatedAt) ? toCreatedAt.trim() : '';
+  if (from && to && from !== to) return `${from}—${to}`;
+  return to || from || '时间未明';
+}
+
+function buildMemoryLayers(state: RuntimeState, npc: LuanShiNpc): NpcMemoryLayer[] {
+  const recentEntries: NpcMemoryLayerEntry[] = [...npc.memories]
+    .reverse()
+    .map((memory) => ({
+      id: memory.memoryId,
+      meta: hasText(memory.createdAt)
+        ? `${formatKnownSourceLabel(memory.source)} · ${memory.createdAt.trim()}`
+        : formatKnownSourceLabel(memory.source),
+      content: memory.content,
+    }));
+
+  const midEntries: NpcMemoryLayerEntry[] = [...(state.memoryArchive?.npcMidTermSummaries ?? [])]
+    .filter((summary) => summary.npcId === npc.npcId)
+    .reverse()
+    .map((summary) => ({
+      id: summary.summaryId,
+      meta: `中期 · ${formatMemoryRange(summary.fromCreatedAt, summary.toCreatedAt)}`,
+      content: summary.summary,
+      ...(summary.foldedIntoLongTermSummaryId ? { detail: '已归入长期摘要' } : {}),
+    }));
+
+  const longTermEntries: NpcMemoryLayerEntry[] = [...(state.memoryArchive?.npcLongTermSummaries ?? [])]
+    .filter((summary) => summary.npcId === npc.npcId)
+    .reverse()
+    .map((summary) => ({
+      id: summary.summaryId,
+      meta: `长期 · ${formatMemoryRange(summary.fromCreatedAt, summary.toCreatedAt)}`,
+      content: summary.summary,
+    }));
+  const interactionEntries: NpcMemoryLayerEntry[] = [...(state.memoryArchive?.npcInteractionSummaries ?? [])]
+    .filter((summary) => summary.npcId === npc.npcId)
+    .reverse()
+    .map((summary, index) => ({
+      id: `interaction-${npc.npcId}-${summary.updatedAt}-${index}`,
+      meta: `互动总览 · ${formatMemoryRange(summary.fromCreatedAt, summary.toCreatedAt)}`,
+      content: summary.summary,
+    }));
+
+  return [
+    {
+      key: 'recent',
+      label: '近期',
+      description: '保留的原始经历与认知来源',
+      entries: recentEntries,
+    },
+    {
+      key: 'mid',
+      label: '中期',
+      description: '由连续原始记忆压缩形成的阶段摘要',
+      entries: midEntries,
+    },
+    {
+      key: 'long',
+      label: '长期',
+      description: '长期经历与互动关系总览',
+      entries: [...longTermEntries, ...interactionEntries],
+    },
+  ];
 }
 
 function hasUnreadPresenceUpdate(npc: LuanShiNpc): boolean {
@@ -591,7 +685,7 @@ function buildFemaleProfile(npc: LuanShiNpc, currentDate: string): NpcFemaleProf
   };
 }
 
-function buildCard(npc: LuanShiNpc, currentDate: string, isPresent: boolean): NpcPanelCard {
+function buildCard(state: RuntimeState, npc: LuanShiNpc, currentDate: string, isPresent: boolean): NpcPanelCard {
   const traitChips = buildTraitChips(npc);
   const uniqueArtChips = buildUniqueArtChips(npc);
   const femaleProfile = buildFemaleProfile(npc, currentDate);
@@ -619,6 +713,7 @@ function buildCard(npc: LuanShiNpc, currentDate: string, isPresent: boolean): Np
     uniqueArtLabels: uniqueArtChips.map((art) => art.label),
     effectLabels: (npc.effects ?? []).map((effect) => effect.label).filter(hasText),
     memoryPreview: buildMemoryPreview(npc),
+    memoryLayers: buildMemoryLayers(state, npc),
     presenceUpdates: buildPresenceUpdates(npc),
     ...(femaleProfile ? { femaleProfile } : {}),
     isPresent,
@@ -701,6 +796,11 @@ function cardMatchesSearch(card: NpcPanelCard, item: NpcRosterItem, searchText: 
     ...card.descriptionRows.flatMap((row) => [row.label, row.value]),
     ...card.equipmentRows.flatMap((row) => [row.label, row.value, row.detail ?? '']),
     ...card.inventoryRows.flatMap((row) => [row.label, row.value, row.detail ?? '']),
+    ...card.memoryLayers.flatMap((layer) => layer.entries.flatMap((entry) => [
+      entry.meta,
+      entry.content,
+      entry.detail ?? '',
+    ])),
     ...(card.femaleProfile?.rows.flatMap((row) => [row.label, row.value, row.detail ?? '']) ?? []),
     ...(card.femaleProfile?.adultPrivateRows.flatMap((row) => [row.label, row.value, row.detail ?? '']) ?? []),
     ...(card.femaleProfile?.wombRecords.flatMap((record) => [
@@ -767,7 +867,7 @@ export function buildNpcPanelModel(state: RuntimeState, options: NpcPanelBuildOp
     return a.name.localeCompare(b.name, 'zh-Hans-CN');
   });
 
-  const cards = npcs.map((npc) => buildCard(npc, state.currentDate, isNpcPhysicallyPresent(state, npc)));
+  const cards = npcs.map((npc) => buildCard(state, npc, state.currentDate, isNpcPhysicallyPresent(state, npc)));
   const cardById = new Map(cards.map((card) => [card.id, card]));
   const rosterItems = npcs.map((npc) => buildRosterItem(
     cardById.get(npc.npcId)!,

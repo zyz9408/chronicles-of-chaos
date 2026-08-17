@@ -1,10 +1,17 @@
-import type { CharacterTraitRarity, CharacterUniqueArt, RuntimeState } from '../engine/types';
+import type {
+  CharacterUniqueArt,
+  CharacterUniqueArtProgressIntensity,
+  CharacterUniqueArtProgressRecord,
+  CharacterUniqueArtProgressSource,
+  CharacterUniqueArtRarity,
+  RuntimeState,
+} from '../engine/types';
 import {
-  TRAIT_RARITY_LABELS,
+  UNIQUE_ART_RARITY_LABELS,
   buildUniqueArtTooltipTitle,
   formatKnownSourceLabel,
   formatUniqueArtDomainLabel,
-  normalizeTraitRarity,
+  normalizeUniqueArtRarity,
 } from './gameTooltipText';
 
 export type UniqueArtOwnerType = 'player' | 'npc';
@@ -16,7 +23,7 @@ export interface UniqueArtPanelRosterItem {
   characterName: string;
   artId: string;
   name: string;
-  rarity: CharacterTraitRarity;
+  rarity: CharacterUniqueArtRarity;
   rarityLabel: string;
   domain: string;
   domainLabel: string;
@@ -43,9 +50,30 @@ export interface UniqueArtPanelDetail extends UniqueArtPanelRosterItem {
   promptHint?: string;
   acquiredAt?: string;
   upgradedAt?: string;
+  currentProgress: number;
+  progressPercent: number;
+  bankedProgress: number;
+  isMaxLevel: boolean;
+  nextLevelText: string;
+  acquisitionLabel?: string;
+  acquisitionSummary?: string;
+  acquisitionOccurredAt?: string;
+  acquisitionInstructorName?: string;
+  progressHistory: UniqueArtPanelProgressHistoryRow[];
   checkHookRows: UniqueArtPanelCheckHookRow[];
   tags: string[];
   tooltip: string;
+}
+
+export interface UniqueArtPanelProgressHistoryRow {
+  id: string;
+  occurredAt: string;
+  sourceLabel: string;
+  intensityLabel: string;
+  summary: string;
+  awardedText: string;
+  transitionText: string;
+  levelledUp: boolean;
 }
 
 export interface UniqueArtsPanelModel {
@@ -71,6 +99,29 @@ function buildProgressText(progress?: number): string | undefined {
   return `${Math.max(0, Math.min(100, Math.round(progress)))}%`;
 }
 
+const ACQUISITION_KIND_LABELS: Record<NonNullable<CharacterUniqueArt['acquisition']>['kind'], string> = {
+  opening: '开局既有',
+  background: '身世传承',
+  training: '修习所得',
+  teaching: '他人传授',
+  manual: '典籍参悟',
+  event: '剧情机缘',
+  achievement: '重大成就',
+};
+
+const PROGRESS_SOURCE_LABELS: Record<CharacterUniqueArtProgressSource, string> = {
+  actual_use: '实际运用',
+  autonomous_practice: '自主修习',
+  instruction_or_manual: '传授或典籍',
+  major_achievement: '重大成就',
+};
+
+const PROGRESS_INTENSITY_LABELS: Record<CharacterUniqueArtProgressIntensity, string> = {
+  minor: '轻微',
+  normal: '正常',
+  major: '重大',
+};
+
 function buildPanelId(characterType: UniqueArtOwnerType, characterId: string, artId: string): string {
   return `${characterType}:${characterId}:${artId}`;
 }
@@ -90,8 +141,8 @@ function buildRosterItem(
     characterName,
     artId: art.id.trim(),
     name: art.name.trim(),
-    rarity: normalizeTraitRarity(art.rarity),
-    rarityLabel: TRAIT_RARITY_LABELS[normalizeTraitRarity(art.rarity)],
+    rarity: normalizeUniqueArtRarity(art.rarity),
+    rarityLabel: UNIQUE_ART_RARITY_LABELS[normalizeUniqueArtRarity(art.rarity)],
     domain: hasText(art.domain) ? art.domain.trim() : 'other',
     domainLabel: formatUniqueArtDomainLabel(art.domain),
     levelText: buildLevelText(art),
@@ -99,7 +150,39 @@ function buildRosterItem(
   };
 }
 
-function buildDetail(item: UniqueArtPanelRosterItem, art: CharacterUniqueArt): UniqueArtPanelDetail {
+function buildProgressHistory(history: CharacterUniqueArtProgressRecord[] | undefined): UniqueArtPanelProgressHistoryRow[] {
+  return [...(history ?? [])]
+    .slice(-8)
+    .reverse()
+    .map((record) => ({
+      id: record.eventId,
+      occurredAt: record.occurredAt,
+      sourceLabel: PROGRESS_SOURCE_LABELS[record.source],
+      intensityLabel: PROGRESS_INTENSITY_LABELS[record.intensity],
+      summary: record.summary,
+      awardedText: `+${record.awardedProgress}`,
+      transitionText: record.levelledUp
+        ? `Lv.${record.levelBefore} → Lv.${record.levelAfter}`
+        : `Lv.${record.levelAfter} · ${record.progressAfter}%`,
+      levelledUp: record.levelledUp,
+    }));
+}
+
+function buildDetail(
+  state: RuntimeState,
+  item: UniqueArtPanelRosterItem,
+  art: CharacterUniqueArt,
+): UniqueArtPanelDetail {
+  const maxLevel = art.maxLevel ?? 10;
+  const isMaxLevel = art.level >= maxLevel;
+  const currentProgress = isMaxLevel
+    ? 100
+    : Math.max(0, Math.min(100, Math.round(art.progress ?? 0)));
+  const bankedProgress = Math.max(0, Math.round(art.bankedProgress ?? 0));
+  const acquisition = art.acquisition;
+  const instructorName = acquisition?.instructorNpcId
+    ? state.npcs?.find((npc) => npc.npcId === acquisition.instructorNpcId)?.name
+    : undefined;
   return {
     ...item,
     description: hasText(art.description) ? art.description.trim() : '暂无说明。',
@@ -109,6 +192,16 @@ function buildDetail(item: UniqueArtPanelRosterItem, art: CharacterUniqueArt): U
     ...(hasText(art.promptHint) ? { promptHint: art.promptHint.trim() } : {}),
     ...(hasText(art.acquiredAt) ? { acquiredAt: art.acquiredAt.trim() } : {}),
     ...(hasText(art.upgradedAt) ? { upgradedAt: art.upgradedAt.trim() } : {}),
+    currentProgress,
+    progressPercent: currentProgress,
+    bankedProgress,
+    isMaxLevel,
+    nextLevelText: isMaxLevel ? '已臻当前上限' : `距离 Lv.${art.level + 1} 还需 ${Math.max(0, 100 - currentProgress)} 点`,
+    ...(acquisition ? { acquisitionLabel: ACQUISITION_KIND_LABELS[acquisition.kind] } : {}),
+    ...(acquisition && hasText(acquisition.summary) ? { acquisitionSummary: acquisition.summary.trim() } : {}),
+    ...(acquisition && hasText(acquisition.occurredAt) ? { acquisitionOccurredAt: acquisition.occurredAt.trim() } : {}),
+    ...(instructorName ? { acquisitionInstructorName: instructorName } : {}),
+    progressHistory: buildProgressHistory(art.progressHistory),
     checkHookRows: (art.checkHooks ?? []).map((hook) => ({
       scope: hook.scope,
       ...(typeof hook.modifier === 'number' ? { modifier: hook.modifier } : {}),
@@ -165,6 +258,6 @@ export function buildUniqueArtsPanelModel(
     rosterItems,
     rosterGroups: buildRosterGroups(rosterItems),
     selectedArtId: selectedItem?.id ?? null,
-    ...(selectedItem && selectedArt ? { selectedArt: buildDetail(selectedItem, selectedArt) } : {}),
+    ...(selectedItem && selectedArt ? { selectedArt: buildDetail(state, selectedItem, selectedArt) } : {}),
   };
 }

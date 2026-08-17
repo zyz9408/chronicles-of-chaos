@@ -257,6 +257,7 @@
 }
 
 .bm-situation-viewport {
+  display: block;
   height: 5.4rem;
   overflow: hidden;
   position: relative;
@@ -266,6 +267,7 @@
 }
 
 .bm-situation-content {
+  display: block;
   color: var(--text-primary);
   font-size: 0.85rem;
   padding: 0.5rem;

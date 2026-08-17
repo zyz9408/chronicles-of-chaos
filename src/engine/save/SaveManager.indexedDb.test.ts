@@ -493,6 +493,43 @@ describe('SaveManager IndexedDB persistence', () => {
       .toBe(CURRENT_RUNTIME_STATE_MIGRATION_VERSION);
   });
 
+  it('loads and persists a repaired Longzhong clock from the previous migration version', async () => {
+    const save = makeSaveData('longzhong-season-clock-save', '杨方源');
+    save.runtimeStateMigrationVersion = CURRENT_RUNTIME_STATE_MIGRATION_VERSION - 1;
+    save.worldBookId = 'threeKingdoms';
+    save.worldBookVersion = worldBook_ThreeKingdoms.manifest.version;
+    save.worldBookSource = 'official';
+    save.startBookmarkId = 'bookmark_207_longzhong_plan';
+    save.startDate = '207年冬';
+    save.currentDate = '公元1年01月01日 09:15（巳时）';
+    Object.assign(save.runtimeState, {
+      worldBookId: 'threeKingdoms',
+      worldBookVersion: worldBook_ThreeKingdoms.manifest.version,
+      worldBookSource: 'official',
+      startBookmarkId: 'bookmark_207_longzhong_plan',
+      startDate: '207年冬',
+      currentDate: '公元1年01月01日 09:15（巳时）',
+      currentTime: { year: 1, month: 1, day: 1, hour: 9, minute: 15 },
+    });
+    await idbPut('saves', save);
+
+    const loaded = await loadSave(save.id);
+    const persisted = await idbGet<SaveData>('saves', save.id);
+
+    expect(loaded?.runtimeStateMigrationVersion).toBe(CURRENT_RUNTIME_STATE_MIGRATION_VERSION);
+    expect(loaded?.startDate).toBe('公元207年10月01日 08:00（辰时）');
+    expect(loaded?.currentDate).toBe('公元207年10月01日 09:15（巳时）');
+    expect(loaded?.runtimeState.currentTime).toEqual({
+      year: 207,
+      month: 10,
+      day: 1,
+      hour: 9,
+      minute: 15,
+    });
+    expect(persisted?.currentDate).toBe(loaded?.currentDate);
+    expect(persisted?.runtimeState.currentTime).toEqual(loaded?.runtimeState.currentTime);
+  });
+
   it('migrates version 4 saves by collapsing differently named heroine threads for the same npcId', async () => {
     const save = makeSaveData('heroine-identity-v4-save', '红颜身份迁移');
     save.runtimeState.npcs = [{
@@ -1300,7 +1337,7 @@ describe('SaveManager IndexedDB persistence', () => {
     });
   });
 
-  it('round-trips a StatePatch-triggered map writeback rollback warning', async () => {
+  it('round-trips independent map writes when an invalid movement patch is rejected', async () => {
     const mapIndex = buildMapV1Index(getWorldBookMapRoots(worldBook_ThreeKingdoms));
     const seedPlace = mapIndex.nodeById.place_jingzhou_xinye;
     const seedParentId = mapIndex.parentIdByNodeId[seedPlace.id];
@@ -1348,9 +1385,10 @@ describe('SaveManager IndexedDB persistence', () => {
       { apiConfig, llmClient },
     );
     expect(turnResult.patchValidation?.valid).toBe(false);
-    expect(turnResult.locationWritebackDiagnostics).toEqual([
-      expect.objectContaining({ code: 'location-writeback-rolled-back' }),
-    ]);
+    expect(turnResult.locationWritebackDiagnostics).toEqual([]);
+    expect(turnResult.newRuntimeState.currentLocationId).toBe(seedPlace.id);
+    expect(turnResult.newRuntimeState.mapNodes?.some((node) => node.id === 'incoming_outpost')).toBe(true);
+    expect(turnResult.newRuntimeState.routeEdges?.some((route) => route.routeId === 'route_prepared')).toBe(true);
 
     const commitSuccessfulTurn = getAtomicSaveApi('commitSuccessfulTurn');
     await commitSuccessfulTurn({
@@ -1370,14 +1408,10 @@ describe('SaveManager IndexedDB persistence', () => {
     const persistedTurn = persistedTurnLog[persistedTurnLog.length - 1];
     expect(persistedTurn?.displayMeta?.locationWriteback)
       .toEqual(turnResult.turnDisplayMeta.locationWriteback);
-    expect(persistedTurn?.displayMeta?.locationWriteback?.diagnostics).toEqual([
-      expect.objectContaining({
-        code: 'location-writeback-rolled-back',
-        candidateIds: [],
-      }),
-    ]);
-    expect(loaded?.runtimeState.mapNodes?.some((node) => node.id === 'incoming_outpost')).toBe(false);
-    expect(loaded?.runtimeState.routeEdges?.some((route) => route.routeId === 'route_prepared')).toBe(false);
+    expect(persistedTurn?.displayMeta?.locationWriteback?.diagnostics).toEqual([]);
+    expect(loaded?.runtimeState.currentLocationId).toBe(seedPlace.id);
+    expect(loaded?.runtimeState.mapNodes?.some((node) => node.id === 'incoming_outpost')).toBe(true);
+    expect(loaded?.runtimeState.routeEdges?.some((route) => route.routeId === 'route_prepared')).toBe(true);
   });
 
   it('loads and persists normalized old saves with duplicated location-backed holdings', async () => {
@@ -2155,6 +2189,16 @@ describe('SaveManager IndexedDB persistence', () => {
 
     it('round-trips scalar fields whose names are arrays in other runtime contexts', async () => {
       const state = makeState('同名异义字段角色');
+      state.routeEdges = [{
+        routeId: 'route-string-notes-regression',
+        fromPlaceId: 'place_route_start',
+        toPlaceId: 'place_route_end',
+        name: '测试路线',
+        status: '可通行',
+        source: 'system',
+        knownLevel: '亲历',
+        notes: '路线备注在地图合同中是文本，不是数组。',
+      }];
       state.combatRecords = [{
         combatId: 'combat-scalar-field-regression',
         kind: 'duel',
@@ -2186,6 +2230,30 @@ describe('SaveManager IndexedDB persistence', () => {
         riskNotes: '身份暴露可能牵动当地局势。',
         lastUpdatedAt: state.currentDate,
       }];
+      state.npcs = [{
+        npcId: 'npc-relationship-network-notes-regression',
+        name: '测试关系人物',
+        sex: '女',
+        age: 24,
+        role: '故交',
+        isPresent: true,
+        isFocused: true,
+        summary: '验证关系网络备注。',
+        appearance: '素衣。',
+        personality: '沉静。',
+        motivation: '守望故人。',
+        relationToPlayer: '故交',
+        contactLevel: 70,
+        recentAttitude: '信任',
+        memories: [],
+        femaleProfile: {
+          relationshipNetwork: [{
+            targetName: state.player.name,
+            relationship: '故交',
+            notes: '关系网络备注在正式类型中是文本，不是数组。',
+          }],
+        },
+      }];
       const save = await createSave(state, '同名异义字段');
       await saveTurnSnapshot({
         saveId: save.id,
@@ -2202,14 +2270,59 @@ describe('SaveManager IndexedDB persistence', () => {
       await importSaves(archive, { mode: 'replace' });
 
       const loaded = await loadSave(save.id);
+      expect(loaded?.runtimeState.routeEdges?.[0].notes)
+        .toBe('路线备注在地图合同中是文本，不是数组。');
       expect(loaded?.runtimeState.combatRecords?.[0].judgement?.scoreBreakdown).toMatchObject({
         equipment: 15,
         uniqueArts: 10,
       });
       expect(loaded?.runtimeState.heroineThreads?.[0].riskNotes).toBe('身份暴露可能牵动当地局势。');
+      expect(loaded?.runtimeState.npcs?.[0].femaleProfile?.relationshipNetwork?.[0].notes)
+        .toBe('关系网络备注在正式类型中是文本，不是数组。');
       const [snapshot] = await listTurnSnapshots(save.id);
       expect(snapshot?.snapshot.beforeState.combatRecords?.[0].judgement?.scoreBreakdown?.equipment).toBe(15);
       expect(snapshot?.snapshot.beforeState.heroineThreads?.[0].riskNotes).toBe('身份暴露可能牵动当地局势。');
+      expect(snapshot?.snapshot.beforeState.npcs?.[0].femaleProfile?.relationshipNetwork?.[0].notes)
+        .toBe('关系网络备注在正式类型中是文本，不是数组。');
+    });
+
+    it('keeps array-only notes strict outside known text-note contexts', async () => {
+      const save = makeSaveData('invalid-combat-notes', '损坏战斗备注');
+      const archive = {
+        schema: 'coc.v2.saves',
+        version: 2,
+        exportedAt: '2026-08-01T13:40:00.000Z',
+        lastSaveId: save.id,
+        saves: [{
+          ...save,
+          runtimeState: {
+            ...save.runtimeState,
+            combatRecords: [{
+              combatId: 'combat-invalid-notes',
+              kind: 'duel',
+              title: '错误备注容器',
+              summary: '用于确认路线备注兼容不会放宽战斗判定合同。',
+              occurredAt: save.currentDate,
+              participants: [{ name: '损坏战斗备注', side: 'player' }],
+              playerInvolved: true,
+              resultLevel: 'win',
+              outcome: '获胜',
+              significance: 'minor',
+              judgement: {
+                method: 'combatJudgementV1',
+                scoreBreakdown: { notes: '本字段必须保持数组' },
+              },
+            }],
+          },
+        }],
+        turnSnapshots: [],
+      };
+
+      await expect(importSaves(
+        archive as unknown as Parameters<typeof importSaves>[0],
+        { mode: 'replace' },
+      )).rejects.toThrow('存档文件格式不正确');
+      expect(await listSaves()).toHaveLength(0);
     });
 
     it('uses parsed timestamps consistently for listing, export order, and delete fallback', async () => {

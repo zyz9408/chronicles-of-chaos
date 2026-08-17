@@ -15,6 +15,7 @@ const boundedSequenceConnectors = ['随后', '然后', '接着', '继而', '而�
 const compactSequenceConnectors = ['后立即', '后立刻', '之后再', '之后便', '之后就'] as const;
 const clauseBoundaryCharacters = '，,。.;；！？!?：:\n\r';
 const questionMarkers = ['是否', '可否', '能否', '如何', '妥当', '吗', '？', '?'] as const;
+const negatedCombatPhrasePattern = /(?:不|未|无需|避免|拒绝|并非|不是|非)(?:进行)?(?:战斗|交战|迎战|厮杀|交锋)/g;
 
 /** 行动关键词按判定优先级排列。 */
 const actionKeywords: ReadonlyArray<readonly [ActionIntent, readonly string[]]> = [
@@ -86,7 +87,7 @@ function hasClauseBoundaryBefore(input: string, connectorIndex: number): boolean
 }
 
 function interpretActionClause(input: string): ActionIntent {
-  const lowerInput = input.toLowerCase();
+  const lowerInput = input.toLowerCase().replace(negatedCombatPhrasePattern, '');
 
   for (const [intent, keywords] of nonExecutionContextKeywords) {
     if (keywords.some((keyword) => lowerInput.includes(keyword))) return intent;

@@ -54,6 +54,7 @@ describe('holding civil administration scope', () => {
       horseSupply: 20,
     });
     expect(normalized.corruption).toBeUndefined();
+    expect(normalized.civilScaleLevel).toBeUndefined();
     expect(holdingHasHouseholdAdministration(normalized)).toBe(false);
     expect(holdingHasLandAdministration(normalized)).toBe(false);
   });
@@ -67,6 +68,7 @@ describe('holding civil administration scope', () => {
     }));
 
     expect(normalized.civilAdministrationScope).toBe('mixed');
+    expect(normalized.civilScaleLevel).toBe(2);
     expect(normalized.farmlandMu).toBe(2500);
     expect(normalized.registeredHouseholds).toBe(295);
     expect(holdingHasHouseholdAdministration(normalized)).toBe(true);

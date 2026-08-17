@@ -266,7 +266,8 @@ test('strategic panels render compact faction, holding, and troop layouts', asyn
   await expect(holdingPanel).toContainText('完全包围');
   await expect(holdingPanel).toContainText('已中断');
   await expect(holdingPanel).toContainText('田亩户口与豪强');
-  await expect(holdingPanel).toContainText('管辖与行政');
+  await expect(holdingPanel.locator('.holding-military-overview')).toBeVisible();
+  await expect(holdingPanel).toContainText('操练驻军');
   await expect(holdingPanel.locator('.holding-controlled-layout')).toBeVisible();
   await expect(holdingPanel.locator('.holding-controlled-top-row')).toBeVisible();
   await expect(holdingPanel.locator('.holding-controlled-top-row .holding-controlled-info-stack')).toBeVisible();
@@ -312,8 +313,11 @@ test('strategic panels render compact faction, holding, and troop layouts', asyn
   })).toBe(true);
   await expect.poll(async () => holdingPanel.locator('.holding-scenic-panel').evaluate((element) => {
     const panel = element.getBoundingClientRect();
-    return Math.round((panel.width / panel.height) * 100) / 100;
-  })).toBe(1.78);
+    const topRow = element.closest('.holding-controlled-top-row');
+    const infoStack = topRow?.querySelector('.holding-controlled-info-stack')?.getBoundingClientRect();
+    if (!infoStack) return false;
+    return Math.abs(panel.height - infoStack.height) <= 1;
+  })).toBe(true);
   const holdingPanelBoxBeforeSwitch = await holdingPanel.boundingBox();
   await holdingPanel.getByRole('button', { name: /颍水渡口/ }).click();
   await expect(holdingPanel.locator('.strategic-detail h4')).toHaveText('颍水渡口');
@@ -329,10 +333,16 @@ test('strategic panels render compact faction, holding, and troop layouts', asyn
   await expect(troopPanel.locator('.troop-switch-control')).toContainText('2支部队');
   await expect(troopPanel.locator('.troop-record-card')).toContainText('位置与任务');
   await expect(troopPanel.locator('.troop-record-card')).toContainText('情报与变动');
+  await expect(troopPanel.locator('.troop-officer-section')).toContainText('将领编制');
+  await expect(troopPanel.locator('.troop-officer-section')).toContainText('主将');
+  await expect(troopPanel.locator('.troop-officer-section')).toContainText('面板验收（你）');
+  await expect(troopPanel.locator('.troop-officer-section')).toContainText('副将');
+  await expect(troopPanel.locator('.troop-officer-section')).toContainText('未任命');
+  await expect(troopPanel.locator('.troop-officer-section')).toContainText('军师');
   await expect(troopPanel.locator('.troop-stat-strip')).toContainText('精锐度');
   await expect(troopPanel.locator('.troop-stat-strip')).toContainText('高');
   await expect(troopPanel.locator('.troop-record-title .troop-record-meta')).toContainText('所属势力');
-  await expect(troopPanel.locator('.troop-record-title .troop-record-meta')).toContainText('面板验收（你）');
+  await expect(troopPanel.locator('.troop-record-title .troop-record-meta')).toContainText('已知方式');
   const troopVisualState = troopPanel.getByTestId('troop-visual-state');
   await expect(troopVisualState).toHaveClass(/panel-visual-state--loading/);
   const troopLoadingBox = await troopVisualState.boundingBox();
@@ -402,10 +412,8 @@ test('strategic panels render compact faction, holding, and troop layouts', asyn
   const historicalBaseLayer = mapPanel.getByTestId('map-historical-base-layer');
   await expect(historicalBaseLayer).toBeVisible();
   await expect(historicalBaseLayer).toHaveAttribute('data-visual-state', 'ready');
-  await expect(mapPanel.getByTestId('map-real-land-layer')).toBeVisible();
-  await expect(mapPanel.getByTestId('map-real-river-layer')).toBeVisible();
-  await expect(mapPanel.locator('.map-historical-real-land-layer path')).not.toHaveCount(0);
-  await expect(mapPanel.locator('.map-historical-real-river-layer path')).not.toHaveCount(0);
+  await expect(historicalBaseLayer).toHaveAttribute('data-base-mode', 'art');
+  await expect(mapPanel.locator('[data-render-role="geographic-base"]')).toHaveCount(0);
   const nationalMarkerCount = await mapPanel.locator('.map-v2-marker').count();
   expect(nationalMarkerCount).toBeGreaterThan(0);
   expect(nationalMarkerCount).toBeLessThanOrEqual(40);
@@ -425,6 +433,9 @@ test('strategic panels render compact faction, holding, and troop layouts', asyn
   await expect(markerTooltip).toContainText('所属州郡');
   await expect(markerTooltip).toContainText('路线');
   await expect(markerTooltip).toContainText('已知控制方');
+  await mapPanel.getByRole('button', { name: '聚焦当前位置' }).click();
+  await expect(historicalBaseLayer).toHaveAttribute('data-base-mode', 'geographic');
+  await expect(mapPanel.locator('[data-render-role="geographic-base"]')).toHaveCount(1);
   await expect(mapPanel.locator('.map-historical-mainland')).toHaveCount(0);
   await expect(mapPanel.locator('.map-historical-domain')).toHaveCount(0);
   await expect(mapPanel.locator('.map-historical-island-layer')).toHaveCount(0);

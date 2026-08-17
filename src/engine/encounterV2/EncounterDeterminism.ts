@@ -106,42 +106,54 @@ export class SeededEncounterRandom {
   }
 }
 
-function canonicalize(value: unknown, ancestors: WeakSet<object>): string {
+function appendCanonicalObjectPath(path: string, key: string): string {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key)
+    ? `${path}.${key}`
+    : `${path}[${JSON.stringify(key)}]`;
+}
+
+function canonicalError(message: string, path: string): Error {
+  return new Error(`${message}路径：${path}。`);
+}
+
+function canonicalize(value: unknown, ancestors: WeakSet<object>, path: string): string {
   if (value === null) return 'null';
   if (typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
   if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new Error('规范化只接受有限数字。');
+    if (!Number.isFinite(value)) throw canonicalError('规范化只接受有限数字。', path);
     return JSON.stringify(value);
   }
   if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {
-    throw new Error('规范化只接受 JSON 安全值。');
+    throw canonicalError('规范化只接受 JSON 安全值。', path);
   }
 
-  if (ancestors.has(value)) throw new Error('规范化值包含循环引用。');
+  if (ancestors.has(value)) throw canonicalError('规范化值包含循环引用。', path);
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
       const parts: string[] = [];
       for (let index = 0; index < value.length; index += 1) {
         if (!Object.prototype.hasOwnProperty.call(value, index)) {
-          throw new Error('规范化只接受 JSON 安全值。');
+          throw canonicalError('规范化只接受 JSON 安全值。', `${path}[${index}]`);
         }
-        parts.push(canonicalize(value[index], ancestors));
+        parts.push(canonicalize(value[index], ancestors, `${path}[${index}]`));
       }
       return `[${parts.join(',')}]`;
     }
 
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) {
-      throw new Error('规范化只接受普通 JSON 对象。');
+      throw canonicalError('规范化只接受普通 JSON 对象。', path);
     }
     if (Object.getOwnPropertySymbols(value).length > 0) {
-      throw new Error('规范化只接受 JSON 安全值。');
+      throw canonicalError('规范化只接受 JSON 安全值。', path);
     }
 
     const objectValue = value as Record<string, unknown>;
     const keys = Object.keys(objectValue).sort();
-    const entries = keys.map((key) => `${JSON.stringify(key)}:${canonicalize(objectValue[key], ancestors)}`);
+    const entries = keys.map((key) => (
+      `${JSON.stringify(key)}:${canonicalize(objectValue[key], ancestors, appendCanonicalObjectPath(path, key))}`
+    ));
     return `{${entries.join(',')}}`;
   } finally {
     ancestors.delete(value);
@@ -149,7 +161,7 @@ function canonicalize(value: unknown, ancestors: WeakSet<object>): string {
 }
 
 export function canonicalStringify(value: unknown): string {
-  return canonicalize(value, new WeakSet<object>());
+  return canonicalize(value, new WeakSet<object>(), '$');
 }
 
 export function hashCanonicalValue(value: unknown): string {

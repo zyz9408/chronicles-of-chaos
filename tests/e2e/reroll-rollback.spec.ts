@@ -1,9 +1,7 @@
 import { expect, type Page, test } from '@playwright/test';
-import { installSuccessfulTurnApi, seedMainNarrativeApi } from './e2eStorage';
 
 async function enterDebugGame(page: Page) {
-  await installSuccessfulTurnApi(page);
-  await seedMainNarrativeApi(page);
+  await page.goto('/');
   await page.getByRole('button', { name: '新的征程' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '下一步' }).click();

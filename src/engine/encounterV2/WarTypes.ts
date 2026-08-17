@@ -12,6 +12,7 @@ import type {
 import type { EncounterRandomSnapshot } from './EncounterDeterminism';
 import type { CharacterTrait, CharacterUniqueArt } from '../types/actor';
 import type { TroopLedgerEntry } from '../types/luanshi';
+import type { GameDifficultyLevel } from '../types/runtimeState';
 
 export const WAR_TACTICS = [
   'steady_advance',
@@ -39,6 +40,7 @@ export interface WarCommanderSnapshot {
   actorId: string;
   name: string;
   leadership: number;
+  leadershipKnown?: boolean;
   intelligence: number;
   martial: number;
   charm: number;
@@ -46,6 +48,20 @@ export interface WarCommanderSnapshot {
   weightedScore: number;
   traitProfiles: TraitSemanticProfile[];
   uniqueArtProfiles: UniqueArtSemanticProfile[];
+  uniqueArtLabels?: Record<string, string>;
+}
+
+export type WarOfficerRole = 'troop_leader' | 'deputy' | 'strategist';
+
+export interface WarOfficerSource {
+  source: WarCommanderSource;
+  role: WarOfficerRole;
+  troopIds: string[];
+}
+
+export interface WarOfficerSnapshot extends WarCommanderSnapshot {
+  role: WarOfficerRole;
+  troopIds: string[];
 }
 
 export interface WarForceSnapshot {
@@ -53,7 +69,10 @@ export interface WarForceSnapshot {
   name: string;
   side: EncounterSide;
   stableOrder: number;
+  /** 原建制可战规模；局部投入结算时不得被参战分队剩余人数直接覆盖。 */
+  sourceStrength?: number;
   initialStrength: number;
+  commitmentKind?: 'full' | 'detachment';
   morale: number;
   training: number;
   quality: number;
@@ -69,17 +88,37 @@ export interface WarForceSnapshot {
 }
 
 export interface WarEncounterSnapshot {
-  snapshotVersion: 1;
+  snapshotVersion: 1 | 2 | 3;
   snapshotHash: string;
   sessionId: string;
   intent: WarStartIntent;
   seed: string;
+  playerLevel: number;
+  /** Frozen per-save war difficulty. Legacy snapshots default to standard. */
+  warDifficulty?: GameDifficultyLevel;
   objective: WarStartIntent['objective'];
   environmentTags: EncounterEnvironmentTag[];
   forces: WarForceSnapshot[];
   commanders: {
     player?: WarCommanderSnapshot;
     enemy?: WarCommanderSnapshot;
+  };
+  /** War V2.1：仅包含实际参战建制关联的随军人员；旧 V2.0 快照缺省。 */
+  officers?: {
+    player: WarOfficerSnapshot[];
+    enemy: WarOfficerSnapshot[];
+  };
+  /** War V2.3 的会战背景只提供受限支援/压力，不进入玩家直接操作部队。 */
+  theaterContext?: {
+    commandScope: NonNullable<WarStartIntent['participation']>['commandScope'];
+    mission: NonNullable<WarStartIntent['participation']>['mission'];
+    alliedMainForceIds: string[];
+    enemyMainForceIds: string[];
+    alliedEstimatedStrength: number;
+    enemyEstimatedStrength: number;
+    playerSupportFactor: number;
+    enemySupportFactor: number;
+    superiorCommanderActorId?: string;
   };
 }
 

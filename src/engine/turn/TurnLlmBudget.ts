@@ -29,9 +29,13 @@ export interface TurnLlmRequestBudget {
   retryDelayMs?: number;
 }
 
+export interface PostNarrativeChildRequestOptions {
+  allowRetry?: boolean;
+}
+
 export interface PostNarrativeLlmBudget {
   readonly signal?: AbortSignal;
-  getChildRequestBudget(): TurnLlmRequestBudget;
+  getChildRequestBudget(options?: PostNarrativeChildRequestOptions): TurnLlmRequestBudget;
   throwIfExceeded(): void;
 }
 
@@ -119,7 +123,7 @@ export function createTurnLlmBudget(
 
       return {
         signal,
-        getChildRequestBudget(): TurnLlmRequestBudget {
+        getChildRequestBudget(options: PostNarrativeChildRequestOptions = {}): TurnLlmRequestBudget {
           throwIfSignalAborted(signal);
           const currentTime = now();
           const remainingWhole = wholeTurnDeadline - currentTime;
@@ -131,9 +135,11 @@ export function createTurnLlmBudget(
             throw new TurnBudgetExceededError('postNarrative', defaults.postNarrativeTotalMs);
           }
 
-          const attemptCount = defaults.auxiliaryRetryCount + 1;
-          const availablePost = Math.max(1, remainingPost - defaults.auxiliaryRetryDelayMs);
-          const availableWhole = Math.max(1, remainingWhole - defaults.auxiliaryRetryDelayMs);
+          const allowRetry = options.allowRetry ?? true;
+          const retryDelayMs = allowRetry ? defaults.auxiliaryRetryDelayMs : 0;
+          const attemptCount = allowRetry ? defaults.auxiliaryRetryCount + 1 : 1;
+          const availablePost = Math.max(1, remainingPost - retryDelayMs);
+          const availableWhole = Math.max(1, remainingWhole - retryDelayMs);
           const timeoutMs = Math.min(
             defaults.singleAuxiliaryRequestMs,
             Math.floor(availablePost / attemptCount),
@@ -141,13 +147,13 @@ export function createTurnLlmBudget(
           );
           let scope: TurnLlmBudgetScope = 'auxiliary';
           const fullRetryWindow = defaults.singleAuxiliaryRequestMs * attemptCount
-            + defaults.auxiliaryRetryDelayMs;
+            + retryDelayMs;
           if (remainingWhole < fullRetryWindow && remainingWhole <= remainingPost) {
             scope = 'wholeTurn';
           } else if (remainingPost < fullRetryWindow) {
             scope = 'postNarrative';
           }
-          return buildRequestBudget(scope, timeoutMs, true);
+          return buildRequestBudget(scope, timeoutMs, allowRetry);
         },
         throwIfExceeded: throwIfPostExceeded,
       };

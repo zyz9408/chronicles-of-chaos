@@ -14,6 +14,11 @@ import type { WarCommanderSource } from './WarTypes';
 export function makeWarIntent(
   playerTroopIds: string[] = ['troop_player_infantry'],
   enemyTroopIds: string[] = ['troop_enemy_cavalry'],
+  committedStrengths: {
+    player?: number[];
+    enemy?: number[];
+    commandScope?: 'overall_command' | 'subordinate_sector' | 'independent';
+  } = {},
 ): WarStartIntent {
   return {
     contractVersion: ENCOUNTER_CONTRACT_VERSION,
@@ -32,6 +37,18 @@ export function makeWarIntent(
     enemyForce: {
       troopIds: enemyTroopIds,
       commanderActorId: 'npc_enemy_commander',
+    },
+    participation: {
+      commandScope: committedStrengths.commandScope ?? 'independent',
+      mission: 'defeat_local_force',
+      playerCommitments: playerTroopIds.map((troopId, index) => ({
+        troopId,
+        committedStrength: committedStrengths.player?.[index] ?? 1_000,
+      })),
+      enemyCommitments: enemyTroopIds.map((troopId, index) => ({
+        troopId,
+        committedStrength: committedStrengths.enemy?.[index] ?? 1_000,
+      })),
     },
     objective: 'defeat_enemy',
     environmentTags: ['open'],
@@ -113,6 +130,7 @@ export function makeTroopProfile(
   sourceId: string,
   primaryClass: TroopSemanticProfile['primaryClass'] = 'infantry',
   tags: TroopSemanticProfile['tags'] = [],
+  composition?: TroopSemanticProfile['composition'],
 ): TroopSemanticProfile {
   return {
     profileKind: 'troop',
@@ -122,6 +140,7 @@ export function makeTroopProfile(
     rulesetScopes: ['war'],
     primaryClass,
     tags,
+    ...(composition ? { composition } : {}),
     effects: [],
   };
 }

@@ -1,18 +1,21 @@
 ﻿import 'fake-indexeddb/auto';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   LlmEmptyContentError,
   type LlmEmbeddingRequest,
   type LlmGenerateRequest,
 } from '../llm/LlmClient';
 import type { ApiConfigArchive } from '../settings/ApiConfigManager';
-import type { RuntimeState, StatePatch, WorldBook } from '../types';
+import type { RuntimeState, StatePatch, TurnProcessingStageEvent, WorldBook } from '../types';
 import { ensureLuanShiState } from '../state/createInitialRuntimeState';
 import { executeTurn, prepareNpcComplianceAcceptedRuntimeState } from './TurnOrchestrator';
 import { buildNpcPanelModel } from '../../ui/npcPanelModel';
 import { TurnExecutionCancelledError } from './TurnExecutionContext';
 import { TURN_LLM_BUDGET_DEFAULTS } from './TurnLlmBudget';
 import type { NarratorNpcProfileSuggestion, NarratorWritebackProtocol } from './MockNarrator';
+import { stageWarEncounter } from '../encounterV2/WarRuntimeIntegration';
+import { makeWarTroop } from '../encounterV2/WarTestFixtures';
+import type { WarStartIntent } from '../encounterV2/EncounterContracts';
 
 const worldBook: WorldBook = {
   manifest: {
@@ -86,6 +89,10 @@ const npcSimulationApiConfig: ApiConfigArchive = {
 };
 
 const REQUEST_TIMEOUT_WALL_CLOCK_TOLERANCE_MS = 1_000;
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function expectRequestTimeoutAtConfiguredCap(
   timeoutMs: number | undefined,
@@ -177,10 +184,133 @@ function makeState(): RuntimeState {
   });
 }
 
+function makeDynamicWarState(): RuntimeState {
+  const state = makeState();
+  state.troops = [
+    makeWarTroop('troop_player_vanguard', {
+      name: '主角前锋营',
+      size: 900,
+      morale: 72,
+      training: 68,
+      quality: '高',
+      readiness: '高',
+      supplies: 70,
+      factionId: 'faction_player',
+      locationId: 'loc_market_town',
+    }),
+  ];
+  return state;
+}
+
+function makeDynamicWarIntent(): WarStartIntent {
+  return {
+    contractVersion: 1,
+    encounterId: 'war_market_fort_assault',
+    kind: 'war',
+    rulesetVersion: 'war-v2.0.0',
+    sourceTurnNumber: 1,
+    locationId: 'loc_market_town',
+    reason: '前锋营已经冲入市镇坞堡，与守军正式交锋。',
+    seed: 'war_seed_market_fort_assault',
+    createdAt: '2026-07-30T06:00:00.000Z',
+    policy: {
+      lethality: 'standard',
+      allowRetreat: true,
+      allowSurrender: true,
+      allowCapture: true,
+      lootPolicy: 'none',
+    },
+    playerForce: {
+      troopIds: ['troop_player_vanguard'],
+      commanderActorId: 'player',
+    },
+    enemyForce: {
+      troopIds: ['troop_market_fort_garrison'],
+    },
+    objective: 'capture_holding',
+    targetHoldingId: 'holding_market_fort',
+    environmentTags: ['fortified'],
+  };
+}
+
+function makeDynamicWarDeclarationPatches(): StatePatch[] {
+  return [
+    {
+      type: 'luanshiCommand',
+      reason: '登记已经在坞堡门前实际参战的守军',
+      payload: {
+        command: {
+          action: 'upsertTroopLedger',
+          troopId: 'troop_market_fort_garrison',
+          name: '市镇坞堡守军',
+          size: 700,
+          morale: 66,
+          training: 58,
+          supplies: 65,
+          task: '守卫市镇坞堡',
+          relationToPlayer: '敌对',
+          factionId: 'faction_enemy',
+          troopType: '步卒',
+          quality: '中',
+          fatigue: '低',
+          readiness: '高',
+          lifecycleStatus: 'active',
+          knownLevel: '亲历',
+          certainty: 'confirmed',
+          locationId: 'loc_market_town',
+          lastKnownLocationId: 'loc_market_town',
+          lastKnownAt: '乱世元年2月',
+          updatedAt: '乱世元年2月',
+        },
+      },
+    },
+    {
+      type: 'luanshiCommand',
+      reason: '登记已经与玩家形成直接争夺关系的坞堡',
+      payload: {
+        command: {
+          action: 'upsertHoldingLedger',
+          operation: 'create',
+          holdingId: 'holding_market_fort',
+          name: '市镇坞堡',
+          type: 'fort',
+          status: 'contested',
+          summary: '玩家前锋营正在强攻的市镇防御坞堡。',
+          controlEvidence: {
+            kind: 'war_target',
+            occurredAt: '乱世元年2月',
+            sourceRefId: 'war_dynamic_gate',
+            summary: '坞堡已成为双方正在直接争夺的本场战争目标。',
+          },
+          civilAdministrationScope: 'none',
+          scaleLevel: 1,
+          agriculture: 0,
+          commerce: 0,
+          population: 0,
+          publicOrder: 0,
+          popularSupport: 0,
+          defense: 70,
+          recruitPotential: 0,
+          armory: 55,
+          horseSupply: 10,
+          locationId: 'loc_market_town',
+          factionId: 'faction_enemy',
+          actualController: '市镇守军',
+          garrisonTroopIds: ['troop_market_fort_garrison'],
+          recentChanges: ['玩家前锋营已经冲入外门，争夺正式开始。'],
+          updatedAt: '乱世元年2月',
+        },
+      },
+    },
+  ];
+}
+
 function makeComplianceNpcProfile(): NarratorNpcProfileSuggestion {
   return {
     npcId: 'npc_gu_heng_compliance',
     name: '顾衡',
+    persistenceReason: 'active_system_role',
+    persistenceEvidence: '本回合确认顾衡长期担任市镇守军校尉并持续处置营门军务。',
     sex: '男',
     age: 31,
     role: '军中校尉',
@@ -197,6 +327,48 @@ function makeComplianceNpcProfile(): NarratorNpcProfileSuggestion {
     recentAttitude: '审慎',
     abilityScores: { 武力: 65, 统率: 70, 智力: 58, 政治: 45, 魅力: 48, 机运: 50 },
     traits: [{ id: 'trait_camp_officer', label: '营门校尉', description: '熟悉营门军务。', source: 'identity' }],
+    uniqueArts: [{
+      id: 'art_camp_command',
+      name: '营门节制',
+      rarity: 'blue',
+      domain: 'warfare',
+      level: 2,
+      description: '熟悉营门轮值、警戒与小队调度。',
+      effectSummary: '在营防与小规模统率场景中提供稳定能力锚点。',
+      source: 'identity',
+      acquisition: {
+        kind: 'background',
+        occurredAt: '乱世元年2月',
+        sourceRefId: 'npc-profile:npc_gu_heng_compliance:background',
+        summary: '长期担任营门校尉的身份与经历已经确立该能力。',
+      },
+    }],
+  };
+}
+
+function makeRejectedWangJingProfile(npcId: string): NarratorNpcProfileSuggestion {
+  return {
+    npcId,
+    name: '王经',
+    persistenceReason: 'strategic_actor',
+    persistenceEvidence: '本回合确认王经以曹魏前线将领身份持续调动部曲并向玩家军营施压。',
+    sex: '男',
+    age: 0,
+    role: '魏军将领',
+    factionName: '曹魏',
+    locationId: 'loc_market_town',
+    isPresent: false,
+    isFocused: true,
+    currentIdentity: '曹魏方面的前线将领',
+    summary: '王经以使者和部曲压迫军营，是当前局势中的长期战略人物。',
+    appearance: '未直接照面，只知其军府威严。',
+    personality: '谨慎而强硬。',
+    motivation: '压迫军营，掌握主动。',
+    relationToPlayer: '敌对远场将领',
+    contactLevel: 1,
+    recentAttitude: '试探施压',
+    abilityScores: { 武力: 66, 统率: 74, 智力: 62, 政治: 55, 魅力: 52, 机运: 50 },
+    traits: [{ id: 'trait_wang_jing_pressure', label: '持重施压', description: '习惯以军势逼迫对手。', source: 'identity' }],
   };
 }
 
@@ -229,16 +401,47 @@ function makeComplianceRepairClient() {
 }
 
 describe('executeTurn LLM integration', () => {
-  it('rejects ordinary actions at zero HP before calling any API', async () => {
+  it('lets the main narrator resolve a zero-hp attempt and preserves vitals when no recovery completed', async () => {
     const state = makeState();
     state.player.vitals = { hp: 0, maxHp: 100, stamina: 80, maxStamina: 100 };
-    const llmClient = { generate: vi.fn() };
+    const llmClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify({
+          protocolVersion: 'lsfy.turn.v1',
+          narrativeText: '你试图起身赶路，伤势却让双腿无法支撑，只能重新伏在榻上；这次尝试没有形成实际行程，也没有完成休整。',
+          suggestedActions: [],
+          statePatches: [{
+            type: 'timeAdvance',
+            payload: { minutesAdvanced: 10, reason: '尝试起身但未能成行', category: 'other' },
+            reason: '无效行动仍经过少量时间',
+          }],
+          statePatch: null,
+          writeback: {
+            playerRecoveryKind: 'none',
+            encounterTransitionDecision: { mode: 'none', reason: '没有发生战斗边界' },
+            encounterStartIntent: null,
+            npcMemorySuggestions: [],
+            locationWriteSuggestions: [],
+            routeWriteSuggestions: [],
+            questChanges: [],
+            debugNotes: [],
+          },
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      })),
+    };
 
-    await expect(executeTurn(worldBook, state, '我继续赶路', {
+    const result = await executeTurn(worldBook, state, '我继续赶路', {
       apiConfig,
       llmClient,
-    })).rejects.toThrow(/生命为 0.*疗伤/);
-    expect(llmClient.generate).not.toHaveBeenCalled();
+    });
+
+    expect(llmClient.generate).toHaveBeenCalled();
+    expect(result.newRuntimeState.player.vitals).toMatchObject({ hp: 0, stamina: 80 });
+    expect(
+      result.newRuntimeState.turnLog[result.newRuntimeState.turnLog.length - 1]?.statePatchSummary,
+    ).toContain('生命为 0');
   });
 
   it('calls the configured LLM client for main narrative turns', async () => {
@@ -246,8 +449,16 @@ describe('executeTurn LLM integration', () => {
     const llmClient = {
       generate: vi.fn(async () => ({
         content: JSON.stringify({
-          narrativeText: 'AI真正生成的正文。',
+          narrativeText: 'AI真正生成的正文。\n[[判定:check_observe]]\n你看清了街面的异常。',
           suggestedActions: [{ label: '继续观察', description: '留意街面变化', actionType: 'explore' }],
+          ordinaryChecks: [{
+            checkId: 'check_observe',
+            label: '观察街面',
+            total: 60,
+            difficulty: 50,
+            result: '成功',
+            summary: '你看清了街面的异常。',
+          }],
           statePatches: [
             {
               type: 'timeAdvance',
@@ -283,14 +494,32 @@ describe('executeTurn LLM integration', () => {
     expect(sentMessages).toContain('lsfy.turn.v1');
     expect(sentMessages).toContain('turnSummary');
     expect(sentMessages).toContain('plotPlanSuggestions');
+    expect(sentMessages).toContain('## 正文篇幅提交前检查');
+    expect(sentMessages).toContain('narrativeText 仍必须不少于 600 个非空白字符');
+    expect(sentMessages.indexOf('## 正文篇幅提交前检查'))
+      .toBeGreaterThan(sentMessages.indexOf('## 正文提交前静默终检'));
     expect(result.generationMode).toBe('llm');
     expect(result.runtimeTokenEstimate.total.estimatedTokens).toBe(result.promptEstimatedTokens);
     expect(result.runtimeTokenEstimate.layers.map((layer) => layer.id)).toContain('stateWriterContext');
     expect(result.turnDisplayMeta.promptTokenEstimate?.contextBreakdown.map((layer) => layer.id)).toContain('situationProjection');
     expect(result.newRuntimeState.turnLog[0].displayMeta?.promptTokenEstimate?.layers.map((layer) => layer.id)).toContain('userPrompt');
-    expect(result.narrativeText).toBe('AI真正生成的正文。');
+    expect(result.narrativeText).toContain('AI真正生成的正文。');
     expect(result.suggestedActions[0].label).toBe('继续观察');
     expect(result.newRuntimeState.turnLog[0].narrativeText).toContain('AI真正生成');
+    expect(result.turnDisplayMeta.narrativeLength).toMatchObject({
+      preference: 'standard',
+      minimumCharacters: 600,
+      status: 'under_minimum',
+      meetsMinimum: false,
+    });
+    expect(result.newRuntimeState.turnLog[0].displayMeta?.narrativeLength)
+      .toEqual(result.turnDisplayMeta.narrativeLength);
+    expect(result.newRuntimeState.player).toMatchObject({ level: 1, xp: 12, growthPoints: 0 });
+    expect(result.turnDisplayMeta.judgementCards?.[0]).toMatchObject({
+      cardId: 'ordinary:check_observe',
+      experienceAward: 12,
+    });
+    expect(result.newRuntimeState.turnLog[0].statePatchSummary).toContain('获得阅历 12');
     expect((result.newRuntimeState.turnLog[0] as typeof result.newRuntimeState.turnLog[0] & {
       suggestedActions?: Array<{ label: string; description: string; actionType: string }>;
     }).suggestedActions).toEqual(result.suggestedActions);
@@ -610,6 +839,201 @@ describe('executeTurn LLM integration', () => {
     await executeTurn(worldBook, makeState(), 'streaming test', { apiConfig, llmClient, onContentDelta });
 
     expect(onContentDelta).toHaveBeenCalledWith('streamed chunk');
+  });
+
+  it('discards an under-length rich response and regenerates one complete response before writeback', async () => {
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => key === 'coc_v2_narrative_length' ? 'rich' : null,
+      setItem: () => undefined,
+    });
+    const firstNarrative = '短'.repeat(800);
+    const regeneratedNarrative = '长'.repeat(1200);
+    const buildResponse = (narrativeText: string) => JSON.stringify({
+      narrativeText,
+      suggestedActions: [],
+      statePatches: [{
+        type: 'timeAdvance',
+        payload: { minutesAdvanced: 15, reason: '篇幅重生成测试', category: 'test' },
+        reason: '测试回合自然推进时间',
+      }],
+      statePatch: null,
+    });
+    const onContentDelta = vi.fn();
+    const onContentReset = vi.fn();
+    const llmClient = {
+      generate: vi.fn()
+        .mockImplementationOnce(async (request: LlmGenerateRequest) => {
+          request.onContentDelta?.('FIRST_STREAM_SENTINEL');
+          return {
+            content: buildResponse(firstNarrative),
+            provider: 'openai_compatible' as const,
+            model: 'test-model',
+            usage: {
+              promptTokens: 100,
+              completionTokens: 80,
+              totalTokens: 180,
+              cacheReadTokens: 70,
+              cacheMissTokens: 30,
+            },
+          };
+        })
+        .mockImplementationOnce(async (request: LlmGenerateRequest) => {
+          request.onContentDelta?.('SECOND_STREAM_SENTINEL');
+          return {
+            content: buildResponse(regeneratedNarrative),
+            provider: 'openai_compatible' as const,
+            model: 'test-model',
+            usage: {
+              promptTokens: 110,
+              completionTokens: 120,
+              totalTokens: 230,
+              cacheReadTokens: 90,
+              cacheMissTokens: 20,
+            },
+          };
+        }),
+    };
+
+    const result = await executeTurn(worldBook, makeState(), '我与杜平详谈粮簿', {
+      apiConfig,
+      llmClient,
+      onContentDelta,
+      onContentReset,
+    });
+
+    expect(llmClient.generate).toHaveBeenCalledTimes(2);
+    expect(onContentDelta.mock.calls).toEqual([
+      ['FIRST_STREAM_SENTINEL'],
+      ['SECOND_STREAM_SENTINEL'],
+    ]);
+    expect(onContentReset).toHaveBeenCalledOnce();
+    const generateCalls = llmClient.generate.mock.calls as unknown as Array<[LlmGenerateRequest]>;
+    const regenerationPrompt = generateCalls[1][0].messages
+      .map((message) => message.content)
+      .join('\n');
+    expect(regenerationPrompt).toContain('正文篇幅不合格：整份响应重生成');
+    expect(regenerationPrompt).toContain('上一份候选的 narrativeText 只有 800 个非空白字符');
+    expect(regenerationPrompt).toContain('正文和写回均未生效');
+    expect(regenerationPrompt).not.toContain(firstNarrative);
+    expect(result.narrativeText).toBe(regeneratedNarrative);
+    expect(result.newRuntimeState.currentDate).toBe('公元1年01月01日 08:15（辰时）');
+    expect(result.turnDisplayMeta.narrativeLength).toMatchObject({
+      preference: 'rich',
+      actualCharacters: 1200,
+      meetsMinimum: true,
+      regenerationAttempted: true,
+      firstAttemptCharacters: 800,
+      regenerationResolved: true,
+    });
+    expect(result.turnDisplayMeta.processingStages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'generatingNarrative',
+        status: 'finished',
+        usage: expect.objectContaining({ cacheReadTokens: 70, cacheMissTokens: 30 }),
+      }),
+      expect.objectContaining({
+        stage: 'regeneratingNarrative',
+        status: 'finished',
+        usage: expect.objectContaining({ cacheReadTokens: 90, cacheMissTokens: 20 }),
+      }),
+    ]));
+    expect(result.turnDisplayMeta.promptTokens).toBe(210);
+    expect(result.turnDisplayMeta.completionTokens).toBe(200);
+    expect(result.turnDisplayMeta.totalTokens).toBe(410);
+    expect(result.turnDisplayMeta.rawResponse).not.toContain(firstNarrative);
+  });
+
+  it.each([
+    { label: 'retry disabled', retryValue: '0', characters: 800, withinRetryTolerance: false },
+    { label: 'within 10% tolerance', retryValue: null, characters: 950, withinRetryTolerance: true },
+  ])('keeps the first response when $label while preserving the rich target', async ({
+    retryValue,
+    characters,
+    withinRetryTolerance,
+  }) => {
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => {
+        if (key === 'coc_v2_narrative_length') return 'rich';
+        if (key === 'coc_v2_narrative_length_retry_enabled') return retryValue;
+        return null;
+      },
+      setItem: () => undefined,
+    });
+    const narrativeText = '容'.repeat(characters);
+    const llmClient = {
+      generate: vi.fn().mockResolvedValue({
+        content: JSON.stringify({
+          narrativeText,
+          suggestedActions: [],
+          statePatches: [{
+            type: 'timeAdvance',
+            payload: { minutesAdvanced: 15, reason: '篇幅宽容测试', category: 'test' },
+            reason: '测试回合自然推进时间',
+          }],
+          statePatch: null,
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      }),
+    };
+
+    const result = await executeTurn(worldBook, makeState(), '我与杜平继续核对粮簿', {
+      apiConfig,
+      llmClient,
+    });
+
+    expect(llmClient.generate).toHaveBeenCalledOnce();
+    expect(result.narrativeText).toBe(narrativeText);
+    expect(result.turnDisplayMeta.narrativeLength).toMatchObject({
+      preference: 'rich',
+      minimumCharacters: 1000,
+      retryMinimumCharacters: 900,
+      actualCharacters: characters,
+      meetsMinimum: false,
+      withinRetryTolerance,
+      retryEnabled: retryValue !== '0',
+    });
+    expect(result.turnDisplayMeta.narrativeLength?.regenerationAttempted).toBeUndefined();
+  });
+
+  it('rejects the turn before state writeback when rich regeneration is still under length', async () => {
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => key === 'coc_v2_narrative_length' ? 'rich' : null,
+      setItem: () => undefined,
+    });
+    const buildResponse = (narrativeText: string) => JSON.stringify({
+      narrativeText,
+      suggestedActions: [],
+      statePatches: [{
+        type: 'timeAdvance',
+        payload: { minutesAdvanced: 15, reason: '篇幅拒绝测试', category: 'test' },
+        reason: '测试回合自然推进时间',
+      }],
+      statePatch: null,
+    });
+    const onContentReset = vi.fn();
+    const llmClient = {
+      generate: vi.fn()
+        .mockResolvedValueOnce({
+          content: buildResponse('短'.repeat(800)),
+          provider: 'openai_compatible' as const,
+          model: 'test-model',
+        })
+        .mockResolvedValueOnce({
+          content: buildResponse('仍'.repeat(850)),
+          provider: 'openai_compatible' as const,
+          model: 'test-model',
+        }),
+    };
+
+    await expect(executeTurn(worldBook, makeState(), '我与杜平详谈粮簿', {
+      apiConfig,
+      llmClient,
+      onContentReset,
+    })).rejects.toThrow(/连续两次低于“丰富”档重写阈值.*本回合未写入/);
+
+    expect(llmClient.generate).toHaveBeenCalledTimes(2);
+    expect(onContentReset).toHaveBeenCalledOnce();
   });
 
   it('repairs LLM responses that omit the required timeAdvance patch', async () => {
@@ -937,7 +1361,7 @@ describe('executeTurn LLM integration', () => {
       ...apiConfig,
       id: 'api_state_writeback_time_repair',
       name: '状态写回 API',
-      model: 'writeback-model',
+      model: 'deepseek-v4-flash',
     };
     const llmClient = {
       generate: vi.fn(async () => ({
@@ -956,6 +1380,18 @@ describe('executeTurn LLM integration', () => {
     const stateWritebackLlmClient = {
       generate: vi.fn(async (request: LlmGenerateRequest) => {
         expect(request.config.id).toBe(stateWritebackApiConfig.id);
+        expect(request.messages).toHaveLength(2);
+        const [systemMessage, runtimeUserMessage] = request.messages;
+        expect(systemMessage?.role).toBe('system');
+        expect(systemMessage?.content).not.toContain('## 稳定状态写回规则');
+        expect(systemMessage?.content).not.toContain('allowedLuanShiCommands:');
+        expect(systemMessage?.content).toContain('不得重写 narrativeText');
+        expect(runtimeUserMessage?.role).toBe('user');
+        expect(runtimeUserMessage?.content).toContain('## 状态写入上下文');
+        expect(runtimeUserMessage?.content).not.toContain('## 状态写入上下文（本回合运行态）');
+        expect(runtimeUserMessage?.content).toContain('公元189年09月01日 08:00（辰时）');
+        expect(runtimeUserMessage?.content).not.toContain('## 稳定状态写回规则');
+        expect(runtimeUserMessage?.content).toContain('allowedLuanShiCommands:');
         const promptText = request.messages.map((message) => message.content).join('\n');
         expect(promptText).toContain('状态写回整理器');
         expect(promptText).toContain('timeAdvance');
@@ -1139,49 +1575,51 @@ describe('executeTurn LLM integration', () => {
           model: 'test-model',
         })
         .mockImplementationOnce(async (request: LlmGenerateRequest) => {
-        const prompt = request.messages.map((message) => message.content).join('\n');
-        expect(prompt).toContain('itemId: item_supply_order');
-        expect(prompt).toContain('一次性凭证权益兑现却缺少 remove/setQuantity');
-        expect(prompt).toContain('核对玩家行动、最终 narrativeText');
-        return {
-          content: JSON.stringify({
-            protocolVersion: 'lsfy.turn.v1',
-            narrativeText: '不得覆盖主叙事。',
-            suggestedActions: [],
-            statePatches: [
-              timeAdvancePatch,
-              {
-                type: 'luanshiCommand',
-                reason: '领取四百石粮草',
-                payload: {
-                  command: {
-                    action: 'updateResourceLedger',
-                    grain: 500,
-                    summary: '粮仓交付四百石，现有粮草五百石。',
+          const prompt = request.messages.map((message) => message.content).join('\n');
+          expect(prompt).toContain('itemId: item_supply_order');
+          expect(prompt).toContain('一次性凭证权益兑现却缺少 remove/setQuantity');
+          expect(prompt).toContain('核对玩家行动、最终 narrativeText');
+          expect(request.retryCount).toBe(0);
+          expect(request.retryDelayMs).toBe(0);
+          return {
+            content: JSON.stringify({
+              protocolVersion: 'lsfy.turn.v1',
+              narrativeText: '不得覆盖主叙事。',
+              suggestedActions: [],
+              statePatches: [
+                timeAdvancePatch,
+                {
+                  type: 'luanshiCommand',
+                  reason: '领取四百石粮草',
+                  payload: {
+                    command: {
+                      action: 'updateResourceLedger',
+                      grain: 500,
+                      summary: '粮仓交付四百石，现有粮草五百石。',
+                    },
                   },
                 },
-              },
-              {
-                type: 'luanshiCommand',
-                reason: '一次性粮草提取手令已被库吏收回',
-                payload: {
-                  command: {
-                    action: 'updatePlayerLoadout',
-                    characterId: 'player',
-                    inventoryChanges: [{
-                      action: 'remove',
-                      itemId: 'item_supply_order',
-                      quantity: 1,
-                    }],
+                {
+                  type: 'luanshiCommand',
+                  reason: '一次性粮草提取手令已被库吏收回',
+                  payload: {
+                    command: {
+                      action: 'updatePlayerLoadout',
+                      characterId: 'player',
+                      inventoryChanges: [{
+                        action: 'remove',
+                        itemId: 'item_supply_order',
+                        quantity: 1,
+                      }],
+                    },
                   },
                 },
-              },
-            ],
-            statePatch: null,
-          }),
-          provider: 'openai_compatible' as const,
-          model: 'test-model',
-        };
+              ],
+              statePatch: null,
+            }),
+            provider: 'openai_compatible' as const,
+            model: 'test-model',
+          };
         }),
     };
 
@@ -1291,7 +1729,7 @@ describe('executeTurn LLM integration', () => {
     expect(result.newRuntimeState.player.inventory).toEqual([]);
   });
 
-  it('runs one independent second LLM review when the first economy review produces no acceptable patch', async () => {
+  it('runs one independent second LLM review only when the first economy repair candidate is rejected', async () => {
     const initialState = {
       ...makeState(),
       player: {
@@ -1329,7 +1767,23 @@ describe('executeTurn LLM integration', () => {
           const prompt = request.messages.map((message) => message.content).join('\n');
           expect(prompt).toContain('这是第 1 次独立复核');
           return {
-            content: JSON.stringify(originalResponse),
+            content: JSON.stringify({
+              ...originalResponse,
+              statePatches: [
+                timeAdvancePatch,
+                {
+                  type: 'luanshiCommand',
+                  reason: '裁缝已收下针线包，但首份候选缺少稳定物品 ID',
+                  payload: {
+                    command: {
+                      action: 'updatePlayerLoadout',
+                      characterId: 'player',
+                      inventoryChanges: [{ action: 'remove', quantity: 1 }],
+                    },
+                  },
+                },
+              ],
+            }),
             provider: 'openai_compatible' as const,
             model: 'test-model',
           };
@@ -1375,6 +1829,109 @@ describe('executeTurn LLM integration', () => {
     expect(result.patchValidation).toMatchObject({ valid: true, errors: [] });
     expect(result.newRuntimeState.player.personalMoney).toBe(556);
     expect(result.newRuntimeState.player.inventory).toEqual([]);
+  });
+
+  it('does not mistake stamina expenditure or weapon motion for a player economy writeback gap', async () => {
+    const initialState = {
+      ...makeState(),
+      player: {
+        ...makeState().player,
+        personalMoney: 556,
+        inventory: [{
+          id: 'item_ring_pommel_saber',
+          name: '环首长刀',
+          quantity: 1,
+          category: 'equipment',
+        }],
+      },
+    } as RuntimeState;
+    const llmClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify({
+          protocolVersion: 'lsfy.turn.v1',
+          narrativeText: [
+            '你把环首长刀横在膝上，继续监督操练。',
+            '老卒刺出长矛后迅速收回，阵列逐渐齐整。',
+            '众人不必白白耗费体力去荒野受冻。',
+          ].join(''),
+          suggestedActions: [],
+          statePatches: [{
+            type: 'timeAdvance',
+            reason: '完成阵型操练',
+            payload: { minutesAdvanced: 30, category: 'training' },
+          }],
+          statePatch: null,
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      })),
+    };
+
+    const result = await executeTurn(worldBook, initialState, '继续监督防守阵型演练', {
+      apiConfig,
+      llmClient,
+    });
+
+    expect(llmClient.generate).toHaveBeenCalledTimes(1);
+    expect(result.patchValidation).toMatchObject({ valid: true, errors: [] });
+    expect(result.newRuntimeState.player.personalMoney).toBe(556);
+    expect(result.newRuntimeState.player.inventory).toEqual(initialState.player.inventory);
+  });
+
+  it('lets the configured state writer perform one general review without keyword-triggered economy retries', async () => {
+    const initialState = {
+      ...makeState(),
+      player: {
+        ...makeState().player,
+        personalMoney: 556,
+        inventory: [{
+          id: 'item_ring_pommel_saber',
+          name: '环首长刀',
+          quantity: 1,
+          category: 'equipment',
+        }],
+      },
+    } as RuntimeState;
+    const timeAdvancePatch: StatePatch = {
+      type: 'timeAdvance',
+      reason: '完成阵型操练',
+      payload: { minutesAdvanced: 30, category: 'training' },
+    };
+    const response = {
+      protocolVersion: 'lsfy.turn.v1',
+      narrativeText: '你把环首长刀横在膝上。老卒刺出长矛后迅速收回，众人不必白白耗费体力。',
+      suggestedActions: [],
+      statePatches: [timeAdvancePatch],
+      statePatch: null,
+    };
+    const llmClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify(response),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      })),
+    };
+    const processingLabels: string[] = [];
+
+    const result = await executeTurn(worldBook, initialState, '继续监督防守阵型演练', {
+      apiConfig,
+      llmClient,
+      stateWritebackApiConfig: {
+        ...apiConfig,
+        id: 'api_state_writer_no_economy_retry',
+        name: '状态写回 API',
+        model: 'writeback-model',
+      },
+      onStageChange: (event) => {
+        if (event.status === 'started') processingLabels.push(event.label);
+      },
+    });
+
+    expect(llmClient.generate).toHaveBeenCalledTimes(2);
+    expect(processingLabels).toContain('整理状态写回');
+    expect(processingLabels).not.toContain('核对物品与个人钱财写回');
+    expect(processingLabels).not.toContain('再次核对物品与个人钱财写回');
+    expect(result.patchValidation).toMatchObject({ valid: true, errors: [] });
   });
 
   it('asks the LLM to narrow a single-item redemption that over-removes other credentials', async () => {
@@ -1993,12 +2550,17 @@ describe('executeTurn LLM integration', () => {
     };
     const stateWritebackLlmClient = {
       generate: vi.fn(async (request: LlmGenerateRequest) => {
+        expect(request.messages).toHaveLength(2);
+        expect(request.messages[0]?.content).toContain('不得重写 narrativeText');
+        expect(request.messages[1]?.content).not.toContain('## 稳定状态写回规则');
         const promptText = request.messages.map((message) => message.content).join('\n');
         expect(promptText).toContain('状态写回整理器');
         expect(promptText).toContain('清点库房后');
         expect(promptText).toContain('状态写入上下文');
         expect(promptText).toContain('部队 size 是当前已入账兵力绝对值');
         expect(promptText).toContain('不得把同一批已入账新卒重复加到 size');
+        expect(request.retryCount).toBe(0);
+        expect(request.retryDelayMs).toBe(0);
         return {
           content: JSON.stringify({
             protocolVersion: 'lsfy.turn.v1',
@@ -2015,7 +2577,9 @@ describe('executeTurn LLM integration', () => {
                 payload: {
                   command: {
                     action: 'updateResourceLedger',
-                    money: 15,
+                    previousMoneyGuan: 0,
+                    moneyDeltaGuan: 15,
+                    moneyGuan: 15,
                     summary: '库房清点后确认可用钱财十五贯。',
                   },
                 },
@@ -2045,6 +2609,188 @@ describe('executeTurn LLM integration', () => {
     expect(result.patchValidation?.valid).toBe(true);
     expect(result.newRuntimeState.resources?.money).toBe(15);
     expect(result.turnDisplayMeta.totalTokens).toBe(200);
+  });
+
+  it('borrows the main API to close a structured private-asset acquisition gap', async () => {
+    const sourceRefId = 'asset-acquisition-turn-1-lin-manor';
+    const narrativeText = '曹家交出契书与账册，坞堡、田亩和佃农自此正式归入林氏名下。';
+    const mainResponse = {
+      protocolVersion: 'lsfy.turn.v1',
+      narrativeText,
+      suggestedActions: [],
+      statePatches: [
+        {
+          type: 'timeAdvance',
+          payload: { minutesAdvanced: 30, reason: '交割产业契书', category: 'conversation' },
+          reason: '产权交割耗时',
+        },
+      ],
+      statePatch: null,
+      writeback: {
+        turnSummary: {
+          brief: '曹家坞堡正式转入林氏名下。',
+          privateAssetAcquisitions: [
+            {
+              sourceRefId,
+              assetName: '林氏南皋坞堡',
+              kind: 'transfer',
+              summary: '曹家当面交付契书与账册，产权正式转入主角名下。',
+            },
+          ],
+        },
+        npcMemorySuggestions: [],
+        locationWriteSuggestions: [],
+        routeWriteSuggestions: [],
+        questChanges: [],
+        debugNotes: [],
+      },
+    };
+    const repairedResponse = {
+      ...mainResponse,
+      statePatches: [
+        ...mainResponse.statePatches,
+        {
+          type: 'luanshiCommand',
+          payload: {
+            command: {
+              action: 'upsertPrivateAsset',
+              operation: 'create',
+              privateAssetId: 'private_asset_lin_nangao_manor',
+              name: '林氏南皋坞堡',
+              type: 'estate',
+              ownerScope: 'personal',
+              status: 'active',
+              summary: '有坞墙、田亩与佃户的庄园产业。',
+              locationId: 'loc_market_town',
+              mu: 100,
+              households: 20,
+              acquisition: {
+                kind: 'transfer',
+                occurredAt: '公元1年01月01日 08:00（辰时）',
+                sourceRefId,
+                summary: '曹家当面交付契书与账册，产权正式转入主角名下。',
+              },
+            },
+          },
+          reason: '补齐本回合已经完成的私人产业产权转移。',
+        },
+      ],
+    };
+    const llmClient = {
+      generate: vi.fn(async (request: LlmGenerateRequest) => {
+        if (llmClient.generate.mock.calls.length === 1) {
+          return {
+            content: JSON.stringify(mainResponse),
+            provider: 'openai_compatible' as const,
+            model: 'test-model',
+          };
+        }
+        const promptText = request.messages.map((message) => message.content).join('\n');
+        expect(promptText).toContain('本次私人产业产权复核焦点');
+        expect(promptText).toContain(sourceRefId);
+        expect(promptText).toContain('不得把谈判、看契书、代管');
+        return {
+          content: JSON.stringify(repairedResponse),
+          provider: 'openai_compatible' as const,
+          model: 'test-model',
+        };
+      }),
+    };
+
+    const result = await executeTurn(worldBook, makeState(), '我接受曹家产业的正式交割', {
+      apiConfig,
+      llmClient,
+    });
+
+    expect(llmClient.generate).toHaveBeenCalledTimes(2);
+    expect(result.narrativeText).toBe(narrativeText);
+    expect(result.patchValidation?.valid).toBe(true);
+    expect(result.newRuntimeState.privateAssets).toEqual([
+      expect.objectContaining({
+        privateAssetId: 'private_asset_lin_nangao_manor',
+        name: '林氏南皋坞堡',
+        mu: 100,
+        households: 20,
+        acquisition: expect.objectContaining({ sourceRefId }),
+      }),
+    ]);
+  });
+
+  it('does not run a second review when the structured acquisition already has its asset patch', async () => {
+    const sourceRefId = 'asset-acquisition-turn-1-existing-patch';
+    const llmClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify({
+          protocolVersion: 'lsfy.turn.v1',
+          narrativeText: '契书交割完成，城南田庄正式归入主角名下。',
+          suggestedActions: [],
+          statePatches: [
+            {
+              type: 'timeAdvance',
+              payload: { minutesAdvanced: 20, reason: '交割田庄', category: 'conversation' },
+              reason: '产权交割耗时',
+            },
+            {
+              type: 'luanshiCommand',
+              payload: {
+                command: {
+                  action: 'upsertPrivateAsset',
+                  operation: 'create',
+                  privateAssetId: 'private_asset_south_farmland',
+                  name: '城南田庄',
+                  type: 'farmland',
+                  ownerScope: 'personal',
+                  status: 'active',
+                  summary: '刚完成契书交割的小型田庄。',
+                  mu: 60,
+                  households: 8,
+                  acquisition: {
+                    kind: 'transfer',
+                    occurredAt: '公元1年01月01日 08:00（辰时）',
+                    sourceRefId,
+                    summary: '原主完成契书交割，田庄正式归入主角名下。',
+                  },
+                },
+              },
+              reason: '登记已完成的田庄产权转移。',
+            },
+          ],
+          statePatch: null,
+          writeback: {
+            turnSummary: {
+              brief: '城南田庄正式归入主角名下。',
+              privateAssetAcquisitions: [{
+                sourceRefId,
+                assetName: '城南田庄',
+                kind: 'transfer',
+                summary: '原主完成契书交割，田庄正式归入主角名下。',
+              }],
+            },
+            npcMemorySuggestions: [],
+            locationWriteSuggestions: [],
+            routeWriteSuggestions: [],
+            questChanges: [],
+            debugNotes: [],
+          },
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      })),
+    };
+
+    const result = await executeTurn(worldBook, makeState(), '我完成田庄交割', {
+      apiConfig,
+      llmClient,
+    });
+
+    expect(llmClient.generate).toHaveBeenCalledOnce();
+    expect(result.patchValidation?.valid).toBe(true);
+    expect(result.newRuntimeState.privateAssets).toEqual([
+      expect.objectContaining({
+        privateAssetId: 'private_asset_south_farmland',
+        acquisition: expect.objectContaining({ sourceRefId }),
+      }),
+    ]);
   });
 
   it('deduplicates signal writebacks merged from the main response and state writeback repair', async () => {
@@ -2535,17 +3281,21 @@ describe('executeTurn LLM integration', () => {
       })),
     };
     const stateWritebackLlmClient = {
-      generate: vi.fn(async () => ({
-        content: JSON.stringify({
-          protocolVersion: 'lsfy.turn.v1',
-          narrativeText: '不得覆盖主叙事。',
-          suggestedActions: [],
-          statePatches: [timeAdvancePatch, repairedCommandPatch],
-          statePatch: null,
-        }),
-        provider: 'openai_compatible' as const,
-        model: 'writeback-model',
-      })),
+      generate: vi.fn(async (request: LlmGenerateRequest) => {
+        expect(request.retryCount).toBe(0);
+        expect(request.retryDelayMs).toBe(0);
+        return {
+          content: JSON.stringify({
+            protocolVersion: 'lsfy.turn.v1',
+            narrativeText: '不得覆盖主叙事。',
+            suggestedActions: [],
+            statePatches: [timeAdvancePatch, repairedCommandPatch],
+            statePatch: null,
+          }),
+          provider: 'openai_compatible' as const,
+          model: 'writeback-model',
+        };
+      }),
     };
 
     const result = await executeTurn(worldBook, makeState(), '我核对军报', {
@@ -2563,10 +3313,121 @@ describe('executeTurn LLM integration', () => {
     ]);
   });
 
-  it('falls back to the main API when dedicated repair fails with invalid state patches', async () => {
+  it('repairs canonical grain aliases and deprecated money-unit writebacks before applying the turn', async () => {
+    const baseState = ensureLuanShiState(makeState());
+    const initialState = ensureLuanShiState({
+      ...baseState,
+      resources: {
+        ...baseState.resources,
+        money: 10000,
+        grain: 89,
+      },
+    });
     const stateWritebackApiConfig: ApiConfigArchive = {
       ...apiConfig,
-      id: 'api_invalid_patch_fallback',
+      id: 'api_grain_ledger_repair',
+      name: '状态写回 API',
+      model: 'writeback-model',
+    };
+    const timeAdvancePatch: StatePatch = {
+      type: 'timeAdvance',
+      payload: { minutesAdvanced: 20, reason: '清点缴获粮草', category: 'logistics' },
+      reason: '清点并接收粮草耗时',
+    };
+    const invalidResourcePatch = {
+      type: 'luanshiCommand',
+      payload: {
+        command: {
+          action: 'updateResourceLedger',
+          money: 10050000,
+          playerResources: { 粮草: 289 },
+          summary: '错误地把五十贯换算成五万钱；原粮草八十九石，加上新获二百石。',
+        },
+      },
+      reason: '接收五十贯和二百石粮食后的府库总量',
+    } as StatePatch;
+    const repairedResourcePatch: StatePatch = {
+      type: 'luanshiCommand',
+      payload: {
+        command: {
+          action: 'updateResourceLedger',
+          previousMoneyGuan: 10000,
+          moneyDeltaGuan: 50,
+          moneyGuan: 10050,
+          grain: 289,
+          summary: '原府库一万贯，收入五十贯后为一万零五十贯；原粮草八十九石，加上新获二百石。',
+        },
+      },
+      reason: invalidResourcePatch.reason,
+    };
+    const llmClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify({
+          protocolVersion: 'lsfy.turn.v1',
+          narrativeText: '你接收五十贯公款和二百石粮食，命人清点后送入府库。',
+          suggestedActions: [],
+          statePatches: [timeAdvancePatch],
+          statePatch: null,
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      })),
+    };
+    const stateWritebackLlmClient = {
+      generate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            protocolVersion: 'lsfy.turn.v1',
+            narrativeText: '不得覆盖主叙事。',
+            suggestedActions: [],
+            statePatches: [timeAdvancePatch, invalidResourcePatch],
+            statePatch: null,
+          }),
+          provider: 'openai_compatible' as const,
+          model: 'writeback-model',
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            protocolVersion: 'lsfy.turn.v1',
+            narrativeText: '仍不得覆盖主叙事。',
+            suggestedActions: [],
+            statePatches: [timeAdvancePatch, repairedResourcePatch],
+            statePatch: null,
+          }),
+          provider: 'openai_compatible' as const,
+          model: 'writeback-model',
+        }),
+    };
+
+    const result = await executeTurn(worldBook, initialState, '接收这五十贯公款和二百石粮食并送入府库', {
+      apiConfig,
+      stateWritebackApiConfig,
+      llmClient,
+      stateWritebackLlmClient,
+    });
+
+    expect(stateWritebackLlmClient.generate).toHaveBeenCalledTimes(2);
+    const repairRequest = stateWritebackLlmClient.generate.mock.calls[1]?.[0] as LlmGenerateRequest;
+    const repairPrompt = repairRequest.messages.map((message) => message.content).join('\n');
+    expect(repairPrompt).toContain('updateResourceLedger.grain');
+    expect(repairPrompt).toContain('updateResourceLedger.money 已废弃');
+    expect(repairPrompt).toContain('moneyGuan');
+    expect(result.patchValidation).toMatchObject({ valid: true, errors: [] });
+    expect(result.newRuntimeState.resources?.money).toBe(10050);
+    expect(result.newRuntimeState.resources?.grain).toBe(289);
+    expect(result.newRuntimeState.playerResources).not.toHaveProperty('粮草');
+    expect(result.newRuntimeState.playerResources).not.toHaveProperty('grain');
+    expect(result.newRuntimeState.turnLog[result.newRuntimeState.turnLog.length - 1]?.statePatchSummary)
+      .toContain('money=10050贯, delta=+50贯');
+    expect(result.newRuntimeState.turnLog[result.newRuntimeState.turnLog.length - 1]?.statePatchSummary)
+      .toContain('grain=289');
+  });
+
+  it('falls back to the routed main model when the same API profile id points at a different writeback model', async () => {
+    const stateWritebackApiConfig: ApiConfigArchive = {
+      ...apiConfig,
+      id: apiConfig.id,
       name: '状态写回 API',
       model: 'writeback-model',
     };
@@ -2644,6 +3505,102 @@ describe('executeTurn LLM integration', () => {
     expect(result.newRuntimeState.turnEvents).toEqual([
       expect.objectContaining({ eventId: 'event_main_fallback_dispatch' }),
     ]);
+  });
+
+  it('retries one empty state writeback response before falling back and exposes both attempts', async () => {
+    const stateWritebackApiConfig: ApiConfigArchive = {
+      ...apiConfig,
+      id: 'api_empty_writeback_retry',
+      name: '状态写回 API',
+      model: 'writeback-model',
+    };
+    const timeAdvancePatch = {
+      type: 'timeAdvance',
+      payload: { minutesAdvanced: 15, reason: '核对军报', category: 'inspection' },
+      reason: '核对军报耗时',
+    };
+    const invalidCommandPatch = {
+      type: 'luanshiCommand',
+      payload: { command: { action: 'update', summary: '军报已经核对。' } },
+      reason: '记录本回合军报事件',
+    };
+    const repairedCommandPatch = {
+      type: 'luanshiCommand',
+      payload: {
+        command: {
+          action: 'recordTurnEvent',
+          eventId: 'event_empty_retry_dispatch',
+          locationId: 'loc_market_town',
+          summary: '主角核对军报并记入本回合事件。',
+          presentNpcIds: [],
+          involvedNpcIds: [],
+          visibility: '在场可知',
+        },
+      },
+      reason: invalidCommandPatch.reason,
+    };
+    const llmClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify({
+          protocolVersion: 'lsfy.turn.v1',
+          narrativeText: '你核对军报后，将此事记入案牍。',
+          suggestedActions: [],
+          statePatches: [timeAdvancePatch, invalidCommandPatch],
+          statePatch: null,
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      })),
+    };
+    const stateWritebackLlmClient = {
+      generate: vi
+        .fn()
+        .mockRejectedValueOnce(new LlmEmptyContentError('API 返回缺少正文内容', {
+          promptTokens: 100,
+          completionTokens: 0,
+          totalTokens: 100,
+        }))
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            protocolVersion: 'lsfy.turn.v1',
+            narrativeText: '不得覆盖主叙事。',
+            suggestedActions: [],
+            statePatches: [timeAdvancePatch, repairedCommandPatch],
+            statePatch: null,
+          }),
+          provider: 'openai_compatible' as const,
+          model: 'writeback-model',
+          usage: { promptTokens: 120, completionTokens: 40, totalTokens: 160 },
+        }),
+    };
+    const stageEvents: TurnProcessingStageEvent[] = [];
+
+    const result = await executeTurn(worldBook, makeState(), '我核对军报', {
+      apiConfig,
+      stateWritebackApiConfig,
+      llmClient,
+      stateWritebackLlmClient,
+      onStageChange: (event) => stageEvents.push(event),
+    });
+
+    expect(stateWritebackLlmClient.generate).toHaveBeenCalledTimes(2);
+    expect(llmClient.generate).toHaveBeenCalledOnce();
+    expect(result.patchValidation?.valid).toBe(true);
+    expect(result.newRuntimeState.turnEvents).toEqual([
+      expect.objectContaining({ eventId: 'event_empty_retry_dispatch' }),
+    ]);
+    expect(stageEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        label: '整理状态写回',
+        status: 'failed',
+        detail: 'API 返回缺少正文内容',
+      }),
+      expect.objectContaining({
+        label: '整理状态写回（空输出重试）',
+        status: 'finished',
+      }),
+    ]));
+    expect(result.turnDisplayMeta.totalTokens).toBe(260);
   });
 
   it('does not swallow typed session cancellation in the optional state writeback fallback', async () => {
@@ -2819,7 +3776,7 @@ describe('executeTurn LLM integration', () => {
             reason: '使者往来耗时',
           }],
           statePatch: null,
-          writeback: { npcProfileSuggestions: [] },
+          writeback: { npcProfileSuggestions: [makeRejectedWangJingProfile('npc_wang_jing_abort')] },
         }),
         provider: 'openai_compatible' as const,
         model: 'test-model',
@@ -3050,7 +4007,7 @@ describe('executeTurn LLM integration', () => {
     });
   });
 
-  it('repairs missing NPC profile suggestions for repeated important named people', async () => {
+  it('repairs an explicitly submitted long-term NPC profile that failed the local contract', async () => {
     const mainNarrative = '王经遣使入营，称已知营中虚实。片刻后，王经又令部曲压近营门，营中诸将都明白此人已经牵动眼前局势。';
     const llmClient = {
       generate: vi
@@ -3070,7 +4027,7 @@ describe('executeTurn LLM integration', () => {
             statePatch: null,
             writeback: {
               turnSummary: { brief: '王经遣使压迫军营。' },
-              npcProfileSuggestions: [],
+              npcProfileSuggestions: [makeRejectedWangJingProfile('npc_wang_jing')],
               npcMemorySuggestions: [],
               locationWriteSuggestions: [],
               routeWriteSuggestions: [],
@@ -3094,6 +4051,8 @@ describe('executeTurn LLM integration', () => {
                 {
                   npcId: 'npc_wang_jing',
                   name: '王经',
+                  persistenceReason: 'strategic_actor',
+                  persistenceEvidence: '本回合确认王经以曹魏前线将领身份持续调动部曲并向玩家军营施压。',
                   sex: '男',
                   age: 46,
                   role: '魏军将领',
@@ -3122,6 +4081,22 @@ describe('executeTurn LLM integration', () => {
                       rarity: 'white',
                     },
                   ],
+                  uniqueArts: [{
+                    id: 'art_wang_jing_command',
+                    name: '持重督阵',
+                    rarity: 'blue',
+                    domain: 'warfare',
+                    level: 2,
+                    description: '以谨慎军令维持前线阵势。',
+                    effectSummary: '在统率与军势施压场景中提供稳定能力锚点。',
+                    source: 'identity',
+                    acquisition: {
+                      kind: 'background',
+                      occurredAt: '乱世元年2月',
+                      sourceRefId: 'npc-profile:npc_wang_jing:background',
+                      summary: '其前线将领身份与持续督阵事实已经确立该能力。',
+                    },
+                  }],
                   equipment: [
                     {
                       id: 'eq_wang_jing_sword',
@@ -3166,6 +4141,9 @@ describe('executeTurn LLM integration', () => {
     expect(repairPrompt).toContain('npcProfileSuggestions[].equipment');
     expect(repairPrompt).toContain('npcProfileSuggestions[].inventory');
     expect(repairPrompt).toContain('重要 NPC 行装');
+    expect(repairPrompt).toContain('sex 只能逐字写“男”“女”“其他”');
+    expect(repairPrompt).toContain('contactLevel 必须是大于等于 0 的有限数字');
+    expect(repairPrompt).toContain('level 必须是 1—10 的整数');
     const npcs = result.newRuntimeState.npcs ?? [];
     expect(npcs.map((npc) => npc.name)).toContain('王经');
     expect(npcs.find((npc) => npc.name === '王经')).toMatchObject({
@@ -3204,7 +4182,7 @@ describe('executeTurn LLM integration', () => {
           statePatch: null,
           writeback: {
             turnSummary: { brief: '王经遣使压迫军营。' },
-            npcProfileSuggestions: [],
+            npcProfileSuggestions: [makeRejectedWangJingProfile('npc_wang_jing_route')],
             npcMemorySuggestions: [],
             locationWriteSuggestions: [],
             routeWriteSuggestions: [],
@@ -3235,6 +4213,8 @@ describe('executeTurn LLM integration', () => {
                 {
                   npcId: 'npc_wang_jing_route',
                   name: '王经',
+                  persistenceReason: 'strategic_actor',
+                  persistenceEvidence: '本回合确认王经以曹魏前线将领身份持续调动部曲并向玩家军营施压。',
                   sex: '男',
                   age: 46,
                   role: '魏军将领',
@@ -3260,6 +4240,22 @@ describe('executeTurn LLM integration', () => {
                       rarity: 'white',
                     },
                   ],
+                  uniqueArts: [{
+                    id: 'art_wang_jing_route_command',
+                    name: '持重督阵',
+                    rarity: 'blue',
+                    domain: 'warfare',
+                    level: 2,
+                    description: '以谨慎军令维持前线阵势。',
+                    effectSummary: '在统率与军势施压场景中提供稳定能力锚点。',
+                    source: 'identity',
+                    acquisition: {
+                      kind: 'background',
+                      occurredAt: '乱世元年2月',
+                      sourceRefId: 'npc-profile:npc_wang_jing_route:background',
+                      summary: '其前线将领身份与持续督阵事实已经确立该能力。',
+                    },
+                  }],
                 },
               ],
               npcMemorySuggestions: [],
@@ -3297,6 +4293,98 @@ describe('executeTurn LLM integration', () => {
     );
   });
 
+  it('soft-completes a relevant legacy NPC unique-art archive once and keeps it on later turns', async () => {
+    const state = makeState();
+    state.npcs!.push({
+      npcId: 'npc_zhaoyun_legacy',
+      name: '赵云',
+      sex: '男',
+      age: 27,
+      role: '骑将',
+      currentIdentity: '白马骑将',
+      locationId: 'loc_market_town',
+      isPresent: true,
+      isFocused: true,
+      summary: '以勇武、骑战和忠毅闻名。',
+      appearance: '白袍银甲，持枪而立。',
+      personality: '沉毅果决。',
+      motivation: '护持百姓与同袍。',
+      relationToPlayer: '并肩作战',
+      contactLevel: 8,
+      recentAttitude: '信任',
+      abilityScores: { 武力: 96, 统率: 85, 智力: 75, 政治: 62, 魅力: 88, 机运: 66 },
+      traits: [{ id: 'trait_zhaoyun_brave', label: '忠勇', description: '临阵不退。', source: 'history' }],
+      memories: [],
+    });
+    const mainResponse = {
+      protocolVersion: 'lsfy.turn.v1',
+      narrativeText: '赵云提枪在营门前检视骑队，随后向你颔首。',
+      suggestedActions: [],
+      statePatches: [{
+        type: 'timeAdvance',
+        payload: { minutesAdvanced: 10, reason: '检视骑队', category: 'conversation' },
+        reason: '营门交谈经过时间',
+      }],
+      statePatch: null,
+      writeback: {
+        npcProfileSuggestions: [],
+        npcMemorySuggestions: [],
+        locationWriteSuggestions: [],
+        routeWriteSuggestions: [],
+        questChanges: [],
+        debugNotes: [],
+      },
+    };
+    const firstClient = {
+      generate: vi.fn()
+        .mockResolvedValueOnce({
+          content: JSON.stringify(mainResponse),
+          provider: 'openai_compatible' as const,
+          model: 'test-model',
+        }),
+    };
+
+    const first = await executeTurn(worldBook, state, '我请赵云检视骑队', {
+      apiConfig,
+      llmClient: firstClient,
+    });
+    expect(firstClient.generate).toHaveBeenCalledOnce();
+    expect(first.writeback?.debugNotes).toContain('NPC稳定绝艺已本地补全：赵云');
+    expect(first.newRuntimeState.npcs?.find((npc) => npc.npcId === 'npc_zhaoyun_legacy')?.uniqueArts)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ rarity: 'red', domain: 'personalCombat' }),
+        expect.objectContaining({ rarity: 'purple', domain: 'warfare' }),
+        expect.objectContaining({ rarity: 'purple', domain: 'social' }),
+      ]));
+    expect(first.turnDisplayMeta.processingStages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 'repairingNpcProfiles',
+          label: '本地补全 NPC 稳定绝艺',
+          status: 'finished',
+          provider: 'local',
+          model: 'npc-unique-art-policy-v1',
+          detail: '已写入：赵云',
+        }),
+      ]),
+    );
+
+    const secondClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify(mainResponse),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      })),
+    };
+    const second = await executeTurn(worldBook, first.newRuntimeState, '我与赵云继续商议骑队布置', {
+      apiConfig,
+      llmClient: secondClient,
+    });
+    expect(secondClient.generate).toHaveBeenCalledOnce();
+    expect(second.newRuntimeState.npcs?.find((npc) => npc.npcId === 'npc_zhaoyun_legacy')?.uniqueArts)
+      .toEqual(first.newRuntimeState.npcs?.find((npc) => npc.npcId === 'npc_zhaoyun_legacy')?.uniqueArts);
+  });
+
   it('uses bounded timeouts for optional post-turn writeback and NPC repair requests', async () => {
     const controller = new AbortController();
     const npcCompletionApiConfig: ApiConfigArchive = {
@@ -3322,7 +4410,7 @@ describe('executeTurn LLM integration', () => {
           statePatch: null,
           writeback: {
             turnSummary: { brief: '王经遣使压迫军营。' },
-            npcProfileSuggestions: [],
+            npcProfileSuggestions: [makeRejectedWangJingProfile('npc_wang_jing_timeout')],
             npcMemorySuggestions: [],
             locationWriteSuggestions: [],
             routeWriteSuggestions: [],
@@ -3344,7 +4432,7 @@ describe('executeTurn LLM integration', () => {
           statePatches: [],
           statePatch: null,
           writeback: {
-            npcProfileSuggestions: [],
+            npcProfileSuggestions: [makeRejectedWangJingProfile('npc_wang_jing_timeout')],
             npcMemorySuggestions: [],
             locationWriteSuggestions: [],
             routeWriteSuggestions: [],
@@ -3431,12 +4519,10 @@ describe('executeTurn LLM integration', () => {
     expect(npcCompletionCalls[0]?.[0].signal).toBe(controller.signal);
     expectRequestTimeoutAtConfiguredCap(
       stateWritebackCalls[0]?.[0].timeoutMs,
-      TURN_LLM_BUDGET_DEFAULTS.singleAuxiliaryRequestMs,
+      120_000,
     );
-    expectRequestTimeoutAtConfiguredCap(
-      npcCompletionCalls[0]?.[0].timeoutMs,
-      TURN_LLM_BUDGET_DEFAULTS.singleAuxiliaryRequestMs,
-    );
+    expectRequestTimeoutAtConfiguredCap(npcCompletionCalls[0]?.[0].timeoutMs, 120_000);
+    expect(npcCompletionCalls[0]?.[0].retryCount).toBe(0);
   });
 
   it('skips NPC profile repair when the same optional API already failed during state writeback repair', async () => {
@@ -3457,7 +4543,7 @@ describe('executeTurn LLM integration', () => {
           statePatch: null,
           writeback: {
             turnSummary: { brief: '王经遣使压迫军营。' },
-            npcProfileSuggestions: [],
+            npcProfileSuggestions: [makeRejectedWangJingProfile('npc_wang_jing_skip')],
             npcMemorySuggestions: [],
             locationWriteSuggestions: [],
             routeWriteSuggestions: [],
@@ -3503,6 +4589,531 @@ describe('executeTurn LLM integration', () => {
         }),
       ]),
     );
+  });
+
+  it('switches to the configured state writeback fallback without regenerating the main narrative', async () => {
+    const primaryConfig: ApiConfigArchive = {
+      ...apiConfig,
+      id: 'api_state_primary_failure',
+      model: 'state-primary-model',
+    };
+    const fallbackConfig: ApiConfigArchive = {
+      ...apiConfig,
+      id: 'api_state_fallback_success',
+      model: 'state-fallback-model',
+    };
+    const timeAdvancePatch: StatePatch = {
+      type: 'timeAdvance',
+      payload: { minutesAdvanced: 15, reason: '核对军报', category: 'inspection' },
+      reason: '核对军报耗时',
+    };
+    const eventPatch: StatePatch = {
+      type: 'luanshiCommand',
+      payload: {
+        command: {
+          action: 'recordTurnEvent',
+          eventId: 'event_state_fallback_dispatch',
+          locationId: 'loc_market_town',
+          summary: '主角核对军报并记入案牍。',
+          presentNpcIds: [],
+          involvedNpcIds: [],
+          visibility: '在场可知',
+        },
+      },
+      reason: '记录本回合军报事件',
+    };
+    const llmClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify({
+          protocolVersion: 'lsfy.turn.v1',
+          narrativeText: '你核对军报后，将此事记入案牍。',
+          suggestedActions: [],
+          statePatches: [timeAdvancePatch],
+          statePatch: null,
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      })),
+    };
+    const primaryClient = {
+      generate: vi.fn(async (request: LlmGenerateRequest) => {
+        expect(request.timeoutMs).toBeLessThanOrEqual(120_000);
+        expect(request.retryCount).toBe(0);
+        throw new Error('primary state writeback unavailable');
+      }),
+    };
+    const fallbackClient = {
+      generate: vi.fn(async (request: LlmGenerateRequest) => {
+        expect(request.config.model).toBe('state-fallback-model');
+        expect(request.timeoutMs).toBeLessThanOrEqual(120_000);
+        expect(request.retryCount).toBe(0);
+        return {
+          content: JSON.stringify({
+            protocolVersion: 'lsfy.turn.v1',
+            narrativeText: '',
+            suggestedActions: [],
+            statePatches: [timeAdvancePatch, eventPatch],
+            statePatch: null,
+          }),
+          provider: 'openai_compatible' as const,
+          model: 'state-fallback-model',
+        };
+      }),
+    };
+
+    const result = await executeTurn(worldBook, makeState(), '我核对军报', {
+      apiConfig,
+      stateWritebackApiConfig: primaryConfig,
+      stateWritebackFallbackApiConfig: fallbackConfig,
+      llmClient,
+      stateWritebackLlmClient: primaryClient,
+      stateWritebackFallbackLlmClient: fallbackClient,
+    });
+
+    expect(llmClient.generate).toHaveBeenCalledOnce();
+    expect(primaryClient.generate).toHaveBeenCalledOnce();
+    expect(fallbackClient.generate).toHaveBeenCalledOnce();
+    expect(result.newRuntimeState.turnEvents).toEqual([
+      expect.objectContaining({ eventId: 'event_state_fallback_dispatch' }),
+    ]);
+    expect(result.writeback?.debugNotes).toContain(
+      '状态写回主要 API 失败，已切换备用 API：state-fallback-model',
+    );
+  });
+
+  it('switches to the configured NPC completion fallback after the primary repair fails', async () => {
+    const primaryConfig: ApiConfigArchive = {
+      ...apiConfig,
+      id: 'api_npc_primary_failure',
+      model: 'npc-primary-model',
+    };
+    const fallbackConfig: ApiConfigArchive = {
+      ...apiConfig,
+      id: 'api_npc_fallback_success',
+      model: 'npc-fallback-model',
+    };
+    const mainNarrative = '王经遣使入营，继而调集部曲逼近营门，已成为持续牵动局势的前线将领。';
+    const llmClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify({
+          protocolVersion: 'lsfy.turn.v1',
+          narrativeText: mainNarrative,
+          suggestedActions: [],
+          statePatches: [{
+            type: 'timeAdvance',
+            payload: { minutesAdvanced: 15, reason: '敌将使者往来', category: 'conversation' },
+            reason: '敌将使者往来耗时',
+          }],
+          statePatch: null,
+          writeback: {
+            npcProfileSuggestions: [makeRejectedWangJingProfile('npc_wang_jing_fallback')],
+          },
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      })),
+    };
+    const primaryClient = {
+      generate: vi.fn(async (request: LlmGenerateRequest) => {
+        expect(request.timeoutMs).toBeLessThanOrEqual(120_000);
+        expect(request.retryCount).toBe(0);
+        throw new Error('primary NPC completion unavailable');
+      }),
+    };
+    const fallbackClient = {
+      generate: vi.fn(async (request: LlmGenerateRequest) => {
+        expect(request.config.model).toBe('npc-fallback-model');
+        expect(request.timeoutMs).toBeLessThanOrEqual(120_000);
+        expect(request.retryCount).toBe(0);
+        return {
+          content: JSON.stringify({
+            protocolVersion: 'lsfy.turn.v1',
+            narrativeText: mainNarrative,
+            suggestedActions: [],
+            statePatches: [],
+            statePatch: null,
+            writeback: {
+              npcProfileSuggestions: [{
+                ...makeRejectedWangJingProfile('npc_wang_jing_fallback'),
+                age: 46,
+              }],
+            },
+          }),
+          provider: 'openai_compatible' as const,
+          model: 'npc-fallback-model',
+        };
+      }),
+    };
+
+    const result = await executeTurn(worldBook, makeState(), '我观察王经使者动向', {
+      apiConfig,
+      npcCompletionApiConfig: primaryConfig,
+      npcCompletionFallbackApiConfig: fallbackConfig,
+      llmClient,
+      npcCompletionLlmClient: primaryClient,
+      npcCompletionFallbackLlmClient: fallbackClient,
+    });
+
+    expect(llmClient.generate).toHaveBeenCalledOnce();
+    expect(primaryClient.generate).toHaveBeenCalledOnce();
+    expect(fallbackClient.generate).toHaveBeenCalledOnce();
+    expect(result.newRuntimeState.npcs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ npcId: 'npc_wang_jing_fallback', name: '王经', age: 46 }),
+    ]));
+    expect(result.writeback?.debugNotes).toContain(
+      'NPC建档主要 API 未完成，已切换备用 API：npc-fallback-model',
+    );
+  });
+
+  it('archives a confirmed recruited NPC before applying relationship and troop dependencies when fallback loadout is invalid', async () => {
+    const primaryConfig: ApiConfigArchive = {
+      ...apiConfig,
+      id: 'api_npc_weiyan_primary_failure',
+      model: 'npc-primary-model',
+    };
+    const fallbackConfig: ApiConfigArchive = {
+      ...apiConfig,
+      id: 'api_npc_weiyan_fallback_success',
+      model: 'npc-fallback-model',
+    };
+    const mainNarrative = '魏延接受招募，你当众任命他为左垒先锋将，并命军吏把他登记为新编先锋队主将。';
+    const llmClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify({
+          protocolVersion: 'lsfy.turn.v1',
+          narrativeText: mainNarrative,
+          suggestedActions: [],
+          statePatches: [
+            {
+              type: 'timeAdvance',
+              payload: { minutesAdvanced: 20, reason: '完成招募任命', category: 'administration' },
+              reason: '招募和军中登记耗时',
+            },
+            {
+              type: 'luanshiCommand',
+              reason: '记录魏延已经接受招募后的关系变化',
+              payload: {
+                command: {
+                  action: 'updateNpcRelationship',
+                  npcId: 'npc_tk_weiyan',
+                  contactDelta: 8,
+                  relationToPlayer: '受主角正式任命的先锋将',
+                  recentAttitude: '愿以军功证明自身',
+                  summary: '魏延接受招募并领受先锋军职。',
+                },
+              },
+            },
+            {
+              type: 'luanshiCommand',
+              reason: '登记由魏延统领的新编先锋队',
+              payload: {
+                command: {
+                  action: 'upsertTroopLedger',
+                  troopId: 'troop_weiyan_vanguard',
+                  name: '魏延先锋队',
+                  size: 120,
+                  morale: 68,
+                  training: 62,
+                  supplies: 60,
+                  task: '担任左垒前锋',
+                  relationToPlayer: '主角直接统属',
+                  troopType: '步卒',
+                  leaderNpcId: 'npc_tk_weiyan',
+                  quality: '中',
+                  fatigue: '低',
+                  readiness: '中',
+                  lifecycleStatus: 'active',
+                  knownLevel: '亲历',
+                  certainty: 'confirmed',
+                  locationId: 'loc_market_town',
+                  lastKnownLocationId: 'loc_market_town',
+                  lastKnownAt: '乱世元年2月',
+                  updatedAt: '乱世元年2月',
+                },
+              },
+            },
+          ],
+          statePatch: null,
+          writeback: {
+            turnSummary: {
+              brief: '魏延接受招募并被正式任命为左垒先锋将。',
+              npcAdmissions: [{
+                sourceRefId: 'npc-admission-weiyan-recruited',
+                npcId: 'npc_tk_weiyan',
+                name: '魏延',
+                persistenceReason: 'player_committed_relationship',
+                persistenceEvidence: '魏延已经接受招募并被正式任命为左垒先锋将。',
+                summary: '魏延加入主角麾下，开始承担长期军职。',
+              }],
+            },
+            npcProfileSuggestions: [],
+          },
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      })),
+    };
+    const primaryClient = {
+      generate: vi.fn(async () => {
+        throw new Error('primary NPC completion unavailable');
+      }),
+    };
+    const fallbackClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify({
+          protocolVersion: 'lsfy.turn.v1',
+          narrativeText: mainNarrative,
+          suggestedActions: [],
+          statePatches: [],
+          statePatch: null,
+          writeback: {
+            npcProfileSuggestions: [{
+              npcId: 'npc_tk_weiyan',
+              name: '魏延',
+              persistenceReason: 'player_committed_relationship',
+              persistenceEvidence: '魏延已经接受招募并被正式任命为左垒先锋将。',
+              sex: '男',
+              age: 31,
+              role: '左垒先锋将',
+              locationId: 'loc_market_town',
+              isPresent: true,
+              isFocused: true,
+              currentIdentity: '主角麾下左垒先锋将',
+              summary: '魏延接受招募并开始统领左垒先锋。',
+              appearance: '身形雄健，佩一柄长刀。',
+              personality: '桀骜果决，渴望凭军功立身。',
+              motivation: '以战功证明自身并取得军中地位。',
+              relationToPlayer: '受主角正式任命的先锋将',
+              contactLevel: 8,
+              recentAttitude: '愿以军功证明自身',
+              abilityScores: { 武力: 94, 统率: 88, 智力: 70, 政治: 52, 魅力: 66, 机运: 61 },
+              traits: [{
+                id: 'trait_weiyan_bold',
+                label: '勇烈敢战',
+                description: '临阵敢于突入敌阵。',
+                source: '本回合正式招募与历史身份',
+              }],
+              uniqueArts: [{
+                id: 'art_weiyan_invalid_acquisition',
+                name: '长刀破阵',
+                rarity: 'orange',
+                domain: 'personalCombat',
+                level: 4,
+                description: '挥长刀冲击敌阵。',
+                effectSummary: '强化近战破阵。',
+                source: '人物经历',
+              }],
+              equipment: [{
+                id: 'eq_weiyan_invalid_quality',
+                slot: 'weapon',
+                name: '御赐长刀',
+                quality: '御赐',
+                description: '把来源标签误写成了品级。',
+              }],
+            }],
+          },
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'npc-fallback-model',
+      })),
+    };
+
+    const result = await executeTurn(worldBook, makeState(), '我正式招募魏延为先锋将', {
+      apiConfig,
+      npcCompletionApiConfig: primaryConfig,
+      npcCompletionFallbackApiConfig: fallbackConfig,
+      llmClient,
+      npcCompletionLlmClient: primaryClient,
+      npcCompletionFallbackLlmClient: fallbackClient,
+    });
+
+    expect(primaryClient.generate).toHaveBeenCalledOnce();
+    expect(fallbackClient.generate).toHaveBeenCalledOnce();
+    expect(result.patchValidation?.valid).toBe(true);
+    expect(result.newRuntimeState.npcs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        npcId: 'npc_tk_weiyan',
+        name: '魏延',
+        relationToPlayer: '受主角正式任命的先锋将',
+      }),
+    ]));
+    expect(result.newRuntimeState.troops).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        troopId: 'troop_weiyan_vanguard',
+        leaderNpcId: 'npc_tk_weiyan',
+      }),
+    ]));
+    expect(result.writeback?.debugNotes?.join('\n')).toContain('NPC建档合规降级');
+    expect(result.writeback?.debugNotes?.join('\n')).toContain('已保留人物基础档案');
+    expect(result.writeback?.debugNotes).toContain(
+      'NPC建档主要 API 未完成，已切换备用 API：npc-fallback-model',
+    );
+  });
+
+  it('treats a valid empty NPC completion response as success without calling the fallback', async () => {
+    const primaryConfig: ApiConfigArchive = {
+      ...apiConfig,
+      id: 'api_npc_primary_empty_success',
+      model: 'npc-primary-empty-model',
+    };
+    const fallbackConfig: ApiConfigArchive = {
+      ...apiConfig,
+      id: 'api_npc_fallback_must_not_run',
+      model: 'npc-fallback-unused-model',
+    };
+    const mainNarrative = '一个只来传一次口信的陌生斥候报完军情便离营，不再承担后续职责。';
+    const llmClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify({
+          protocolVersion: 'lsfy.turn.v1',
+          narrativeText: mainNarrative,
+          suggestedActions: [],
+          statePatches: [{
+            type: 'timeAdvance',
+            payload: { minutesAdvanced: 5, reason: '听取临时军报', category: 'conversation' },
+            reason: '听取军报耗时',
+          }],
+          statePatch: null,
+          writeback: {
+            npcProfileSuggestions: [{
+              ...makeRejectedWangJingProfile('npc_one_turn_scout_empty'),
+              name: '临时斥候',
+              role: '一次性斥候',
+              currentIdentity: '传递一次军报的陌生斥候',
+            }],
+          },
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      })),
+    };
+    const primaryClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify({
+          protocolVersion: 'lsfy.turn.v1',
+          narrativeText: mainNarrative,
+          suggestedActions: [],
+          statePatches: [],
+          statePatch: null,
+          writeback: { npcProfileSuggestions: [] },
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'npc-primary-empty-model',
+      })),
+    };
+    const fallbackClient = {
+      generate: vi.fn(async () => {
+        throw new Error('valid empty profile decision must not trigger fallback');
+      }),
+    };
+
+    const result = await executeTurn(worldBook, makeState(), '我听取斥候口信', {
+      apiConfig,
+      npcCompletionApiConfig: primaryConfig,
+      npcCompletionFallbackApiConfig: fallbackConfig,
+      llmClient,
+      npcCompletionLlmClient: primaryClient,
+      npcCompletionFallbackLlmClient: fallbackClient,
+    });
+
+    expect(primaryClient.generate).toHaveBeenCalledOnce();
+    expect(fallbackClient.generate).not.toHaveBeenCalled();
+    expect(result.newRuntimeState.npcs?.some((npc) => npc.npcId === 'npc_one_turn_scout_empty')).toBe(false);
+    expect(result.writeback?.debugNotes).toContain('NPC建档合规修复未返回可用人物志');
+  });
+
+  it('accepts a same-turn NPC profile before assigning that NPC as a troop officer', async () => {
+    const peiShaoProfile = {
+      ...makeRejectedWangJingProfile('npc_pei_shao_same_turn'),
+      name: '裴绍',
+      age: 33,
+      role: '部曲将',
+      factionName: '主角部曲',
+      currentIdentity: '主角麾下部曲将',
+      persistenceReason: 'player_committed_relationship',
+      persistenceEvidence: '本回合主角已经正式任命裴绍统领新编部曲，形成持续军职。',
+      summary: '裴绍受命统领新编部曲，后续继续承担军务。',
+      relationToPlayer: '受主角任命的部曲将',
+      abilityScores: { 武力: 72, 统率: 76, 智力: 58, 政治: 48, 魅力: 55, 机运: 50 },
+      uniqueArts: [{
+        id: 'art_pei_shao_missing_acquisition',
+        name: '整军有法',
+        rarity: 'blue',
+        domain: 'warfare',
+        level: 1,
+        description: '善于约束新募部曲。',
+        effectSummary: '整军时更易维持军纪。',
+        source: '人物经历',
+      }],
+    } as NarratorNpcProfileSuggestion;
+    const llmClient = {
+      generate: vi.fn(async () => ({
+        content: JSON.stringify({
+          protocolVersion: 'lsfy.turn.v1',
+          narrativeText: '你当众任命裴绍统领新编部曲，军吏随即将任命与部队名册一并登记。',
+          suggestedActions: [],
+          statePatches: [
+            {
+              type: 'timeAdvance',
+              payload: { minutesAdvanced: 15, reason: '任命并登记部曲', category: 'administration' },
+              reason: '军中任命和登记耗时',
+            },
+            {
+              type: 'luanshiCommand',
+              reason: '登记本回合已正式组建并由裴绍统领的部曲',
+              payload: {
+                command: {
+                  action: 'upsertTroopLedger',
+                  troopId: 'troop_pei_shao_same_turn',
+                  name: '裴绍部曲',
+                  size: 180,
+                  morale: 62,
+                  training: 55,
+                  supplies: 60,
+                  task: '随主角驻守市镇',
+                  relationToPlayer: '主角直接统属',
+                  troopType: '步卒',
+                  leaderNpcId: 'npc_pei_shao_same_turn',
+                  quality: '中',
+                  fatigue: '低',
+                  readiness: '中',
+                  lifecycleStatus: 'active',
+                  knownLevel: '亲历',
+                  certainty: 'confirmed',
+                  locationId: 'loc_market_town',
+                  lastKnownLocationId: 'loc_market_town',
+                  lastKnownAt: '乱世元年2月',
+                  updatedAt: '乱世元年2月',
+                },
+              },
+            },
+          ],
+          statePatch: null,
+          writeback: { npcProfileSuggestions: [peiShaoProfile] },
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      })),
+    };
+
+    const result = await executeTurn(worldBook, makeState(), '我任命裴绍统领新编部曲', {
+      apiConfig,
+      llmClient,
+    });
+
+    expect(result.patchValidation?.valid).toBe(true);
+    expect(result.newRuntimeState.npcs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ npcId: 'npc_pei_shao_same_turn', name: '裴绍' }),
+    ]));
+    expect(result.newRuntimeState.troops).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        troopId: 'troop_pei_shao_same_turn',
+        leaderNpcId: 'npc_pei_shao_same_turn',
+      }),
+    ]));
+    expect(result.writeback?.debugNotes).toEqual(expect.arrayContaining([
+      expect.stringContaining('NPC稳定绝艺已本地补全：裴绍'),
+    ]));
   });
 
   it('applies timeAdvance from multi-patch LLM responses alongside other state writes', async () => {
@@ -3785,10 +5396,16 @@ describe('executeTurn LLM integration', () => {
                       domain: 'warfare',
                       level: 1,
                       maxLevel: 10,
-                      progress: 20,
+                      progress: 0,
                       description: '在兵荒马乱中维持小股军士秩序的本事。',
                       effectSummary: '有助于临场整队、约束散兵和稳住军心。',
                       source: 'turn',
+                      acquisition: {
+                        kind: 'achievement',
+                        occurredAt: '公元189年09月01日 08:15（辰时）',
+                        sourceRefId: 'turn:gate-discipline-confirmed',
+                        summary: '本回合实际完成营门整肃，确认该长期能力。',
+                      },
                     },
                   ],
                   summary: '本回合确认主角的军旅整队本事。',
@@ -3834,6 +5451,8 @@ describe('executeTurn LLM integration', () => {
               {
                 npcId: 'npc_old_scout',
                 name: '老斥候',
+                persistenceReason: 'active_system_role',
+                persistenceEvidence: '本回合确认其作为随军斥候持续为主角承担营外侦察职责。',
                 sex: '男',
                 age: 52,
                 role: '随军斥候',
@@ -3870,7 +5489,13 @@ describe('executeTurn LLM integration', () => {
                     progress: 30,
                     description: '能凭马蹄、车辙和风声辨别远近动静。',
                     effectSummary: '侦察、伏击预警和夜间行军时更易先察敌踪。',
-                    source: 'turn',
+                    source: 'background',
+                    acquisition: {
+                      kind: 'background',
+                      occurredAt: '公元184年03月01日',
+                      sourceRefId: 'npc-profile:npc_old_scout:background',
+                      summary: '多年行伍与斥候经历形成的稳定听辨能力，本回合首次归档。',
+                    },
                     promptHint: '侦察、伏击预警或夜行时体现其听辨经验。',
                     checkHooks: [{ scope: '侦察', modifier: 6, note: '凭声辨敌踪。' }],
                     tags: ['斥候', '预警'],
@@ -4046,6 +5671,8 @@ describe('executeTurn LLM integration', () => {
               {
                 npcId: 'npc_turn_woman',
                 name: '某氏',
+                persistenceReason: 'strategic_actor',
+                persistenceEvidence: '本回合确认她是能够持续影响地方家族关系与后续局势的关键人物。',
                 sex: '女',
                 age: 33,
                 role: '本回合重要女性 NPC',
@@ -4801,6 +6428,279 @@ describe('executeTurn LLM integration', () => {
     expect(result.newRuntimeState.domesticReports?.map((report) => report.reportId)).not.toContain('system:holding-annual:189');
     expect(result.turnDisplayMeta.holdingAnnualSettlement).toBeUndefined();
     expect(latestTurnLog?.statePatchSummary).not.toContain('年度结算[system:holding-annual:189]');
+  });
+
+  it('downgrades terminal troop war references to narrative without another API call', async () => {
+    const state = makeDynamicWarState();
+    state.troops = [
+      ...(state.troops ?? []),
+      makeWarTroop('troop_yangzhai_garrison', {
+        name: '颍川阳翟守军',
+        size: 240,
+        morale: 0,
+        lifecycleStatus: 'routed',
+        factionId: 'faction_enemy',
+        locationId: 'loc_market_town',
+      }),
+    ];
+    const intent: WarStartIntent = {
+      ...makeDynamicWarIntent(),
+      encounterId: 'war_routed_yangzhai_pursuit',
+      reason: '玩家正在追查已经溃散的阳翟守军。',
+      enemyForce: { troopIds: ['troop_yangzhai_garrison'] },
+      objective: 'defeat_enemy',
+      targetHoldingId: undefined,
+    };
+    const llmClient = {
+      generate: vi.fn().mockResolvedValueOnce({
+        content: JSON.stringify({
+          protocolVersion: 'lsfy.turn.v1',
+          narrativeText: '阳翟守军已经失去建制，残兵沿街巷四散。你的人马收拢阵形，准备继续追查残部去向。',
+          suggestedActions: [{
+            label: '收拢俘虏',
+            description: '盘问残兵并收缴兵器。',
+            actionType: 'other',
+          }],
+          statePatches: [
+            {
+              type: 'timeAdvance',
+              payload: { minutesAdvanced: 20, reason: '追查溃兵', category: 'battle' },
+              reason: '追击与收拢耗时',
+            },
+            {
+              type: 'luanshiCommand',
+              reason: '错误预写战争结果',
+              payload: {
+                command: {
+                  action: 'upsertConflictRecord',
+                  conflictId: 'conflict_should_be_quarantined',
+                },
+              },
+            },
+          ],
+          statePatch: null,
+          writeback: {
+            playerRecoveryKind: 'none',
+            encounterTransitionDecision: { mode: 'start', reason: '追击已经发生。' },
+            encounterStartIntent: intent,
+            semanticProjections: [],
+            debugNotes: [],
+          },
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'test-model',
+      }),
+    };
+
+    const result = await executeTurn(worldBook, state, '追击已经溃散的阳翟守军', {
+      apiConfig,
+      llmClient,
+    });
+
+    expect(llmClient.generate).toHaveBeenCalledOnce();
+    expect(result.narrativeText).toContain('残兵沿街巷四散');
+    expect(result.suggestedActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: '收拢俘虏' }),
+    ]));
+    expect(result.encounterTransitionDecision).toMatchObject({ mode: 'none' });
+    expect(result.encounterStartIntent).toBeUndefined();
+    expect(result.statePatches).toHaveLength(1);
+    expect(result.statePatches?.[0]?.type).toBe('timeAdvance');
+    expect(result.newRuntimeState.conflicts ?? []).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ conflictId: 'conflict_should_be_quarantined' }),
+    ]));
+    expect(result.newRuntimeState.troops?.find((troop) => troop.troopId === 'troop_yangzhai_garrison')?.lifecycleStatus)
+      .toBe('routed');
+    expect(result.newRuntimeState.turnLog).toHaveLength(1);
+    expect(result.writeback?.debugNotes?.join('\n')).toContain('code=encounter_transition_downgraded_terminal_troop');
+    expect(result.writeback?.debugNotes?.join('\n')).toContain('troop_yangzhai_garrison');
+    expect(result.writeback?.debugNotes?.join('\n')).toContain('已隔离 1 条触发回合战争结果写回');
+    expect(result.turnDisplayMeta.processingStages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'repairingStateWriteback',
+        label: '按剧情承接战争切入',
+        status: 'finished',
+        detail: expect.stringContaining('encounter_transition_downgraded_terminal_troop'),
+      }),
+    ]));
+  });
+
+  it('repairs map-only war targets by atomically declaring the missing troop and holding before staging', async () => {
+    const state = makeDynamicWarState();
+    const intent = makeDynamicWarIntent();
+    const incompleteRepairPatches = makeDynamicWarDeclarationPatches();
+    const incompleteHoldingCommand = incompleteRepairPatches[1]?.payload?.command as
+      | Record<string, unknown>
+      | undefined;
+    if (incompleteHoldingCommand) incompleteHoldingCommand.updatedAt = '';
+    const llmClient = {
+      generate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            protocolVersion: 'lsfy.turn.v1',
+            narrativeText: '前锋营已经撞开坞堡外门，守军列阵迎击，双方的第一轮冲撞即将由战争引擎裁定。',
+            suggestedActions: [],
+            statePatches: [
+              {
+                type: 'timeAdvance',
+                payload: { minutesAdvanced: 30, reason: '突进至坞堡外门', category: 'battle' },
+                reason: '强行军与夺门耗时',
+              },
+              {
+                type: 'luanshiCommand',
+                reason: '首份响应尝试登记守军但缺少必需字段',
+                payload: {
+                  command: {
+                    action: 'upsertTroopLedger',
+                    troopId: 'troop_market_fort_garrison',
+                    name: '市镇坞堡守军',
+                  },
+                },
+              },
+            ],
+            statePatch: null,
+            writeback: {
+              encounterTransitionDecision: { mode: 'start', reason: '两军已经正式交锋。' },
+              encounterStartIntent: intent,
+              semanticProjections: [],
+            },
+          }),
+          provider: 'openai_compatible' as const,
+          model: 'test-model',
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            protocolVersion: 'lsfy.turn.v1',
+            narrativeText: '',
+            suggestedActions: [],
+            statePatches: incompleteRepairPatches,
+            statePatch: null,
+            writeback: {
+              encounterTransitionDecision: { mode: 'start', reason: '两军已经正式交锋。' },
+              encounterStartIntent: intent,
+            },
+          }),
+          provider: 'openai_compatible' as const,
+          model: 'test-model',
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            protocolVersion: 'lsfy.turn.v1',
+            narrativeText: '',
+            suggestedActions: [],
+            statePatches: makeDynamicWarDeclarationPatches(),
+            statePatch: null,
+            writeback: {
+              encounterTransitionDecision: { mode: 'start', reason: '两军已经正式交锋。' },
+              encounterStartIntent: intent,
+            },
+          }),
+          provider: 'openai_compatible' as const,
+          model: 'test-model',
+        }),
+    };
+
+    const result = await executeTurn(worldBook, state, '率前锋营夺取市镇坞堡', {
+      apiConfig,
+      llmClient,
+    });
+
+    expect(llmClient.generate).toHaveBeenCalledTimes(3);
+    const repairRequest = llmClient.generate.mock.calls[1]?.[0] as LlmGenerateRequest;
+    const repairPrompt = repairRequest.messages.map((message) => message.content).join('\n');
+    const retryRequest = llmClient.generate.mock.calls[2]?.[0] as LlmGenerateRequest;
+    const retryPrompt = retryRequest.messages.map((message) => message.content).join('\n');
+    expect(repairPrompt).toContain('troop_market_fort_garrison');
+    expect(repairPrompt).toContain('holding_market_fort');
+    expect(repairPrompt).toContain('upsertTroopLedger / upsertHoldingLedger');
+    expect(repairPrompt).toContain('locationId=loc_market_town');
+    expect(repairPrompt).toContain('声明无效，必须用完整声明替换');
+    expect(retryPrompt).toContain('updatedAt cannot be empty');
+    expect(result.newRuntimeState.troops?.map((troop) => troop.troopId))
+      .toContain('troop_market_fort_garrison');
+    expect(result.newRuntimeState.holdings?.map((holding) => holding.holdingId))
+      .toContain('holding_market_fort');
+    expect(result.newRuntimeState.turnLog).toHaveLength(1);
+    expect(result.writeback?.debugNotes?.join('\n')).toContain('替换 1 条无效战争实体声明');
+    expect(result.writeback?.debugNotes?.join('\n')).toContain('写入 2 条完整战争实体声明');
+
+    const stagedIntent = result.encounterStartIntent;
+    expect(stagedIntent?.kind).toBe('war');
+    if (!stagedIntent || stagedIntent.kind !== 'war') throw new Error('expected repaired war intent');
+    const staged = stageWarEncounter(result.newRuntimeState, {
+      saveId: 'save_dynamic_war_atomic_declaration',
+      intent: stagedIntent,
+      projections: result.semanticProjections ?? [],
+      createdAt: '2026-07-30T06:01:00.000Z',
+    });
+    expect(staged.encounterV2?.active?.session.intent.encounterId)
+      .toBe('war_market_fort_assault');
+  });
+
+  it('refuses to save a war turn when narrow repair leaves dangling troop or holding references', async () => {
+    const state = makeDynamicWarState();
+    const intent = makeDynamicWarIntent();
+    const llmClient = {
+      generate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            protocolVersion: 'lsfy.turn.v1',
+            narrativeText: '前锋营已经冲入坞堡，守军迎面压来，战争即将进入本地裁定。',
+            suggestedActions: [],
+            statePatches: [{
+              type: 'timeAdvance',
+              payload: { minutesAdvanced: 30, reason: '夺门', category: 'battle' },
+              reason: '夺门耗时',
+            }],
+            statePatch: null,
+            writeback: {
+              encounterTransitionDecision: { mode: 'start', reason: '两军已经正式交锋。' },
+              encounterStartIntent: intent,
+            },
+          }),
+          provider: 'openai_compatible' as const,
+          model: 'test-model',
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            protocolVersion: 'lsfy.turn.v1',
+            narrativeText: '',
+            suggestedActions: [],
+            statePatches: [],
+            statePatch: null,
+            writeback: {
+              encounterTransitionDecision: { mode: 'start', reason: '两军已经正式交锋。' },
+              encounterStartIntent: intent,
+            },
+          }),
+          provider: 'openai_compatible' as const,
+          model: 'test-model',
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            protocolVersion: 'lsfy.turn.v1',
+            narrativeText: '',
+            suggestedActions: [],
+            statePatches: [],
+            statePatch: null,
+            writeback: {
+              encounterTransitionDecision: { mode: 'start', reason: '两军已经正式交锋。' },
+              encounterStartIntent: intent,
+            },
+          }),
+          provider: 'openai_compatible' as const,
+          model: 'test-model',
+        }),
+    };
+
+    await expect(executeTurn(worldBook, state, '率前锋营夺取市镇坞堡', {
+      apiConfig,
+      llmClient,
+    })).rejects.toThrow('本回合未写入');
+    expect(llmClient.generate).toHaveBeenCalledTimes(3);
+    expect(state.turnLog).toHaveLength(0);
   });
 
   it('preserves the memory summary route label when the caller supplies a fallback main API config', async () => {

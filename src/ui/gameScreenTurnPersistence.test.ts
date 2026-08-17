@@ -80,7 +80,7 @@ describe('GameScreen atomic turn persistence', () => {
     );
   });
 
-  it('offers API settings, manual retry, and a non-blocking later choice after compression failure', async () => {
+  it('offers memory API settings, manual retry, and a non-blocking later choice after compression failure', async () => {
     const { readFileSync } = await import('node:' + 'fs') as {
       readFileSync: (path: URL, encoding: string) => string;
     };
@@ -91,5 +91,11 @@ describe('GameScreen atomic turn persistence', () => {
     expect(source).toContain('data-testid="memory-summary-dialog-open-settings"');
     expect(source).toContain('data-testid="memory-summary-dialog-retry"');
     expect(source).toContain('后续回合不会自动重试或等待');
+    for (const testId of ['memory-summary-open-settings', 'memory-summary-dialog-open-settings']) {
+      const start = source.indexOf(`data-testid="${testId}"`);
+      expect(start).toBeGreaterThan(-1);
+      expect(source.slice(start, start + 360)).toContain("onOpenSettings('memory')");
+      expect(source.slice(start, start + 360)).not.toContain("onOpenSettings('api')");
+    }
   });
 });

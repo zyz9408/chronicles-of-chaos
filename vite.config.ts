@@ -9,6 +9,6 @@ export default defineConfig(({ mode }) => ({
   },
   test: {
     environment: 'node',
-    exclude: ['node_modules/**', 'dist/**', 'output/**', 'tests/e2e/**'],
+    exclude: ['node_modules/**', 'dist/**', 'output/**', '.tmp/**', 'tests/e2e/**'],
   },
 }));

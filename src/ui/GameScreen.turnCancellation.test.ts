@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import gameScreenSource from './GameScreen.tsx?raw';
-import { buildTurnSubmitButtonModel } from './GameScreen';
+import {
+  buildTurnSubmitButtonModel,
+  isRightControlKey,
+  shouldSubmitActionFromKeyboard,
+} from './GameScreen';
 
 describe('GameScreen turn cancellation control', () => {
   it('reuses the submit button as an enabled cancellation control while a turn is running', () => {
@@ -56,10 +60,34 @@ describe('GameScreen turn cancellation control', () => {
     });
 
     expect(enabled.label).toBe('执行行动');
+    expect(enabled.shortcutHint).toBe('右 Ctrl + Enter');
     expect(enabled.disabled).toBe(false);
     enabled.onClick();
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(disabled.disabled).toBe(true);
+  });
+
+  it('submits only for right Control plus Enter while ordinary Enter remains a newline', () => {
+    const enterEvent = {
+      key: 'Enter',
+      code: 'Enter',
+      location: 0,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      metaKey: false,
+      repeat: false,
+      isComposing: false,
+    };
+
+    expect(isRightControlKey({ key: 'Control', code: 'ControlRight', location: 2 })).toBe(true);
+    expect(isRightControlKey({ key: 'Control', code: 'ControlLeft', location: 1 })).toBe(false);
+    expect(shouldSubmitActionFromKeyboard(enterEvent, false)).toBe(false);
+    expect(shouldSubmitActionFromKeyboard({ ...enterEvent, ctrlKey: true }, false)).toBe(false);
+    expect(shouldSubmitActionFromKeyboard({ ...enterEvent, ctrlKey: true }, true)).toBe(true);
+    expect(shouldSubmitActionFromKeyboard({ ...enterEvent, ctrlKey: true, shiftKey: true }, true)).toBe(false);
+    expect(shouldSubmitActionFromKeyboard({ ...enterEvent, ctrlKey: true, repeat: true }, true)).toBe(false);
+    expect(shouldSubmitActionFromKeyboard({ ...enterEvent, ctrlKey: true, isComposing: true }, true)).toBe(false);
   });
 
   it('wires cancellation to the owned execution and restores the interrupted action', () => {
@@ -67,5 +95,6 @@ describe('GameScreen turn cancellation control', () => {
     expect(gameScreenSource).toContain('executionOwner.abort()');
     expect(gameScreenSource).toContain('currentInput.trim() ? currentInput : interruptedAction');
     expect(gameScreenSource).toContain('settleExecutionUi(execution');
+    expect(gameScreenSource).toContain('回车换行；右 Ctrl + Enter 执行动作');
   });
 });

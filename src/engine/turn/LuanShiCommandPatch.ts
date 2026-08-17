@@ -16,9 +16,12 @@ const LUANSHI_COMMAND_ACTION_TYPES = new Set([
   'updateNpcLoadout',
   'updatePlayerTraits',
   'updateCharacterUniqueArts',
+  'recordCharacterUniqueArtProgress',
   'updateResourceLedger',
   'upsertFactionLedger',
+  'recordFactionRecentAction',
   'upsertTroopLedger',
+  'startHeavyCavalryFormation',
   'upsertConflictRecord',
   'upsertCombatRecord',
   'upsertCalendarEra',
@@ -30,6 +33,7 @@ const LUANSHI_COMMAND_ACTION_TYPES = new Set([
   'upsertPrivateAssetProject',
   'updateCharacterReputation',
   'upsertNpcProfile',
+  'updateNpcRelationship',
   'updateNpcPresence',
   'updateNpcBackgroundActivity',
   'updateNpcFemaleProfile',
@@ -256,8 +260,10 @@ function normalizeTroopUpkeepSource(value: unknown): unknown {
   if (['superior_provision', 'superior', 'lord', 'faction', 'state'].includes(lower)) return 'superior_provision';
   if (['mixed', 'partial', 'shared'].includes(lower)) return 'mixed';
   if (['unknown', 'unspecified'].includes(lower)) return 'unknown';
-  if (/(?:自筹|自给|私产|府库|领地|玩家资源|自家资源)/.test(text)) return 'player_resources';
-  if (/(?:上级|主公|朝廷|州府|军府|官府|拨付|供给|供养|俸粮|军饷)/.test(text)) return 'superior_provision';
+  if (/(?:玩家|主角)(?:自家)?(?:府库|资源|钱粮)|(?:玩家|主角)(?:自筹|承担|供养)|私产承担|领地承担/.test(text)) return 'player_resources';
+  if (/(?:上级|主公|朝廷|州府|军府|官府|所属势力|本势力|本部|敌方|友方|他方|拨付|供给|供养|俸粮|军饷)/.test(text)) return 'superior_provision';
+  // 未说明归属的“府库/自筹”描述的是该部队或其所属势力，不得默认解释为玩家府库。
+  if (/(?:府库|自筹|自给|自行筹措)/.test(text)) return 'superior_provision';
   if (/(?:混合|部分|共同|分担|补足)/.test(text)) return 'mixed';
   if (/(?:未知|未定|不明)/.test(text)) return 'unknown';
   return text;
@@ -367,6 +373,7 @@ function normalizeHoldingLedgerCommand(command: LuanShiCommand): LuanShiCommand 
       ? entry.civilAdministrationScope.trim()
       : entry.civilAdministrationScope,
   );
+  assignWhenPresent('civilScaleLevel', normalizeOptionalNonNegativeNumber(entry.civilScaleLevel));
   assignWhenPresent('farmlandMu', normalizeOptionalNonNegativeNumber(entry.farmlandMu));
   assignWhenPresent('registeredHouseholds', normalizeOptionalNonNegativeNumber(entry.registeredHouseholds));
   assignWhenPresent('eliteControlledShare', normalizeOptionalNonNegativeNumber(entry.eliteControlledShare));

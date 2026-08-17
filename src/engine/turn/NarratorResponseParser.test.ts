@@ -5,6 +5,8 @@ function makeNpcProfileSuggestion(loadout: Record<string, unknown>): Record<stri
   return {
     npcId: 'npc_loadout_protocol',
     name: '行装校尉',
+    persistenceReason: 'active_system_role',
+    persistenceEvidence: '本回合已确认其长期负责守门与验符。',
     sex: '男',
     age: 31,
     role: '校尉',
@@ -26,6 +28,183 @@ function makeNpcProfileSuggestion(loadout: Record<string, unknown>): Record<stri
 }
 
 describe('parseNarratorResponse', () => {
+  it('normalizes abbreviated correspondence replies against the stable local letter ledger', () => {
+    const result = parseNarratorResponse(JSON.stringify({
+      narrativeText: '驿卒带回蔡琰亲笔回信，她答应按期送粮。',
+      suggestedActions: [],
+      writeback: {
+        turnSummary: {
+          correspondenceActions: [{
+            action: 'reply',
+            sourceLetterId: 'letter_player_request_grain',
+            letterId: 'letter_caiyan_reply_grain_1',
+            npcId: 'npc_caiyan',
+            deliveryState: 'received',
+            body: '答应调拨二百石粮草，并于三月初四午时前送到汉水北岸大营。',
+            commitments: [{
+              targetLocationId: 'place_a',
+              expectedAt: '公元184年03月04日 12:00',
+              deliverables: { resources: { grain: 200 } },
+            }],
+          }],
+        },
+      },
+    }), {
+      correspondenceSources: [{
+        letterId: 'letter_player_request_grain',
+        direction: 'outgoing',
+        npcId: 'npc_caiyan',
+      }],
+    });
+
+    expect(result.writeback?.turnSummary).toMatchObject({
+      brief: '答应调拨二百石粮草，并于三月初四午时前送到汉水北岸大营。',
+      correspondenceActions: [{
+        sourceRefId: 'correspondence:reply:letter_player_request_grain',
+        action: 'reply',
+        direction: 'npc_to_player',
+        deliveryState: 'received',
+        senderNpcId: 'npc_caiyan',
+        commitments: [{
+          commitmentId: 'correspondence:reply:letter_player_request_grain:commitment:1',
+          targetLocationId: 'place_a',
+          deliverables: [{ kind: 'resources', resources: { grain: 200 } }],
+        }],
+      }],
+    });
+  });
+
+  it('keeps old correspondence outputs safely in transit when deliveryState is omitted', () => {
+    const result = parseNarratorResponse(JSON.stringify({
+      narrativeText: '蔡琰已将复书交给驿使。',
+      suggestedActions: [],
+      writeback: {
+        turnSummary: {
+          correspondenceActions: [{
+            action: 'send',
+            sourceRefId: 'letter_caiyan_sent_1',
+            letterId: 'letter_caiyan_sent_1',
+            direction: 'npc_to_player',
+            senderNpcId: 'npc_caiyan',
+            body: '近来安好，勿念。',
+          }],
+        },
+      },
+    }));
+
+    expect(result.writeback?.turnSummary?.correspondenceActions?.[0]).toMatchObject({
+      deliveryState: 'sent',
+    });
+  });
+
+  it('does not guess an abbreviated correspondence reply without a matching ledger letter', () => {
+    const result = parseNarratorResponse(JSON.stringify({
+      narrativeText: '有人声称已经回信。',
+      suggestedActions: [],
+      writeback: {
+        turnSummary: {
+          correspondenceActions: [{
+            action: 'reply',
+            sourceLetterId: 'letter_unknown',
+            letterId: 'letter_unknown_reply',
+            npcId: 'npc_unknown',
+            body: '含混的回信。',
+          }],
+        },
+      },
+    }));
+
+    expect(result.writeback?.turnSummary).toBeNull();
+  });
+
+  it('keeps a concise source-letter summary for NPC memory without exposing the stable letter id', () => {
+    const parsed = parseNarratorResponse(JSON.stringify({
+      narrativeText: '蔡琰读罢来信，决定稍后作答。',
+      suggestedActions: [],
+      writeback: {
+        turnSummary: {
+          brief: '蔡琰收到了林砚的问候。',
+          correspondenceActions: [{
+            action: 'acknowledge',
+            sourceLetterId: 'letter_player_greeting',
+            sourceLetterSummary: '林砚来信问候近况，并询问何时方便相见',
+          }],
+        },
+      },
+    }), {
+      correspondenceSources: [{
+        letterId: 'letter_player_greeting',
+        direction: 'outgoing',
+        npcId: 'npc_caiyan',
+      }],
+    });
+
+    expect(parsed.writeback?.turnSummary?.correspondenceActions?.[0]).toMatchObject({
+      action: 'acknowledge',
+      sourceLetterId: 'letter_player_greeting',
+      sourceLetterSummary: '林砚来信问候近况，并询问何时方便相见',
+    });
+  });
+
+  it('normalizes an id-bound commitment resolution alias without reading narrative prose', () => {
+    const result = parseNarratorResponse(JSON.stringify({
+      narrativeText: '粮车已到。',
+      suggestedActions: [],
+      writeback: {
+        turnSummary: {
+          commitmentResolutions: [{
+            commitmentId: 'commit_caiyan_grain_200',
+            resolution: 'fulfilled',
+            summary: '蔡琰如约送来二百石粮草。',
+          }],
+        },
+      },
+    }));
+
+    expect(result.writeback?.turnSummary).toMatchObject({
+      brief: '蔡琰如约送来二百石粮草。',
+      commitmentResolutions: [{
+        sourceRefId: 'commitment-resolution:commit_caiyan_grain_200:fulfilled',
+        commitmentId: 'commit_caiyan_grain_200',
+        status: 'fulfilled',
+      }],
+    });
+  });
+
+  it('requires a future continuation date for partial or delayed correspondence commitments', () => {
+    const parseResolution = (
+      status: 'partial' | 'delayed',
+      nextExpectedAt?: string,
+      includeDelivery = false,
+    ) => (
+      parseNarratorResponse(JSON.stringify({
+        narrativeText: '使者说明尚有余数未到。',
+        suggestedActions: [],
+        writeback: {
+          turnSummary: {
+            brief: '承诺仅完成一部分。',
+            commitmentResolutions: [{
+              sourceRefId: `resolution_${status}`,
+              commitmentId: 'commitment_1',
+              status,
+              summary: '先行送到一部分。',
+              ...(nextExpectedAt ? { nextExpectedAt } : {}),
+              ...(includeDelivery
+                ? { deliveredDeliverables: [{ kind: 'resources', resources: { grain: 100 } }] }
+                : {}),
+            }],
+          },
+        },
+      })).writeback?.turnSummary?.commitmentResolutions ?? []
+    );
+
+    expect(parseResolution('partial')).toEqual([]);
+    expect(parseResolution('delayed')).toEqual([]);
+    expect(parseResolution('partial', '公元184年03月04日 08:00（辰时）')).toEqual([]);
+    expect(parseResolution('partial', '公元184年03月04日 08:00（辰时）', true)).toHaveLength(1);
+    expect(parseResolution('delayed', '公元184年03月04日 08:00（辰时）')).toHaveLength(1);
+  });
+
   it('parses JSON responses even when the model wraps them in markdown fences', () => {
     const result = parseNarratorResponse(`
 \`\`\`json
@@ -125,11 +304,84 @@ describe('parseNarratorResponse', () => {
         },
       ],
       writeback: {
+        playerRecoveryKind: 'none',
         turnSummary: {
           brief: '主角在城门处确认戒严消息。',
           playerActionSummary: '盘问门吏。',
           visibleConsequence: '城门守军对外来者更警惕。',
           memoryImportance: 'medium',
+          privateAssetAcquisitions: [
+            {
+              sourceRefId: 'asset-acquisition-turn-1-manor',
+              privateAssetId: 'asset_lin_fort',
+              assetName: '林氏坞堡',
+              kind: 'transfer',
+              type: 'estate',
+              ownerScope: 'personal',
+              status: 'active',
+              locationId: 'place_test_gate',
+              mu: 80,
+              households: 12,
+              summary: '原主当面交付契书，产权正式归入主角名下。',
+            },
+            {
+              sourceRefId: '',
+              assetName: '无效产业',
+              kind: 'claim',
+              summary: '只是单方面声称。',
+            },
+          ],
+          identityChanges: [
+            {
+              sourceRefId: 'identity-turn-1-gate-captain',
+              characterType: 'player',
+              characterId: 'player',
+              currentIdentity: '城门军侯',
+              currentIdentityDescription: '经正式任命负责城门轮值与盘查。',
+              identitySummary: '主角已经正式就任城门军侯。',
+              militaryTitle: '军侯',
+              personalEscortEntitlement: {
+                status: 'customary',
+                bases: ['military_command'],
+              },
+              summary: '任命文书已宣读并由主角当场接任。',
+            },
+          ],
+          npcAdmissions: [
+            {
+              sourceRefId: 'npc-admission-turn-1-xuchu',
+              npcId: 'npc_xuchu',
+              name: '许褚',
+              persistenceReason: 'historical_figure',
+              persistenceEvidence: '许褚已经接受主角招募并约定长期同行。',
+              summary: '历史人物许褚正式进入主角长期关系网。',
+            },
+            {
+              sourceRefId: '',
+              npcId: 'npc_invalid',
+              name: '无效人物',
+              persistenceReason: 'named_once',
+              persistenceEvidence: '',
+              summary: '',
+            },
+          ],
+          relationshipAdmissions: [
+            {
+              sourceRefId: 'relationship-turn-1-caocao',
+              relationshipKind: 'bond',
+              targetNpcIds: ['npc_gate_guard'],
+              targetNames: ['门吏'],
+              bondType: 'ally',
+              summary: '双方约定长期互通城门消息。',
+            },
+            {
+              sourceRefId: '',
+              relationshipKind: 'bond',
+              targetNames: [],
+              bondType: 'unknown',
+              summary: '',
+            },
+          ],
         },
         protagonistMemory: {
           recentTurnSummary: '主角盘问门吏，确认城中戒严。',
@@ -145,6 +397,15 @@ describe('parseNarratorResponse', () => {
             source: '亲历',
             content: '主角追问城中戒严缘由。',
             eventId: 'evt_gate_question',
+          },
+        ],
+        factionRecentActionSuggestions: [
+          {
+            factionId: 'faction_gate_command',
+            summary: '城门守军开始加倍盘查',
+            knownLevel: '亲历',
+            observedAt: '公元184年03月08日 08:15（辰时）',
+            sourceNote: '主角当面所见',
           },
         ],
         locationWriteSuggestions: [
@@ -190,10 +451,63 @@ describe('parseNarratorResponse', () => {
       brief: '主角在城门处确认戒严消息。',
       memoryImportance: 'medium',
     });
+    expect(result.writeback?.turnSummary?.privateAssetAcquisitions).toEqual([
+      {
+        sourceRefId: 'asset-acquisition-turn-1-manor',
+        privateAssetId: 'asset_lin_fort',
+        assetName: '林氏坞堡',
+        kind: 'transfer',
+        type: 'estate',
+        ownerScope: 'personal',
+        status: 'active',
+        locationId: 'place_test_gate',
+        mu: 80,
+        households: 12,
+        summary: '原主当面交付契书，产权正式归入主角名下。',
+      },
+    ]);
+    expect(result.writeback?.turnSummary?.identityChanges).toEqual([
+      {
+        sourceRefId: 'identity-turn-1-gate-captain',
+        characterType: 'player',
+        characterId: 'player',
+        currentIdentity: '城门军侯',
+        currentIdentityDescription: '经正式任命负责城门轮值与盘查。',
+        identitySummary: '主角已经正式就任城门军侯。',
+        militaryTitle: '军侯',
+        personalEscortEntitlement: {
+          status: 'customary',
+          bases: ['military_command'],
+        },
+        summary: '任命文书已宣读并由主角当场接任。',
+      },
+    ]);
+    expect(result.writeback?.turnSummary?.npcAdmissions).toEqual([{
+      sourceRefId: 'npc-admission-turn-1-xuchu',
+      npcId: 'npc_xuchu',
+      name: '许褚',
+      persistenceReason: 'historical_figure',
+      persistenceEvidence: '许褚已经接受主角招募并约定长期同行。',
+      summary: '历史人物许褚正式进入主角长期关系网。',
+    }]);
+    expect(result.writeback?.turnSummary?.relationshipAdmissions).toEqual([{
+      sourceRefId: 'relationship-turn-1-caocao',
+      relationshipKind: 'bond',
+      targetNpcIds: ['npc_gate_guard'],
+      targetNames: ['门吏'],
+      bondType: 'ally',
+      summary: '双方约定长期互通城门消息。',
+    }]);
     expect(result.writeback?.protagonistMemory?.recentTurnSummary).toBe('主角盘问门吏，确认城中戒严。');
     expect(result.writeback?.npcMemorySuggestions[0]).toMatchObject({
       npcId: 'npc_gate_guard',
       source: '亲历',
+    });
+    expect(result.writeback?.factionRecentActionSuggestions?.[0]).toMatchObject({
+      factionId: 'faction_gate_command',
+      summary: '城门守军开始加倍盘查',
+      knownLevel: '亲历',
+      sourceNote: '主角当面所见',
     });
     expect(result.writeback?.locationWriteSuggestions[0]).toMatchObject({
       name: '城门岗亭',
@@ -210,7 +524,104 @@ describe('parseNarratorResponse', () => {
       horizon: '近期',
     });
     expect(result.writeback?.worldEventSummary?.visibility).toBe('在场可知');
+    expect(result.writeback?.playerRecoveryKind).toBe('none');
     expect(result.statePatches).toHaveLength(1);
+  });
+
+  it.each([
+    ['none', 'none'],
+    ['rest', 'rest'],
+    ['treatment', 'treatment'],
+  ] as const)('parses the closed player recovery kind %s', (value, expected) => {
+    const result = parseNarratorResponse(JSON.stringify({
+      narrativeText: '本回合正文。',
+      suggestedActions: [],
+      writeback: {
+        playerRecoveryKind: value,
+        npcMemorySuggestions: [],
+        locationWriteSuggestions: [],
+        routeWriteSuggestions: [],
+        questChanges: [],
+        debugNotes: [],
+      },
+    }));
+
+    expect(result.writeback?.playerRecoveryKind).toBe(expected);
+  });
+
+  it.each([
+    undefined,
+    null,
+    'sleep',
+    true,
+    1,
+    { kind: 'rest' },
+  ])('does not coerce invalid player recovery semantics: %j', (value) => {
+    const writeback: Record<string, unknown> = {
+      npcMemorySuggestions: [],
+      locationWriteSuggestions: [],
+      routeWriteSuggestions: [],
+      questChanges: [],
+      debugNotes: [],
+    };
+    if (value !== undefined) writeback.playerRecoveryKind = value;
+    const result = parseNarratorResponse(JSON.stringify({
+      narrativeText: '本回合正文。',
+      suggestedActions: [],
+      writeback,
+    }));
+
+    expect(result.writeback?.playerRecoveryKind).toBeUndefined();
+  });
+
+  it('normalizes only unambiguous force aliases in unique-art targetMode', () => {
+    const result = parseNarratorResponse(JSON.stringify({
+      narrativeText: '赵云领副将之职，率军突击敌阵。',
+      suggestedActions: [],
+      writeback: {
+        semanticProjections: [{
+          projectionVersion: 1,
+          profileKind: 'ability',
+          sourceId: 'art_zhao_yun_dragon_formation',
+          status: 'executable',
+          rulesetScopes: ['war'],
+          effects: [{
+            trigger: 'before_attack',
+            condition: 'always',
+            operation: 'modify_accuracy',
+            target: 'all_allies',
+            value: 5,
+            priority: 20,
+          }],
+          sourceType: 'unique_art',
+          activation: 'active',
+          targetMode: 'enemy_force',
+          purpose: 'control',
+          powerClass: 'heavy',
+          powerMultiplier: 1.65,
+          staminaCost: 22,
+          accuracyModifier: 5,
+          maxHits: 1,
+          perEncounterLimit: 1,
+          blockable: true,
+          armorPiercing: false,
+          canCrit: false,
+          allowAutoUse: true,
+        }],
+        debugNotes: [],
+      },
+    }));
+
+    expect(result.writeback?.semanticProjections).toEqual([
+      expect.objectContaining({
+        sourceId: 'art_zhao_yun_dragon_formation',
+        targetMode: 'all_enemies',
+        allowAutoUse: false,
+      }),
+    ]);
+    expect(result.writeback?.debugNotes).toContain(
+      'Encounter V2 能力投影 art_zhao_yun_dragon_formation 已将 targetMode 结构别名 enemy_force 规范化为 all_enemies。 Encounter V2 能力投影 art_zhao_yun_dragon_formation 已将 heavy 绝艺的冲突字段 allowAutoUse 规范化为 false。',
+    );
   });
 
   it('parses structured protagonist profile writeback separately from protagonist memory', () => {
@@ -225,6 +636,11 @@ describe('parseNarratorResponse', () => {
           currentIdentity: '北军军侯',
           currentIdentityDescription: '统带北军一部的低阶军官，正被洛阳乱局卷入。',
           militaryTitle: '北军军侯',
+          personalEscortEntitlement: {
+            status: 'customary',
+            bases: ['military_command'],
+            updatedAt: '公元189年09月01日 12:00（午时）',
+          },
           appearance: '年少而清瘦，甲衣尚新，眉眼里有压不住的警觉。',
           personality: '谨慎敏锐，重承诺，也知道乱局里不能轻信人。',
           identitySummary: '汉室远支出身的北军军侯。',
@@ -245,11 +661,67 @@ describe('parseNarratorResponse', () => {
       birthOrigin: '汉室远支',
       currentIdentity: '北军军侯',
       militaryTitle: '北军军侯',
+      personalEscortEntitlement: {
+        status: 'customary',
+        bases: ['military_command'],
+      },
       appearance: '年少而清瘦，甲衣尚新，眉眼里有压不住的警觉。',
       personality: '谨慎敏锐，重承诺，也知道乱局里不能轻信人。',
       identitySummary: '汉室远支出身的北军军侯。',
     });
     expect(result.writeback?.protagonistMemory?.recentTurnSummary).toContain('确定身份');
+  });
+
+  it('rejects model-authored friendly scoped combatants while accepting the scene availability field', () => {
+    const encounterId = 'encounter_guard_boundary_001';
+    const result = parseNarratorResponse(JSON.stringify({
+      narrativeText: '三名匪徒已经挥刀扑来。',
+      suggestedActions: [],
+      writeback: {
+        encounterTransitionDecision: { mode: 'start', reason: '攻击已经发动' },
+        encounterStartIntent: {
+          contractVersion: 1,
+          encounterId,
+          kind: 'personal_combat',
+          rulesetVersion: 'combat-v2.0.0',
+          sourceTurnNumber: 1,
+          locationId: 'location_road',
+          reason: '匪徒袭击',
+          seed: 'seed_guard_boundary_001',
+          createdAt: '2026-07-31T00:00:00.000Z',
+          policy: {
+            lethality: 'standard',
+            allowRetreat: true,
+            allowSurrender: true,
+            allowCapture: true,
+            lootPolicy: 'actual_items_only',
+          },
+          playerParty: { actorIds: ['player', `${encounterId}:scoped:player_guard_1`] },
+          enemyParty: { actorIds: [`${encounterId}:scoped:enemy_1`] },
+          partySelection: 'locked',
+          escortAvailability: 'normal',
+          scopedCombatants: [
+            {
+              actorId: `${encounterId}:scoped:player_guard_1`,
+              name: '护卫',
+              archetype: 'regular',
+              weaponClass: 'standard',
+              armorClass: 'light',
+            },
+            {
+              actorId: `${encounterId}:scoped:enemy_1`,
+              name: '匪徒',
+              archetype: 'rabble',
+              weaponClass: 'light',
+              armorClass: 'none',
+            },
+          ],
+        },
+      },
+    }));
+
+    expect(result.writeback?.encounterStartIntent).toBeNull();
+    expect(result.writeback?.debugNotes.join('\n')).toContain('模型不得声明本地临时护卫');
   });
 
   it('parses dynamic writeback bridge fields from the V1 protocol', () => {
@@ -535,9 +1007,11 @@ describe('parseNarratorResponse', () => {
       suggestedActions: [],
       writeback: {
         npcProfileSuggestions: [
-          {
-            npcId: 'npc_gate_captain',
-            name: '门候',
+           {
+             npcId: 'npc_gate_captain',
+             name: '门候',
+             persistenceReason: 'active_system_role',
+             persistenceEvidence: '本回合已确认其长期负责洛阳城门盘查。',
             courtesyName: '伯安',
             aliases: ['老门候'],
             commonAddress: '门候',
@@ -583,6 +1057,8 @@ describe('parseNarratorResponse', () => {
     expect(result.writeback?.npcProfileSuggestions?.[0]).toMatchObject({
       npcId: 'npc_gate_captain',
       name: '门候',
+      persistenceReason: 'active_system_role',
+      persistenceEvidence: '本回合已确认其长期负责洛阳城门盘查。',
       currentIdentity: '城门门候',
       abilityScores: { 机运: 48 },
     });
@@ -592,6 +1068,35 @@ describe('parseNarratorResponse', () => {
       rarity: 'blue',
       checkHooks: [{ scope: '城门交涉', modifier: 6, note: '熟悉城门规矩。' }],
     });
+  });
+
+  it('deduplicates repeated NPC traits before they reach state commands', () => {
+    const result = parseNarratorResponse(JSON.stringify({
+      narrativeText: '军吏报上姓名。',
+      writeback: {
+        npcProfileSuggestions: [makeNpcProfileSuggestion({
+          traits: [
+            { id: 'trait_genius', label: '鬼才', description: '善谋。', source: 'history', rarity: 'blue' },
+            {
+              id: 'trait_genius_drifted',
+              label: ' 鬼 才 ',
+              description: '善于在复杂局势中迅速找到破局之法。',
+              source: 'event',
+              rarity: 'orange',
+            },
+          ],
+        })],
+      },
+    }));
+
+    expect(result.writeback?.npcProfileSuggestions?.[0].traits).toEqual([
+      expect.objectContaining({
+        id: 'trait_genius',
+        label: '鬼才',
+        rarity: 'orange',
+        description: '善于在复杂局势中迅速找到破局之法。',
+      }),
+    ]);
   });
 
   it('preserves every existing NPC equipment and inventory field', () => {
@@ -717,6 +1222,12 @@ describe('parseNarratorResponse', () => {
                 description: '能凭马蹄、车辙和风声辨别远近动静。',
                 effectSummary: '侦察、伏击预警和夜间行军时更易先察敌踪。',
                 source: 'opening',
+                acquisition: {
+                  kind: 'background',
+                  occurredAt: '公元189年09月01日 08:00（辰时）',
+                  sourceRefId: 'npc-profile:npc_old_scout',
+                  summary: '其长期斥候身份与多年行伍经历已经确立此能力。',
+                },
                 promptHint: '侦察、伏击预警或夜行时体现其听辨经验。',
                 checkHooks: [{ scope: '侦察', modifier: 6, note: '凭声辨敌踪。' }],
                 tags: ['斥候', '预警'],
@@ -739,6 +1250,10 @@ describe('parseNarratorResponse', () => {
       rarity: 'blue',
       domain: 'survival',
       level: 2,
+      acquisition: {
+        kind: 'background',
+        sourceRefId: 'npc-profile:npc_old_scout',
+      },
       promptHint: '侦察、伏击预警或夜行时体现其听辨经验。',
       checkHooks: [{ scope: '侦察', modifier: 6, note: '凭声辨敌踪。' }],
       tags: ['斥候', '预警'],

@@ -81,11 +81,18 @@ describe('EncounterDeterminism', () => {
   });
 
   it('rejects non-JSON-safe and circular canonical values', () => {
-    expect(() => canonicalStringify({ invalid: Number.NaN })).toThrow('有限数字');
-    expect(() => canonicalStringify({ invalid: undefined })).toThrow('JSON 安全值');
+    expect(() => canonicalStringify({ invalid: Number.NaN }))
+      .toThrow('规范化只接受有限数字。路径：$.invalid。');
+    expect(() => canonicalStringify({ nested: { invalid: undefined } }))
+      .toThrow('规范化只接受 JSON 安全值。路径：$.nested.invalid。');
+    expect(() => canonicalStringify({ list: ['valid', , 'also-valid'] }))
+      .toThrow('规范化只接受 JSON 安全值。路径：$.list[1]。');
+    expect(() => canonicalStringify({ createdAt: new Date() }))
+      .toThrow('规范化只接受普通 JSON 对象。路径：$.createdAt。');
     const circular: Record<string, unknown> = {};
     circular.self = circular;
-    expect(() => canonicalStringify(circular)).toThrow('循环引用');
+    expect(() => canonicalStringify(circular))
+      .toThrow('规范化值包含循环引用。路径：$.self。');
   });
 
   it('seals a deeply frozen immutable result and detects tampering', () => {

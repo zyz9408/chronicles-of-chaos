@@ -93,6 +93,17 @@ const basePlayer: Actor = {
 };
 
 describe('buildPlayerProfilePanelModel', () => {
+  it('displays the canonical birthday and derives the current age instead of trusting the snapshot', () => {
+    const model = buildPlayerProfilePanelModel(
+      { ...basePlayer, age: 99, birthDate: '公元166年09月02日' },
+      undefined,
+      '公元189年09月01日 08:00（辰时）',
+    );
+
+    expect(model.basicRows).toContainEqual({ label: '基本', value: '男 / 22岁' });
+    expect(model.basicRows).toContainEqual({ label: '出生日期', value: '公元166年09月02日' });
+  });
+
   it('builds a dedicated player profile model with identity, traits, equipment and memory', () => {
     const model = buildPlayerProfilePanelModel(basePlayer);
 

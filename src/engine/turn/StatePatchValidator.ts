@@ -317,6 +317,14 @@ function normalizeDeterministicRuntimeBoundCommand(
     };
   }
 
+  if (command.action === 'recordCharacterUniqueArtProgress' && command.characterType === 'player') {
+    return {
+      ...command,
+      characterId: state.player.id,
+      characterName: state.player.name,
+    };
+  }
+
   return command;
 }
 
@@ -343,8 +351,10 @@ function mergeExistingHoldingLedgerCommand(
     locationId: typeof incoming.locationId === 'string' ? incoming.locationId : previous.locationId,
   } as HoldingLedgerUpsertCommand);
 
+  const previousForMerge = normalizeLegacyHoldingCivilAdministration(previous);
+  const { controlEvidence: _previousControlEvidence, ...previousWithoutControlEvidence } = previousForMerge;
   const merged = {
-    ...normalizeLegacyHoldingCivilAdministration(previous),
+    ...previousWithoutControlEvidence,
     ...incoming,
     action: 'upsertHoldingLedger',
     holdingId: canonicalHoldingId,

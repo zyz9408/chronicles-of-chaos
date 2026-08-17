@@ -1,6 +1,10 @@
 import type { ConflictRecord, RuntimeState, TroopLedgerEntry } from '../engine/types';
+import { calculateHoldingMonthlyUpkeepPreview } from '../engine/holdings/HoldingAnnualSettlementRuntime';
 import { formatFactionTypeForDisplay } from '../engine/state/factionTypeNormalization';
 import { isCurrentTroopLedgerEntry } from '../engine/state/troopLifecycle';
+import {
+  resolveTroopFatiguePercent,
+} from '../engine/troops/TroopFatigue';
 
 export interface TroopPanelRosterItem {
   troopId: string;
@@ -50,6 +54,7 @@ export interface TroopPanelModel {
   groupTroops: TroopPanelRosterItem[];
   selectedTroopId: string | null;
   selectedTroop: TroopLedgerEntry | null;
+  officerRows: TroopPanelDetailRow[];
   overviewRows: TroopPanelDetailRow[];
   conditionRows: TroopPanelDetailRow[];
   movementRows: TroopPanelDetailRow[];
@@ -57,6 +62,7 @@ export interface TroopPanelModel {
   detailRows: TroopPanelDetailRow[];
   detailSections: TroopPanelDetailSection[];
   visualProfile: TroopPanelVisualProfile | null;
+  monthlyUpkeepNote: string | null;
   statusTags: string[];
   recentBattles: ConflictRecord[];
   intelNotice: string;
@@ -119,6 +125,10 @@ const TROOP_TYPE_LABELS: Record<string, string> = {
   militia: '民兵',
   archer: '弓弩',
   cavalry: '骑兵',
+  light_cavalry: '轻骑兵',
+  'light cavalry': '轻骑兵',
+  heavy_cavalry: '重骑兵',
+  'heavy cavalry': '重骑兵',
   infantry: '步卒',
   logistics: '辎重',
   naval: '水军',
@@ -186,10 +196,14 @@ export function buildTroopPanelModel(runtimeState: RuntimeState, selectedTroopId
     null;
   const recentBattles = selectedTroop ? findRecentBattles(runtimeState.conflicts ?? [], selectedTroop) : [];
   const detailRows = selectedTroop ? buildDetailRows(runtimeState, selectedTroop) : [];
-  const overviewRows = pickRowsByLabel(detailRows, ['所属势力', '主将', '番号', '当前任务', '当前位置', '最后已知位置', '对玩家关系']);
+  const monthlyUpkeepNote = selectedTroop
+    ? buildTroopMonthlyUpkeepNote(runtimeState, selectedTroop)
+    : null;
+  const officerRows = pickRowsByLabel(detailRows, ['主将', '副将', '军师']);
+  const overviewRows = pickRowsByLabel(detailRows, ['所属势力', '主将', '副将', '军师', '番号', '当前任务', '当前位置', '最后已知位置', '对玩家关系']);
   const conditionRows = pickRowsByLabel(detailRows, ['兵种', '规模', '精锐度', '士气', '训练', '补给', '整备', '疲劳', '状态']);
   const movementRows = pickRowsByLabel(detailRows, ['当前位置', '最后已知位置', '军令状态', '军令发出', '军令送达', '军令内容', '目标地点', '行军路线', '行军状态', '启程时间', '预计抵达', '抵达时间', '行军说明']);
-  const intelligenceRows = pickRowsByLabel(detailRows, ['消息时间', '可信度', '情报来源', '前归属势力', '归属变更时间', '归属变更原因', '父级部队', '拆分子部', '合并去向', '覆灭战事', '最近战事', '兵力变化', '变化原因']);
+  const intelligenceRows = pickRowsByLabel(detailRows, ['账本层级', '消息时间', '可信度', '情报来源', '前归属势力', '归属变更时间', '归属变更原因', '上级作战集群', '父级部队', '拆分子部', '合并去向', '覆灭战事', '最近战事', '兵力变化', '变化原因', '最近沿革']);
 
   return {
     rosterItems: troops.map((troop) => toRosterItem(runtimeState, troop)),
@@ -199,6 +213,7 @@ export function buildTroopPanelModel(runtimeState: RuntimeState, selectedTroopId
     groupTroops: selectedGroup?.troops.map((troop) => toRosterItem(runtimeState, troop)) ?? [],
     selectedTroopId: selectedTroop?.troopId ?? null,
     selectedTroop,
+    officerRows,
     overviewRows,
     conditionRows,
     movementRows,
@@ -206,10 +221,41 @@ export function buildTroopPanelModel(runtimeState: RuntimeState, selectedTroopId
     detailRows,
     detailSections: buildDetailSections(detailRows),
     visualProfile: selectedTroop ? buildVisualProfile(selectedTroop) : null,
+    monthlyUpkeepNote,
     statusTags: selectedTroop?.statusTags ?? [],
     recentBattles,
     intelNotice: '这里只显示玩家已知情报中的部队信息；消息时间不是实时上帝视角，后续需通过剧情、探查或回报更新。',
   };
+}
+
+function buildTroopMonthlyUpkeepNote(
+  runtimeState: RuntimeState,
+  troop: TroopLedgerEntry,
+): string | null {
+  const preview = calculateHoldingMonthlyUpkeepPreview(runtimeState);
+  const breakdown = preview?.troopBreakdown.find((entry) => entry.troopId === troop.troopId);
+  if (!breakdown) return null;
+
+  const expenses = breakdown.requiredExpenses;
+  const resourceParts = [
+    expenses.money > 0 ? `钱财${expenses.money}贯` : '',
+    expenses.grain > 0 ? `粮草${expenses.grain}石` : '',
+    expenses.horses > 0 ? `战马${expenses.horses}匹` : '',
+    expenses.arms > 0 ? `军械${expenses.arms}件` : '',
+  ].filter(Boolean);
+  if (resourceParts.length === 0) return null;
+
+  const sourceLabel = {
+    player_resources: '玩家府库',
+    superior_provision: '上级供给',
+    mixed: '上级供给与玩家府库共同承担',
+  }[breakdown.source];
+  const troopType = formatTroopTypeForDisplay(troop.troopType ?? troop.specialDesignation, {
+    logisticsClass: troop.logisticsClass,
+  }) ?? '兵种未明';
+  const quality = troop.quality?.trim() || '未标定';
+
+  return `月度军需：${breakdown.size}人 × ${troopType} × 精锐度${quality} → ${resourceParts.join('、')}；来源：${sourceLabel}`;
 }
 
 function buildTroopGroups(runtimeState: RuntimeState, troops: TroopLedgerEntry[]): TroopPanelGroup[] {
@@ -224,7 +270,8 @@ function buildTroopGroups(runtimeState: RuntimeState, troops: TroopLedgerEntry[]
     const faction = firstTroop.factionId
       ? runtimeState.factions?.find((item) => item.factionId === firstTroop.factionId)
       : undefined;
-    const totalSize = groupTroops.reduce((sum, troop) => sum + troop.size, 0);
+    const totalSize = groupTroops.reduce((sum, troop) => sum + troopStrengthMidpoint(troop), 0);
+    const hasIntelligenceOnly = groupTroops.some((troop) => troop.detailLevel === 'intelligence');
     const groupDisplay = resolveTroopGroupDisplay(runtimeState, firstTroop, faction);
 
     return {
@@ -234,7 +281,7 @@ function buildTroopGroups(runtimeState: RuntimeState, troops: TroopLedgerEntry[]
         name: groupDisplay.name,
         subtitle: groupDisplay.subtitle,
         troopCount: groupTroops.length,
-        totalSizeText: `${totalSize}人`,
+        totalSizeText: totalSize > 0 ? `${hasIntelligenceOnly ? '约' : ''}${totalSize}人` : '兵力未明',
         relationSummary: summarizeValues(groupTroops.map((troop) => formatTroopRelation(troop.relationToPlayer))),
         statusSummary: summarizeValues(groupTroops.map((troop) => (
           formatLifecycleStatus(troop.lifecycleStatus) ?? formatStrengthTrend(troop.strengthTrend) ?? '已知'
@@ -258,20 +305,27 @@ function summarizeValues(values: Array<string | undefined>): string {
 }
 
 function toRosterItem(runtimeState: RuntimeState, troop: TroopLedgerEntry): TroopPanelRosterItem {
-  const typeText = formatTroopType(troop.troopType ?? troop.specialDesignation);
+  const typeText = formatTroopTypeForDisplay(troop.troopType ?? troop.specialDesignation, {
+    logisticsClass: troop.logisticsClass,
+  });
   const factionText = resolveTroopAffiliationLabel(runtimeState, troop);
   return {
     troopId: troop.troopId,
     name: troop.name,
     subtitle: [typeText, factionText].filter(Boolean).join(' / '),
-    sizeText: `${troop.size}人`,
-    statusText: formatLifecycleStatus(troop.lifecycleStatus) ?? formatStrengthTrend(troop.strengthTrend) ?? '已知',
+    sizeText: formatTroopStrength(troop),
+    statusText: troop.detailLevel === 'intelligence'
+      ? '军情档案'
+      : formatLifecycleStatus(troop.lifecycleStatus) ?? formatStrengthTrend(troop.strengthTrend) ?? '已知',
     relationToPlayer: formatTroopRelation(troop.relationToPlayer),
   };
 }
 
 function buildDetailRows(runtimeState: RuntimeState, troop: TroopLedgerEntry): TroopPanelDetailRow[] {
+  const intelligenceOnly = troop.detailLevel === 'intelligence';
+  const fatiguePercent = intelligenceOnly ? undefined : resolveTroopFatiguePercent(troop);
   const exactPositionVisible = isPlayerCommandedTroop(runtimeState, troop) || isSelfRelatedTroop(troop);
+  const missingOfficerLabel = exactPositionVisible ? '未任命' : '未明';
   const positionLabel = exactPositionVisible ? '当前位置' : '最后已知位置';
   const positionId = exactPositionVisible
     ? troop.locationId ?? troop.lastKnownLocationId
@@ -281,18 +335,25 @@ function buildDetailRows(runtimeState: RuntimeState, troop: TroopLedgerEntry): T
     makeRow('前归属势力', resolveFactionLabel(runtimeState, troop.previousFactionId)),
     makeRow('归属变更时间', troop.allegianceChangedAt),
     makeRow('归属变更原因', troop.allegianceChangeReason),
+    makeRow('账本层级', intelligenceOnly ? '军情档案（不可直接参战）' : '完整作战建制'),
     makeRow('指挥关系', formatCommandRelationship(runtimeState, troop)),
-    makeRow('主将', resolveTroopLeaderLabel(runtimeState, troop)),
-    makeRow('带兵副手', resolveTroopDeputyLabel(runtimeState, troop)),
-    makeRow('兵种', formatTroopType(troop.troopType)),
+    makeRow('主将', resolveTroopLeaderLabel(runtimeState, troop) ?? missingOfficerLabel),
+    makeRow('副将', resolveTroopDeputyLabel(runtimeState, troop) ?? missingOfficerLabel),
+    makeRow('军师', resolveNpcLabel(runtimeState, troop.strategistNpcId) ?? missingOfficerLabel),
+    makeRow('兵种', formatTroopTypeForDisplay(troop.troopType, {
+      logisticsClass: troop.logisticsClass,
+    })),
     makeRow('番号', troop.specialDesignation),
-    makeRow('规模', `${troop.size}人`, troop.previousSize !== undefined ? `上次记录 ${troop.previousSize}人` : undefined),
-    makeRow('精锐度', troop.quality),
-    makeRow('士气', String(troop.morale)),
-    makeRow('训练', String(troop.training)),
-    makeRow('补给', troop.supplies),
-    makeRow('整备', troop.readiness),
-    makeRow('疲劳', troop.fatigue),
+    makeRow('规模', formatTroopStrength(troop), troop.previousSize !== undefined ? `上次记录 ${troop.previousSize}人` : troop.strengthEstimate?.basis),
+    makeRow('精锐度', intelligenceOnly ? undefined : troop.quality),
+    makeRow('士气', intelligenceOnly ? undefined : String(troop.morale)),
+    makeRow('训练', intelligenceOnly ? undefined : String(troop.training)),
+    makeRow('补给', intelligenceOnly ? undefined : troop.supplies),
+    makeRow('整备', intelligenceOnly ? undefined : troop.readiness),
+    makeRow(
+      '疲劳',
+      fatiguePercent === undefined ? undefined : `${fatiguePercent}/100`,
+    ),
     makeRow('状态', formatLifecycleStatus(troop.lifecycleStatus)),
     makeRow(positionLabel, resolveLocationLabel(runtimeState, positionId) ?? '位置未确认'),
     makeRow('军令状态', formatOrderStatus(troop.orderStatus)),
@@ -311,6 +372,7 @@ function buildDetailRows(runtimeState: RuntimeState, troop: TroopLedgerEntry): T
     makeRow('情报来源', troop.sourceNote),
     makeRow('当前任务', troop.task),
     makeRow('对玩家关系', formatTroopRelation(troop.relationToPlayer)),
+    makeRow('上级作战集群', resolveTroopLabel(runtimeState, troop.operationalParentForceId)),
     makeRow('父级部队', resolveTroopLabel(runtimeState, troop.parentTroopId)),
     makeRow('拆分子部', troop.childTroopIds?.map((troopId) => resolveTroopLabel(runtimeState, troopId)).filter(Boolean).join(' / ')),
     makeRow('合并去向', resolveTroopLabel(runtimeState, troop.mergedIntoTroopId)),
@@ -318,6 +380,7 @@ function buildDetailRows(runtimeState: RuntimeState, troop: TroopLedgerEntry): T
     makeRow('最近战事', resolveConflictLabel(runtimeState, troop.lastBattleId)),
     makeRow('兵力变化', formatStrengthTrend(troop.strengthTrend)),
     makeRow('变化原因', troop.lastChangeReason),
+    makeRow('最近沿革', troop.changeHistory?.[troop.changeHistory.length - 1]?.summary),
   ].filter((row): row is TroopPanelDetailRow => row !== null);
 }
 
@@ -348,7 +411,7 @@ function buildDetailSections(rows: TroopPanelDetailRow[]): TroopPanelDetailSecti
     {
       key: 'command',
       title: '统属与任务',
-      labels: ['所属势力', '指挥关系', '主将', '带兵副手', '当前位置', '最后已知位置', '当前任务', '对玩家关系'],
+      labels: ['所属势力', '指挥关系', '上级作战集群', '主将', '副将', '军师', '当前位置', '最后已知位置', '当前任务', '对玩家关系'],
     },
     {
       key: 'condition',
@@ -363,7 +426,7 @@ function buildDetailSections(rows: TroopPanelDetailRow[]): TroopPanelDetailSecti
     {
       key: 'intelligence',
       title: '情报与沿革',
-      labels: ['消息时间', '可信度', '情报来源', '前归属势力', '归属变更时间', '归属变更原因', '父级部队', '拆分子部', '合并去向', '覆灭战事', '最近战事', '变化原因'],
+      labels: ['账本层级', '消息时间', '可信度', '情报来源', '前归属势力', '归属变更时间', '归属变更原因', '父级部队', '拆分子部', '合并去向', '覆灭战事', '最近战事', '变化原因', '最近沿革'],
     },
   ];
 
@@ -456,10 +519,9 @@ function resolveNpcLabel(runtimeState: RuntimeState, npcId?: string): string | u
 }
 
 function resolveTroopLeaderLabel(runtimeState: RuntimeState, troop: TroopLedgerEntry): string | undefined {
-  if (isPlayerCommandedTroop(runtimeState, troop)) {
-    return resolvePlayerLeaderLabel(runtimeState);
+  if (!troop.leaderNpcId) {
+    return isPlayerCommandedTroop(runtimeState, troop) ? resolvePlayerLeaderLabel(runtimeState) : undefined;
   }
-  if (!troop.leaderNpcId) return undefined;
   if (isPlayerLeaderId(runtimeState, troop.leaderNpcId)) {
     return resolvePlayerLeaderLabel(runtimeState);
   }
@@ -472,21 +534,43 @@ function resolvePlayerLeaderLabel(runtimeState: RuntimeState): string {
 }
 
 function resolveTroopDeputyLabel(runtimeState: RuntimeState, troop: TroopLedgerEntry): string | undefined {
-  if (!isPlayerCommandedTroop(runtimeState, troop)) return undefined;
-  if (!troop.leaderNpcId || isPlayerLeaderId(runtimeState, troop.leaderNpcId)) return undefined;
-  return resolveNpcLabel(runtimeState, troop.leaderNpcId);
+  const labels = (troop.deputyNpcIds ?? [])
+    .map((npcId) => resolveNpcLabel(runtimeState, npcId))
+    .filter((label): label is string => Boolean(label));
+  return labels.length > 0 ? labels.join('、') : undefined;
 }
 
 function buildVisualProfile(troop: TroopLedgerEntry): TroopPanelVisualProfile {
-  const troopTypeText = formatTroopType(troop.troopType ?? troop.specialDesignation) ?? '兵种未明';
-  const sizeText = `${troop.size}人`;
-  const qualityText = troop.quality ?? '未明';
+  const troopTypeText = formatTroopTypeForDisplay(troop.troopType ?? troop.specialDesignation, {
+    logisticsClass: troop.logisticsClass,
+  }) ?? '兵种未明';
+  const sizeText = formatTroopStrength(troop);
+  const qualityText = troop.detailLevel === 'intelligence' ? '军情未明' : troop.quality ?? '未明';
   return {
     troopTypeText,
     sizeText,
     qualityText,
     caption: `${troopTypeText} · ${sizeText} · 精锐度 ${qualityText}`,
   };
+}
+
+function troopStrengthMidpoint(troop: TroopLedgerEntry): number {
+  if (troop.detailLevel !== 'intelligence') return Math.max(0, troop.size);
+  if (troop.strengthEstimate) {
+    return Math.round((troop.strengthEstimate.min + troop.strengthEstimate.max) / 2);
+  }
+  return Math.max(0, troop.size);
+}
+
+function formatTroopStrength(troop: TroopLedgerEntry): string {
+  if (troop.detailLevel !== 'intelligence') return `${troop.size}人`;
+  const estimate = troop.strengthEstimate;
+  if (estimate) {
+    return estimate.min === estimate.max
+      ? `约${estimate.min}人`
+      : `约${estimate.min}—${estimate.max}人`;
+  }
+  return troop.size > 0 ? `约${troop.size}人` : '兵力未明';
 }
 
 function resolveLocationLabel(runtimeState: RuntimeState, locationId?: string): string | undefined {
@@ -513,10 +597,21 @@ function resolveRouteLabel(runtimeState: RuntimeState, routeId?: string): string
     ?? '未登记路线';
 }
 
-function formatTroopType(value?: string): string | undefined {
+export function formatTroopTypeForDisplay(
+  value?: string,
+  projection?: {
+    logisticsClass?: TroopLedgerEntry['logisticsClass'];
+    primaryClass?: string;
+    tags?: readonly string[];
+  },
+): string | undefined {
+  if (projection?.logisticsClass === 'heavy_cavalry'
+    || (projection?.primaryClass === 'cavalry' && projection.tags?.includes('heavy'))) {
+    return '重骑兵';
+  }
   if (!value?.trim()) return undefined;
   const key = value.trim();
-  const localized = TROOP_TYPE_LABELS[key];
+  const localized = TROOP_TYPE_LABELS[key] ?? TROOP_TYPE_LABELS[key.toLowerCase()];
   if (localized) return localized;
   if (GENERIC_TROOP_TYPE_WORDS.has(key) || looksLikeEngineeringText(key)) return undefined;
   return key;

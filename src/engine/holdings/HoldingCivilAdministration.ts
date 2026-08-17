@@ -2,6 +2,7 @@ import type {
   HoldingCivilAdministrationScope,
   HoldingLedgerEntry,
 } from '../types';
+import { resolveHoldingCivilScaleLevel } from './HoldingCapacityPolicy';
 
 export const HOLDING_CIVIL_ADMINISTRATION_SCOPES: HoldingCivilAdministrationScope[] = [
   'none',
@@ -52,7 +53,7 @@ const CIVIL_ADMINISTRATION_FIELDS = [
 
 type HoldingCivilAdministrationInput = Partial<Pick<
   HoldingLedgerEntry,
-  'civilAdministrationScope' | (typeof CIVIL_ADMINISTRATION_FIELDS)[number]
+  'civilAdministrationScope' | 'civilScaleLevel' | (typeof CIVIL_ADMINISTRATION_FIELDS)[number]
 >>;
 
 export function isHoldingCivilAdministrationScope(
@@ -123,6 +124,7 @@ export function normalizeLegacyHoldingCivilAdministration(
   const normalized: HoldingLedgerEntry = {
     ...holding,
     civilAdministrationScope: scope,
+    civilScaleLevel: resolveHoldingCivilScaleLevel(holding, scope),
   };
 
   if (scope === 'none') {
@@ -131,6 +133,7 @@ export function normalizeLegacyHoldingCivilAdministration(
       delete normalized[field];
     }
     delete normalized.corruption;
+    delete normalized.civilScaleLevel;
   } else if (scope === 'households') {
     normalized.agriculture = 0;
     for (const field of LAND_REGISTER_FIELDS) delete normalized[field];
@@ -154,6 +157,7 @@ export function mergeHoldingCivilAdministrationTransition(
   const normalized = normalizeLegacyHoldingCivilAdministration({
     ...merged,
     civilAdministrationScope: nextScope,
+    civilScaleLevel: incoming.civilScaleLevel ?? normalizedPrevious.civilScaleLevel,
   });
 
   for (const field of CIVIL_ADMINISTRATION_FIELDS) {

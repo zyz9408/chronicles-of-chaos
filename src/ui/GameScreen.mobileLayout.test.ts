@@ -2,10 +2,12 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  derivePlayerSidebarAge,
   formatMobileTopBarDateLabel,
   getWeatherGlyph,
   MobileRegionSwitcher,
 } from './GameScreen';
+import type { Actor } from '../engine/types';
 
 describe('GameScreen mobile region switcher', () => {
   it('renders explicit profile, narrative, and systems regions with the active region exposed', () => {
@@ -45,5 +47,21 @@ describe('GameScreen mobile region switcher', () => {
       .toBe('中平元年 · 03/01 08:00 · 辰时');
     expect(formatMobileTopBarDateLabel('公元194年05月03日 17:00（酉时）'))
       .toBe('公元194年 · 05/03 17:00 · 酉时');
+  });
+
+  it('derives the sidebar age from the canonical birthday after game time advances', () => {
+    const player = {
+      id: 'historical_liu_xie',
+      name: '刘协',
+      roleType: 'player',
+      summary: '十岁开局的玩家角色。',
+      age: 10,
+      birthDate: '公元174年04月02日',
+      ageKnownAtDate: '公元184年04月02日 08:00（辰时）',
+    } as Actor;
+
+    expect(derivePlayerSidebarAge(player, '公元184年04月02日 08:00（辰时）')).toBe(10);
+    expect(derivePlayerSidebarAge(player, '公元186年04月02日 08:00（辰时）')).toBe(12);
+    expect(player.age).toBe(10);
   });
 });

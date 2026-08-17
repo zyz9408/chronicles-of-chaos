@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { StartBookmark, WorldBook } from '../types';
 import { worldBook_ThreeKingdoms } from '../../worldbooks/threeKingdoms';
+import { applyPatches } from '../turn/StatePatchApplier';
+import { deriveActorCurrentAge } from '../time/npcAge';
 import { createCustomOpeningState } from './createCustomOpeningState';
 
 const worldBook: WorldBook = {
@@ -62,6 +64,60 @@ const bookmark: StartBookmark = {
 };
 
 describe('createCustomOpeningState', () => {
+  it('persists the selected month and day as a complete birthday and derives age from it', () => {
+    const state = createCustomOpeningState({
+      worldBook,
+      bookmark,
+      playerName: '刘良',
+      playerSex: '男',
+      playerAge: 22,
+      playerBirthMonth: 10,
+      playerBirthDay: 18,
+      origin: '寒门士子',
+      locationId: 'loc_market_town',
+      situationSummary: '想在乱世中寻一条路。',
+    });
+
+    expect(state.player.birthDate).toBe('公元166年10月18日');
+    expect(deriveActorCurrentAge(state.player, state.currentDate)).toBe(22);
+  });
+
+  it('persists current-save difficulty and perspective with compatible defaults', () => {
+    const selected = createCustomOpeningState({
+      worldBook,
+      bookmark,
+      playerName: '刘良',
+      playerSex: '男',
+      playerAge: 22,
+      origin: '寒门士子',
+      locationId: 'loc_market_town',
+      situationSummary: '想在乱世中寻一条路。',
+      gameDifficulty: 'hard',
+      combatDifficulty: 'easy',
+      warDifficulty: 'brutal',
+      narrativePerspective: 'third_person',
+    });
+    const fallback = createCustomOpeningState({
+      worldBook,
+      bookmark,
+      playerName: '刘良',
+      playerSex: '男',
+      playerAge: 22,
+      origin: '寒门士子',
+      locationId: 'loc_market_town',
+      situationSummary: '想在乱世中寻一条路。',
+    });
+
+    expect(selected.gameDifficulty).toBe('hard');
+    expect(selected.combatDifficulty).toBe('easy');
+    expect(selected.warDifficulty).toBe('brutal');
+    expect(selected.narrativePerspective).toBe('third_person');
+    expect(fallback.gameDifficulty).toBe('standard');
+    expect(fallback.combatDifficulty).toBe('standard');
+    expect(fallback.warDifficulty).toBe('standard');
+    expect(fallback.narrativePerspective).toBe('second_person');
+  });
+
   it('defaults worldline knowledge settings for new openings', () => {
     const state = createCustomOpeningState({
       worldBook,
@@ -204,7 +260,42 @@ describe('createCustomOpeningState', () => {
     expect(state.privateAssets).toEqual([]);
     expect(state.resources.money).toBe(0);
     expect(state.playerResources).not.toHaveProperty('钱财');
-    expect(state.worldStateDelta.openingLoadoutSummary).toContain('真开局 AI');
+    expect(state.worldStateDelta.openingLoadoutSummary).toContain('随开场剧情一并确定');
+  });
+
+  it('normalizes a seasonal opening bookmark before the first time advance', () => {
+    const state = createCustomOpeningState({
+      worldBook,
+      bookmark: {
+        ...bookmark,
+        id: 'bookmark_207_longzhong_plan',
+        startDate: '207年冬',
+      },
+      playerName: '杨方源',
+      playerSex: '男',
+      playerAge: 22,
+      origin: '寒门士子',
+      locationId: 'loc_market_town',
+      situationSummary: '建安十二年冬，身在新野。',
+    } as any);
+
+    expect(state.startDate).toBe('公元207年10月01日 08:00（辰时）');
+    expect(state.currentDate).toBe('公元207年10月01日 08:00（辰时）');
+    expect(state.currentTime).toMatchObject({ year: 207, month: 10, day: 1, hour: 8, minute: 0 });
+
+    const afterOpeningTurn = applyPatches(
+      state,
+      [{
+        type: 'timeAdvance',
+        payload: { minutesAdvanced: 30, reason: '参与新兵招募与校场试探', category: 'action' },
+        reason: '开局剧情消耗时间',
+      }],
+      1,
+      '参加募兵',
+      '建安十二年冬，校场点兵。',
+    );
+    expect(afterOpeningTurn.currentDate).toBe('公元207年10月01日 08:30（辰时）');
+    expect(afterOpeningTurn.currentTime).toMatchObject({ year: 207, month: 10, day: 1, hour: 8, minute: 30 });
   });
 
   it('keeps explicit opening personal money out of faction and holding resource ledgers', () => {

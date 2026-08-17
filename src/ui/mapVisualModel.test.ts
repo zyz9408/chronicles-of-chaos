@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import type { RuntimeState, WorldBook } from '../engine/types';
-import { buildRuntimeMapIndex } from '../engine/map/runtimeMap';
 import { worldBook_ThreeKingdoms } from '../worldbooks/threeKingdoms';
 import { buildMapVisualModel } from './mapVisualModel';
 
@@ -267,7 +266,7 @@ describe('buildMapVisualModel', () => {
     });
   });
 
-  it('projects static cities and passes through their nearest anchored region', () => {
+  it('projects known strategic cities and passes from their own geographic anchors', () => {
     const model = buildMapVisualModel(worldBook, baseState);
     const hulao = model.points.find((point) => point.id === 'place_sili_hulao_pass');
 
@@ -277,14 +276,15 @@ describe('buildMapVisualModel', () => {
       mapLayer: 'place',
       geographicSkeleton: true,
       minTier: 'mid',
-      anchorId: 'region_sili',
+      anchored: true,
+      anchorId: 'place_sili_hulao_pass',
     });
     expect(hulao?.x).toEqual(expect.any(Number));
     expect(hulao?.y).toEqual(expect.any(Number));
     expect(model.points.some((point) => point.id === 'place_sili_luoyang_inn')).toBe(false);
   });
 
-  it('includes every static city, pass and major crossing from the Three Kingdoms map index', () => {
+  it('does not invent regional hash coordinates for remote fixed geography without anchors', () => {
     const state: RuntimeState = {
       ...baseState,
       worldBookId: worldBook_ThreeKingdoms.manifest.id,
@@ -293,14 +293,13 @@ describe('buildMapVisualModel', () => {
       currentPlaceId: 'place_nanyang_xinye',
       currentSceneId: undefined,
     };
-    const geographicLevels = new Set(['城邑', '县城', '关隘', '谷口', '道口', '亭障', '港口', '渡口']);
-    const expectedIds = buildRuntimeMapIndex(worldBook_ThreeKingdoms, state).places
-      .filter((place) => geographicLevels.has(place.level))
-      .map((place) => place.id);
     const actualIds = new Set(buildMapVisualModel(worldBook_ThreeKingdoms, state).points.map((point) => point.id));
 
-    expect(expectedIds.length).toBeGreaterThan(80);
-    expect(expectedIds.filter((id) => !actualIds.has(id))).toEqual([]);
+    expect(actualIds.has('place_sili_hulao_pass')).toBe(true);
+    expect(actualIds.has('place_sili_huanyuan_pass')).toBe(true);
+    expect(actualIds.has('place_yingchuan_changshe')).toBe(true);
+    expect(actualIds.has('place_yanzhou_puyang')).toBe(false);
+    expect(actualIds.has('place_qingzhou_juxian')).toBe(false);
   });
 
   it('assigns static geography to national, regional and local display tiers', () => {
@@ -317,7 +316,6 @@ describe('buildMapVisualModel', () => {
     );
 
     expect(pointsById.get('place_sili_hulao_pass')?.minTier).toBe('mid');
-    expect(pointsById.get('place_yanzhou_puyang')?.minTier).toBe('mid');
     expect(pointsById.get('loc_yangzhou_jiujiang_seat')?.minTier).toBe('mid');
     expect(pointsById.get('place_sili_lantian')?.minTier).toBe('near');
     expect(pointsById.get('place_sili_dagu_pass')?.minTier).toBe('near');

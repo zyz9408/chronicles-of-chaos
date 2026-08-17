@@ -1,16 +1,20 @@
 import {
+  EQUIPMENT_QUALITY_BASELINES,
+  EQUIPMENT_QUALITY_LIMITS,
   assertValidEncounterStartIntent,
+  normalizeEquipmentQualityTier,
   validateSemanticProjection,
 } from './EncounterContractValidation';
 import { hashCanonicalValue } from './EncounterDeterminism';
 import type {
   EquipmentSemanticProfile,
   ItemCombatProfile,
+  ItemQualityTier,
   SemanticProjection,
   TraitSemanticProfile,
   UniqueArtSemanticProfile,
 } from './EncounterContracts';
-import { calculateDerivedSpeed, clamp } from './CombatRules';
+import { calculateDerivedSpeed, clamp, normalizeCombatStatuses } from './CombatRules';
 import type {
   CombatArmorSnapshot,
   CombatCharacterSource,
@@ -20,6 +24,12 @@ import type {
   CombatWeaponSnapshot,
   CombatantSnapshot,
 } from './CombatTypes';
+import {
+  ensureUniqueArtCompatibilityProfiles,
+  materializeLevelledUniqueArtProjection,
+} from './UniqueArtProjectionRuntime';
+import { normalizeEncounterDifficulty } from '../settings/GameDifficulty';
+import { projectEquippedItems } from '../character/loadoutIdentity';
 
 export interface CreateCombatEncounterSnapshotInput {
   sessionId: string;
@@ -28,6 +38,7 @@ export interface CreateCombatEncounterSnapshotInput {
   enemySources: CombatCharacterSource[];
   projections: CombatProjectionBundle;
   threatTier: CombatThreatTier;
+  combatDifficulty?: CombatEncounterSnapshot['combatDifficulty'];
   lootableItemIds: string[];
   capturableEquipmentItemIds: string[];
 }
@@ -49,6 +60,8 @@ const TREASURE_SPEED_BY_QUALITY = {
   orange: 10,
   red: 15,
 } as const;
+
+const MAX_COMBINED_TREASURE_SPEED_MODIFIER = 30;
 
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -86,18 +99,46 @@ function validateProjectionBundle(bundle: CombatProjectionBundle): Map<string, S
     if (!validation.valid) {
       throw new Error(`能力语义投影 ${String(profile?.sourceId ?? '(unknown)')} 校验失败：${validation.errors.join('；')}`);
     }
-    if (profiles.has(profile.sourceId)) throw new Error(`能力语义投影 sourceId 重复：${profile.sourceId}。`);
-    profiles.set(profile.sourceId, cloneJson(profile));
+    const normalized = materializeEquipmentProfile(profile);
+    const normalizedValidation = validateSemanticProjection(normalized);
+    if (!normalizedValidation.valid) {
+      throw new Error(`能力语义投影 ${String(profile?.sourceId ?? '(unknown)')} 归一失败：${normalizedValidation.errors.join('；')}`);
+    }
+    if (profiles.has(normalized.sourceId)) throw new Error(`能力语义投影 sourceId 重复：${normalized.sourceId}。`);
+    profiles.set(normalized.sourceId, normalized);
   }
   return profiles;
+}
+
+function materializeEquipmentProfile(profile: SemanticProjection): SemanticProjection {
+  const cloned = cloneJson(profile);
+  if (cloned.profileKind !== 'equipment' || cloned.status !== 'executable') return cloned;
+  const baselines = EQUIPMENT_QUALITY_BASELINES[cloned.qualityTier];
+  if (cloned.equipmentSlot === 'weapon') {
+    return {
+      ...cloned,
+      weaponWeight: cloned.weaponWeight ?? 'standard',
+      weaponBaseDamage: Math.max(cloned.weaponBaseDamage ?? baselines.weaponBaseDamage, baselines.weaponBaseDamage),
+      accuracyBonus: Math.max(cloned.accuracyBonus ?? baselines.accuracyBonus, baselines.accuracyBonus),
+      armorPenetration: Math.max(cloned.armorPenetration ?? baselines.armorPenetration, baselines.armorPenetration),
+    };
+  }
+  if (cloned.equipmentSlot === 'armor') {
+    return {
+      ...cloned,
+      armorWeight: cloned.armorWeight ?? 'medium',
+      blockBonus: Math.max(cloned.blockBonus ?? baselines.blockBonus, baselines.blockBonus),
+      armorTier: Math.max(cloned.armorTier ?? baselines.armorTier, baselines.armorTier) as 0 | 1 | 2 | 3 | 4 | 5,
+    };
+  }
+  return cloned;
 }
 
 export function createValidatedCombatProjectionBundle(
   profiles: SemanticProjection[],
 ): CombatProjectionBundle {
-  const bundle = { profiles: cloneJson(profiles) };
-  validateProjectionBundle(bundle);
-  return deepFreeze(bundle);
+  const normalized = [...validateProjectionBundle({ profiles: cloneJson(profiles) }).values()];
+  return deepFreeze({ profiles: normalized });
 }
 
 function collectProfiles<T extends SemanticProjection>(
@@ -119,7 +160,7 @@ function createCombatantSnapshot(
   const actorId = sourceActorId(source);
   const traitIds = (source.traits ?? []).map((trait) => trait.id);
   const artIds = (source.uniqueArts ?? []).map((art) => art.id);
-  const equipment = source.equipment ?? [];
+  const equipment = projectEquippedItems(source.equipment ?? []);
   const equipmentIds = equipment.map((item) => item.id);
   const itemIds = (source.inventory ?? []).map((item) => item.id);
 
@@ -132,7 +173,12 @@ function createCombatantSnapshot(
     artIds,
     profiles,
     (profile): profile is UniqueArtSemanticProfile => profile.profileKind === 'ability' && profile.sourceType === 'unique_art',
-  );
+  ).map((profile) => {
+    const art = (source.uniqueArts ?? []).find((candidate) => candidate.id === profile.sourceId);
+    return art
+      ? materializeLevelledUniqueArtProjection(art, profile, 'personal_combat')
+      : profile;
+  });
   const equipmentProfiles = collectProfiles<EquipmentSemanticProfile>(
     equipmentIds,
     profiles,
@@ -151,8 +197,26 @@ function createCombatantSnapshot(
     }
   }
 
+  const equippedBySlot = new Map<(typeof equipment)[number]['slot'], (typeof equipment)[number]>();
+  const equippedTreasures: (typeof equipment)[number][] = [];
+  for (const item of equipment) {
+    if (item.slot === 'treasure') {
+      equippedTreasures.push(item);
+      continue;
+    }
+    if (equippedBySlot.has(item.slot)) {
+      throw new Error(`${actorId} 的 ${item.slot} 槽位存在多件已装备物品。`);
+    }
+    equippedBySlot.set(item.slot, item);
+  }
+
   const equipmentBySlot = new Map<EquipmentSemanticProfile['equipmentSlot'], EquipmentSemanticProfile>();
+  const treasureProfiles: EquipmentSemanticProfile[] = [];
   for (const profile of equipmentProfiles) {
+    if (profile.equipmentSlot === 'treasure') {
+      treasureProfiles.push(profile);
+      continue;
+    }
     if (equipmentBySlot.has(profile.equipmentSlot)) {
       throw new Error(`${actorId} 的 ${profile.equipmentSlot} 存在多个可执行装备投影。`);
     }
@@ -162,38 +226,85 @@ function createCombatantSnapshot(
   const weaponProfile = equipmentBySlot.get('weapon');
   const armorProfile = equipmentBySlot.get('armor');
   const mountProfile = equipmentBySlot.get('mount');
-  const treasureProfile = equipmentBySlot.get('treasure');
-  const weapon: CombatWeaponSnapshot = weaponProfile ? {
-    sourceId: weaponProfile.sourceId,
-    weight: weaponProfile.weaponWeight ?? 'standard',
-    baseDamage: weaponProfile.weaponBaseDamage ?? 5,
-    accuracyBonus: weaponProfile.accuracyBonus ?? 0,
-    armorPenetration: weaponProfile.armorPenetration ?? 0,
+  const equippedWeapon = equippedBySlot.get('weapon');
+  const equippedArmor = equippedBySlot.get('armor');
+  const equippedMount = equippedBySlot.get('mount');
+  const weaponQuality: ItemQualityTier = normalizeEquipmentQualityTier(equippedWeapon?.quality)
+    ?? weaponProfile?.qualityTier
+    ?? 'white';
+  const armorQuality: ItemQualityTier = normalizeEquipmentQualityTier(equippedArmor?.quality)
+    ?? armorProfile?.qualityTier
+    ?? 'white';
+  const weaponBaselines = EQUIPMENT_QUALITY_BASELINES[weaponQuality];
+  const armorBaselines = EQUIPMENT_QUALITY_BASELINES[armorQuality];
+  const weaponLimits = EQUIPMENT_QUALITY_LIMITS[weaponQuality];
+  const armorLimits = EQUIPMENT_QUALITY_LIMITS[armorQuality];
+  const weapon: CombatWeaponSnapshot = weaponProfile || equippedWeapon ? {
+    sourceId: weaponProfile?.sourceId ?? equippedWeapon!.id,
+    qualityTier: weaponQuality,
+    weight: weaponProfile?.weaponWeight ?? 'standard',
+    baseDamage: clamp(
+      weaponProfile?.weaponBaseDamage ?? weaponBaselines.weaponBaseDamage,
+      weaponBaselines.weaponBaseDamage,
+      weaponLimits.weaponBaseDamage,
+    ),
+    accuracyBonus: clamp(
+      weaponProfile?.accuracyBonus ?? weaponBaselines.accuracyBonus,
+      weaponBaselines.accuracyBonus,
+      weaponLimits.accuracyBonus,
+    ),
+    armorPenetration: clamp(
+      weaponProfile?.armorPenetration ?? weaponBaselines.armorPenetration,
+      weaponBaselines.armorPenetration,
+      weaponLimits.armorPenetration,
+    ),
   } : {
     sourceId: null,
+    qualityTier: null,
     weight: 'unarmed',
     baseDamage: 5,
     accuracyBonus: 0,
     armorPenetration: 0,
   };
-  const armor: CombatArmorSnapshot = armorProfile ? {
-    sourceId: armorProfile.sourceId,
-    weight: armorProfile.armorWeight ?? 'medium',
-    armorTier: armorProfile.armorTier ?? 0,
-    blockBonus: armorProfile.blockBonus ?? 0,
+  const armor: CombatArmorSnapshot = armorProfile || equippedArmor ? {
+    sourceId: armorProfile?.sourceId ?? equippedArmor!.id,
+    qualityTier: armorQuality,
+    weight: armorProfile?.armorWeight ?? 'medium',
+    armorTier: clamp(
+      armorProfile?.armorTier ?? armorBaselines.armorTier,
+      armorBaselines.armorTier,
+      armorLimits.armorTier,
+    ) as 0 | 1 | 2 | 3 | 4 | 5,
+    blockBonus: clamp(
+      armorProfile?.blockBonus ?? armorBaselines.blockBonus,
+      armorBaselines.blockBonus,
+      armorLimits.blockBonus,
+    ),
   } : {
     sourceId: null,
+    qualityTier: null,
     weight: 'none',
     armorTier: 0,
     blockBonus: 0,
   };
 
-  const mountSpeed = mountProfile
-    ? mountProfile.speedModifier ?? MOUNT_SPEED_BY_QUALITY[mountProfile.qualityTier]
-    : 0;
-  const treasureSpeed = treasureProfile
-    ? treasureProfile.speedModifier ?? TREASURE_SPEED_BY_QUALITY[treasureProfile.qualityTier]
-    : 0;
+  const mountQuality = normalizeEquipmentQualityTier(equippedMount?.quality)
+    ?? mountProfile?.qualityTier;
+  const mountSpeed = mountProfile?.speedModifier
+    ?? (mountQuality ? MOUNT_SPEED_BY_QUALITY[mountQuality] : 0);
+  const treasureProfilesBySourceId = new Map(
+    treasureProfiles.map((profile) => [profile.sourceId, profile]),
+  );
+  const treasureSpeed = clamp(
+    equippedTreasures.reduce((sum, item) => {
+      const profile = treasureProfilesBySourceId.get(item.id);
+      const quality = normalizeEquipmentQualityTier(item.quality) ?? profile?.qualityTier;
+      return sum + (profile?.speedModifier
+        ?? (quality ? TREASURE_SPEED_BY_QUALITY[quality] : 0));
+    }, 0),
+    -MAX_COMBINED_TREASURE_SPEED_MODIFIER,
+    MAX_COMBINED_TREASURE_SPEED_MODIFIER,
+  );
   const traitSpeed = traitProfiles.flatMap((profile) => profile.effects)
     .filter((effect) => effect.trigger === 'battle_start'
       && effect.condition === 'always'
@@ -209,6 +320,7 @@ function createCombatantSnapshot(
     side,
     stableOrder,
     persistent: source.persistent !== false,
+    ...(source.combatArchetype ? { combatArchetype: source.combatArchetype } : {}),
     level: Math.max(1, Math.trunc(finiteOr(source.level, 1))),
     xp: Math.max(0, Math.trunc(finiteOr(source.xp, 0))),
     martial: clamp(finiteOr(source.abilityScores?.武力, 50), 0, 100),
@@ -217,6 +329,7 @@ function createCombatantSnapshot(
     maxHp: 100,
     stamina,
     maxStamina: 100,
+    combatStatuses: normalizeCombatStatuses(source.combatStatuses),
     speed: calculateDerivedSpeed({
       weaponWeight: weapon.weight,
       armorWeight: armor.weight,
@@ -247,6 +360,10 @@ export function createCombatEncounterSnapshot(input: CreateCombatEncounterSnapsh
   if (!input.sessionId.trim()) throw new Error('sessionId 不能为空。');
   const profiles = validateProjectionBundle(input.projections);
   const allSources = [...input.playerSources, ...input.enemySources];
+  ensureUniqueArtCompatibilityProfiles(
+    profiles,
+    allSources.flatMap((source) => source.uniqueArts ?? []),
+  );
   const sourcesById = new Map<string, CombatCharacterSource>();
   for (const source of allSources) {
     const actorId = sourceActorId(source);
@@ -280,11 +397,12 @@ export function createCombatEncounterSnapshot(input: CreateCombatEncounterSnapsh
   }
 
   const hashPayload = {
-    snapshotVersion: 1 as const,
+    snapshotVersion: 2 as const,
     sessionId: input.sessionId,
     intent: cloneJson(input.intent),
     seed: input.intent.seed,
     threatTier: input.threatTier,
+    combatDifficulty: normalizeEncounterDifficulty('combat', input.combatDifficulty),
     combatants,
     lootableItemIds: [...input.lootableItemIds],
     capturableEquipmentItemIds: [...input.capturableEquipmentItemIds],

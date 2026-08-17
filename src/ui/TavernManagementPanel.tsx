@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { compileCreativePromptMessages } from '../engine/prompts/CreativePromptCompiler';
 import {
   DEFAULT_CUSTOM_COT_TEMPLATE,
@@ -55,6 +55,26 @@ function safeFileName(value: string): string {
   return value.replace(/[\\/:*?"<>|]+/g, '-').trim() || '酒馆预设';
 }
 
+async function readTavernPresetFile(file: File): Promise<string> {
+  if (typeof file.text === 'function') {
+    try {
+      return await file.text();
+    } catch {
+      // Some mobile document providers expose File.text() but reject its stream.
+      // FileReader remains the broadest fallback for those WebViews.
+    }
+  }
+  if (typeof FileReader === 'undefined') {
+    throw new Error('当前浏览器无法读取所选文件，请换用系统文件管理器后重试。');
+  }
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('读取文件失败，请确认文件已完整下载到本机。'));
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.readAsText(file, 'utf-8');
+  });
+}
+
 export const TavernManagementPanel: React.FC = () => {
   const [settings, setSettings] = useState<TavernManagementSettings>(
     () => loadTavernManagementSettings(),
@@ -66,11 +86,19 @@ export const TavernManagementPanel: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<'all' | TavernResolutionStatus>('all');
   const [expandedSlotKey, setExpandedSlotKey] = useState<string | null>(null);
   const [previewScope, setPreviewScope] = useState<CreativeNarrativeScope>('turn');
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const activeEntry = getActiveTavernPreset(settings);
 
-  const persist = (next: TavernManagementSettings): void => {
-    setSettings(saveTavernManagementSettings(next));
+  const persist = (next: TavernManagementSettings): boolean => {
+    try {
+      setSettings(saveTavernManagementSettings(next));
+      return true;
+    } catch (error) {
+      setFeedback(
+        `设置未保存：${error instanceof Error ? error.message : '浏览器本地存储不可用'}。`
+        + ' 请检查手机浏览器是否处于无痕模式，或删除不再使用的预设后重试。',
+      );
+      return false;
+    }
   };
 
   const updateActiveEntry = (
@@ -210,16 +238,17 @@ export const TavernManagementPanel: React.FC = () => {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
+    setFeedback(`正在读取“${file.name}”…`);
     try {
-      const imported = importTavernPreset(await file.text(), file.name);
+      const imported = importTavernPreset(await readTavernPresetFile(file), file.name);
       const duplicate = settings.entries.find(
         (entry) => entry.sourceHash === imported.entry.sourceHash,
       );
       if (duplicate) {
-        persist({
+        if (!persist({
           ...settings,
           activePresetId: duplicate.id,
-        });
+        })) return;
         setFeedback('该预设已经导入，已切换到现有条目。');
         return;
       }
@@ -227,12 +256,12 @@ export const TavernManagementPanel: React.FC = () => {
         setFeedback(`最多保存 ${MAX_TAVERN_PRESETS} 份酒馆预设，请先删除不再使用的条目。`);
         return;
       }
-      persist({
+      if (!persist({
         ...settings,
         enabled: imported.exceedsInjectionBudget ? settings.enabled : true,
         activePresetId: imported.entry.id,
         entries: [...settings.entries, imported.entry],
-      });
+      })) return;
       setFeedback([
         `已导入“${imported.entry.name}”。`,
         imported.repaired ? '文件包含常见 JSON 格式问题，已自动修复。' : '',
@@ -251,12 +280,12 @@ export const TavernManagementPanel: React.FC = () => {
       return;
     }
     const entries = settings.entries.filter((entry) => entry.id !== activeEntry.id);
-    persist({
+    if (!persist({
       ...settings,
       enabled: entries.length > 0 && settings.enabled,
       activePresetId: entries[0]?.id ?? null,
       entries,
-    });
+    })) return;
     setFeedback('酒馆预设已删除。');
   };
 
@@ -283,7 +312,7 @@ export const TavernManagementPanel: React.FC = () => {
       <div className="tavern-tab-list" role="tablist" aria-label="酒馆预设管理">
         {([
           ['library', '预设库'],
-          ['items', '条目管理'],
+          ['items', '提示词开关'],
           ['cot', '自定义 CoT'],
           ['preview', '注入预览'],
         ] as Array<[TavernTab, string]>).map(([id, label]) => (
@@ -300,11 +329,15 @@ export const TavernManagementPanel: React.FC = () => {
         ))}
       </div>
 
-      {feedback && <p className="settings-status tavern-feedback">{feedback}</p>}
+      {feedback && (
+        <p className="settings-status tavern-feedback" role="status" aria-live="polite">
+          {feedback}
+        </p>
+      )}
 
       <div className="tavern-tab-workspace">
         {tab === 'library' && (
-          <section className="tavern-library-layout">
+          <section className={`tavern-library-layout ${settings.entries.length === 0 ? 'has-no-presets' : ''}`}>
             <div className="tavern-library-list">
               {settings.entries.map((entry) => (
                 <button
@@ -324,17 +357,16 @@ export const TavernManagementPanel: React.FC = () => {
             </div>
             <div className="tavern-library-editor">
               <div className="settings-heading-actions">
-                <button type="button" className="nav-btn primary" onClick={() => fileInputRef.current?.click()}>
+                <label className="nav-btn primary tavern-import-trigger">
                   导入酒馆预设
-                </button>
-                <input
-                  ref={fileInputRef}
-                  hidden
-                  type="file"
-                  accept=".json,application/json"
-                  aria-label="导入酒馆预设"
-                  onChange={handleImport}
-                />
+                  <input
+                    className="tavern-import-input"
+                    type="file"
+                    accept=".json,application/json,text/json,text/plain,application/octet-stream"
+                    aria-label="选择酒馆预设文件"
+                    onChange={handleImport}
+                  />
+                </label>
                 <button
                   type="button"
                   className="nav-btn"
@@ -390,6 +422,16 @@ export const TavernManagementPanel: React.FC = () => {
                   <div>
                     <span>当前顺序项</span>
                     <strong>{order?.order.length ?? 0}</strong>
+                  </div>
+                  <div className="tavern-profile-actions span-2">
+                    <button
+                      type="button"
+                      className="nav-btn primary"
+                      onClick={() => setTab('items')}
+                    >
+                      管理 {order?.order.length ?? 0} 项提示词开关
+                    </button>
+                    <span>可逐项启用、关闭并设置开局、普通回合或战斗适用范围。</span>
                   </div>
                   <p className="span-2">
                     导入只读取 prompts 与 prompt_order；温度、模型、API 地址、密钥、工具调用和网页搜索配置全部忽略。

@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  MAP_LOCAL_FOCUS_ZOOM,
+  MAP_MAX_ZOOM,
   buildMapLabelLayout,
   buildMapViewportModel,
   getVisibleMapPoints,
   shouldShowMapPointLabel,
+  stepMapZoom,
 } from './mapViewportModel';
 import type { MapVisualPoint } from './mapVisualModel';
 
@@ -171,6 +174,16 @@ describe('mapViewportModel', () => {
     expect(viewport.tier).toBe('detail');
     expect(viewport.panX).toBeLessThan(-250);
     expect(viewport.panY).toBeLessThan(-200);
+  });
+
+  it('supports a 24x inspection ceiling and progressively larger detail steps', () => {
+    expect(MAP_LOCAL_FOCUS_ZOOM).toBe(12);
+    expect(MAP_MAX_ZOOM).toBe(24);
+    expect(buildMapViewportModel({ zoom: 99 }).zoom).toBe(24);
+    expect(stepMapZoom(0.9, 1)).toBe(1.35);
+    expect(stepMapZoom(12, 1)).toBe(14.16);
+    expect(stepMapZoom(24, 1)).toBe(24);
+    expect(stepMapZoom(0.65, -1)).toBe(0.65);
   });
 
   it('shows state and core labels on the national view while keeping local labels tiered', () => {
@@ -360,5 +373,42 @@ describe('mapViewportModel', () => {
 
     expect(desktop.visibleLabelIds.size).toBeGreaterThan(mobile.visibleLabelIds.size);
     expect([...mobile.clustersByAnchorId.values()].some((cluster) => cluster.count > 0)).toBe(true);
+  });
+
+  it('dissolves nearby label clusters when the player reaches deep local zoom', () => {
+    const currentPoint: MapVisualPoint = {
+      ...runtimeCampPoint,
+      id: 'current_local_point',
+      name: '汉水大营',
+      x: 50,
+      y: 50,
+      isCurrent: true,
+      relevance: 'current',
+    };
+    const nearbyPoint: MapVisualPoint = {
+      ...runtimeCampPoint,
+      id: 'nearby_local_point',
+      name: '北岸渡口',
+      x: 50.65,
+      y: 50,
+      relevance: 'nearbyRoute',
+    };
+
+    const formerCeiling = buildMapLabelLayout({
+      points: [currentPoint, nearbyPoint],
+      zoom: 9.5,
+      viewportWidth: 840,
+      viewportHeight: 528,
+    });
+    const deepZoom = buildMapLabelLayout({
+      points: [currentPoint, nearbyPoint],
+      zoom: 24,
+      viewportWidth: 840,
+      viewportHeight: 528,
+    });
+
+    expect(formerCeiling.clustersByAnchorId.get(currentPoint.id)?.hiddenPointIds).toContain(nearbyPoint.id);
+    expect(deepZoom.visibleLabelIds).toEqual(new Set([currentPoint.id, nearbyPoint.id]));
+    expect(deepZoom.clustersByAnchorId.size).toBe(0);
   });
 });

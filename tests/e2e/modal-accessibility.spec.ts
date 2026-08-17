@@ -1,8 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { seedMainNarrativeApi } from './e2eStorage';
 
 async function startDebugGame(page: Page): Promise<void> {
-  await seedMainNarrativeApi(page);
+  await page.goto('/');
   await page.getByRole('button', { name: '新的征程' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '下一步' }).click();

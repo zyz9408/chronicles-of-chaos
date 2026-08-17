@@ -3,12 +3,15 @@ import type {
   DomesticReportPrivateAssetHighlight,
   DomesticReportProjectHighlight,
   DomesticReportResourceDelta,
+  HoldingCivilScaleLevel,
   HoldingLedgerEntry,
   PrivateAssetEntry,
   PrivateAssetProjectEntry,
   ResourceLedger,
   TroopLedgerEntry,
 } from '../types';
+import { isHeavyCavalryTroop } from '../troops/HeavyCavalryFormation';
+import { clampPrivateAssetToAbsoluteLimits } from './PrivateAssetPolicy';
 import {
   buildHoldingAnnualSettlementReportId,
   HOLDING_ANNUAL_SETTLEMENT_KIND,
@@ -19,6 +22,12 @@ import {
   normalizeLegacyHoldingCivilAdministration,
   resolveHoldingCivilAdministrationScope,
 } from './HoldingCivilAdministration';
+import {
+  getHoldingCapacityLimits,
+  HOLDING_SCALE_BASE_FARMLAND_MU,
+  HOLDING_SCALE_BASE_HOUSEHOLDS,
+  resolveHoldingCivilScaleLevel,
+} from './HoldingCapacityPolicy';
 
 export type HoldingLevyType = keyof DomesticReportResourceDelta;
 export type HoldingLevyIntensity = 'light' | 'medium' | 'heavy' | 'exhaustive';
@@ -85,7 +94,7 @@ const ZERO_DELTA: DomesticReportResourceDelta = {
   recruits: 0,
 };
 
-const SCALE_BASE_YIELD: Record<HoldingLedgerEntry['scaleLevel'], DomesticReportResourceDelta> = {
+const SCALE_BASE_YIELD: Record<HoldingCivilScaleLevel, DomesticReportResourceDelta> = {
   1: { money: 20, grain: 1000, horses: 5, arms: 20, recruits: 80 },
   2: { money: 60, grain: 3000, horses: 12, arms: 60, recruits: 200 },
   3: { money: 160, grain: 8000, horses: 30, arms: 160, recruits: 500 },
@@ -93,21 +102,9 @@ const SCALE_BASE_YIELD: Record<HoldingLedgerEntry['scaleLevel'], DomesticReportR
   5: { money: 1000, grain: 50000, horses: 150, arms: 1000, recruits: 3000 },
 };
 
-const SCALE_BASE_FARMLAND_MU: Record<HoldingLedgerEntry['scaleLevel'], number> = {
-  1: 1500,
-  2: 4500,
-  3: 12000,
-  4: 30000,
-  5: 70000,
-};
-
-const SCALE_BASE_HOUSEHOLDS: Record<HoldingLedgerEntry['scaleLevel'], number> = {
-  1: 250,
-  2: 700,
-  3: 1800,
-  4: 4200,
-  5: 10000,
-};
+const HOUSEHOLD_BASE_ANNUAL_CASH_TAX = 0.24;
+const HOUSEHOLD_TAX_POPULATION_MODIFIER_MIN = 0.8;
+const HOUSEHOLD_TAX_POPULATION_MODIFIER_SPAN = 0.4;
 
 const LEVY_MULTIPLIERS: Record<HoldingLevyIntensity, number> = {
   light: 0.2,
@@ -127,7 +124,7 @@ export function calculateHoldingAnnualSettlement(
   const privateAssetHighlights = buildPrivateAssetHighlights(input.privateAssets ?? []);
   const privateIncome = (input.privateAssets ?? [])
     .filter(isAnnualSettlementPrivateAsset)
-    .map(calculatePrivateAssetIncome)
+    .map(calculatePrivateAssetAnnualIncome)
     .reduce(addDelta, { ...ZERO_DELTA });
   const income = addDelta(holdingIncome, privateIncome);
   const expenses = { ...ZERO_DELTA };
@@ -294,7 +291,7 @@ export function isAnnualSettlementPrivateAsset(asset: PrivateAssetEntry): boolea
 }
 
 export function isUpkeepTroop(troop: TroopLedgerEntry): boolean {
-  return isCurrentTroopLedgerEntry(troop);
+  return troop.detailLevel !== 'intelligence' && isCurrentTroopLedgerEntry(troop);
 }
 
 export function calculateHoldingOutputProjection(holding: HoldingLedgerEntry): HoldingOutputProjection {
@@ -320,12 +317,32 @@ export function calculateHoldingOutputProjection(holding: HoldingLedgerEntry): H
     };
   }
 
-  const base = SCALE_BASE_YIELD[holding.scaleLevel];
-  const farmlandFactor = hasLandAdministration && holding.farmlandMu !== undefined
-    ? clampRatio(holding.farmlandMu / SCALE_BASE_FARMLAND_MU[holding.scaleLevel], 0.3, 3)
+  const civilScaleLevel = resolveHoldingCivilScaleLevel(holding, civilScope);
+  const capacity = getHoldingCapacityLimits({ ...holding, civilScaleLevel }, civilScope);
+  const base = SCALE_BASE_YIELD[civilScaleLevel];
+  const effectiveFarmlandMu = Math.min(
+    holding.farmlandMu ?? capacity.maxFarmlandMu,
+    capacity.maxFarmlandMu,
+  );
+  const effectiveHouseholds = Math.min(
+    holding.registeredHouseholds ?? capacity.maxRegisteredHouseholds,
+    capacity.maxRegisteredHouseholds,
+  );
+  const farmlandFactor = hasLandAdministration
+    && holding.farmlandMu !== undefined
+    && capacity.maxFarmlandMu > 0
+    ? clampRatio(
+        effectiveFarmlandMu / HOLDING_SCALE_BASE_FARMLAND_MU[civilScaleLevel],
+        0.3,
+        capacity.maxFarmlandMu / HOLDING_SCALE_BASE_FARMLAND_MU[civilScaleLevel],
+      )
     : 1;
   const householdFactor = holding.registeredHouseholds !== undefined
-    ? clampRatio(holding.registeredHouseholds / SCALE_BASE_HOUSEHOLDS[holding.scaleLevel], 0.3, 3)
+    ? clampRatio(
+        effectiveHouseholds / HOLDING_SCALE_BASE_HOUSEHOLDS[civilScaleLevel],
+        0,
+        capacity.maxRegisteredHouseholds / HOLDING_SCALE_BASE_HOUSEHOLDS[civilScaleLevel],
+      )
     : 1;
   const populationModifier = 0.5 + holding.population / 200;
   const executionModifier = 0.5 + (holding.publicOrder + holding.popularSupport) / 400;
@@ -336,7 +353,13 @@ export function calculateHoldingOutputProjection(holding: HoldingLedgerEntry): H
     grain: hasLandAdministration
       ? roundResource(base.grain * scoreFactor(holding.agriculture) * farmlandFactor)
       : 0,
-    money: roundResource(base.money * scoreFactor(holding.commerce) * householdFactor * populationModifier),
+    money: calculateEstimatedHoldingMoney(
+      holding,
+      base.money,
+      householdFactor,
+      populationModifier,
+      capacity.maxRegisteredHouseholds,
+    ),
     recruits: legacyIncome.recruits,
     horses: legacyIncome.horses,
     arms: legacyIncome.arms,
@@ -358,6 +381,38 @@ export function calculateHoldingOutputProjection(holding: HoldingLedgerEntry): H
       grain: calculateCollectionRate(actualCollection.grain, estimatedOutput.grain),
     },
   };
+}
+
+function calculateEstimatedHoldingMoney(
+  holding: HoldingLedgerEntry,
+  scaleCommercialBase: number,
+  householdFactor: number,
+  legacyPopulationModifier: number,
+  maxRegisteredHouseholds: number,
+): number {
+  if (holding.registeredHouseholds === undefined) {
+    return roundResource(
+      scaleCommercialBase
+      * scoreFactor(holding.commerce)
+      * householdFactor
+      * legacyPopulationModifier,
+    );
+  }
+
+  const households = Math.min(
+    Math.max(0, holding.registeredHouseholds),
+    maxRegisteredHouseholds,
+  );
+  const populationStructureModifier = HOUSEHOLD_TAX_POPULATION_MODIFIER_MIN
+    + scoreFactor(holding.population) * HOUSEHOLD_TAX_POPULATION_MODIFIER_SPAN;
+  const householdTax = households
+    * HOUSEHOLD_BASE_ANNUAL_CASH_TAX
+    * populationStructureModifier;
+  const commercialIncome = scaleCommercialBase
+    * scoreFactor(holding.commerce)
+    * householdFactor;
+
+  return roundResource(householdTax + commercialIncome);
 }
 
 function calculateHoldingIncome(holding: HoldingLedgerEntry): DomesticReportResourceDelta {
@@ -398,7 +453,7 @@ function calculateCollectionRate(actual: number, estimated: number): number {
   return Math.round((actual / estimated) * 100) / 100;
 }
 
-function calculatePrivateAssetIncome(asset: PrivateAssetEntry): DomesticReportResourceDelta {
+export function calculatePrivateAssetAnnualIncome(asset: PrivateAssetEntry): DomesticReportResourceDelta {
   const conditionMultiplier = asset.status === 'damaged' ? 0.5 : 1;
   const mu = Math.max(0, asset.mu ?? 0);
   const households = Math.max(0, asset.households ?? 0);
@@ -445,8 +500,9 @@ function applyProjectDelta(
   const currentWorkshopScale = asset.workshopScale ?? 0;
   const nextWorkshopScale = currentWorkshopScale + workshopScaleDelta;
 
-  return {
+  return clampPrivateAssetToAbsoluteLimits({
     ...asset,
+    ...(project.type === 'repair' && asset.status === 'damaged' ? { status: 'active' as const } : {}),
     mu: addOptionalNumber(asset.mu, delta.mu),
     households: addOptionalNumber(asset.households, delta.households),
     workers: addOptionalNumber(asset.workers, delta.workers),
@@ -456,10 +512,10 @@ function applyProjectDelta(
     ranchCapacity: addOptionalNumber(asset.ranchCapacity, delta.ranchCapacity),
     recentChanges: [
       ...(asset.recentChanges ?? []),
-      `project completed: ${project.title}`,
+      `经营项目完成：${project.title}`,
     ],
     updatedAt: currentDate,
-  };
+  });
 }
 
 function addOptionalNumber(current: number | undefined, delta: number | undefined): number | undefined {
@@ -518,6 +574,9 @@ export function calculateTroopsMonthlyUpkeep(troops: TroopLedgerEntry[]): Domest
 }
 
 function getTroopTypeUpkeepMultiplier(troop: TroopLedgerEntry): DomesticReportResourceDelta {
+  if (isHeavyCavalryTroop(troop)) {
+    return { money: 2.8, grain: 1.8, horses: 0.3, arms: 2.4, recruits: 0 };
+  }
   const label = `${troop.troopType ?? ''} ${troop.specialDesignation ?? ''}`.toLowerCase();
   if (label.includes('cavalry') || label.includes('horse') || label.includes('骑')) {
     return { money: 1.5, grain: 1.3, horses: 0.15, arms: 1.2, recruits: 0 };

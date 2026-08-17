@@ -134,6 +134,72 @@
   flex-shrink: 0;
 }
 
+.save-source-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.55rem 1.3rem;
+  border-bottom: 1px solid rgba(184, 138, 42, 0.18);
+  background: rgba(4, 7, 10, 0.66);
+  flex-shrink: 0;
+}
+
+.save-source-tabs {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.save-source-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid rgba(184, 138, 42, 0.3);
+  padding: 0.35rem 0.75rem;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.save-source-tabs button:hover,
+.save-source-tabs button.active {
+  border-color: var(--accent);
+  color: #f2d66f;
+  background: rgba(184, 138, 42, 0.08);
+}
+
+.save-source-tabs button span {
+  min-width: 1.3rem;
+  border: 1px solid rgba(184, 138, 42, 0.25);
+  border-radius: 999px;
+  padding: 0 0.3rem;
+  font-size: 0.68rem;
+  text-align: center;
+}
+
+.save-cloud-summary {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.save-cloud-summary strong {
+  color: var(--teal);
+  overflow: hidden;
+  max-width: 12rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.save-modal-body--cloud {
+  display: block;
+  overflow-y: auto;
+}
+
 .save-section-count {
   min-width: 1.7rem;
   padding: 0.1rem 0.45rem;
@@ -261,6 +327,380 @@
   padding: 0.75rem 1.1rem;
   border-top: 1px solid rgba(184, 138, 42, 0.16);
 }
+
+.save-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.save-item-cloud-action {
+  border: 1px solid rgba(62, 170, 173, 0.5);
+  padding: 0.28rem 0.5rem;
+  background: rgba(16, 85, 89, 0.12);
+  color: var(--teal);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.save-item-cloud-action:hover:not(:disabled) {
+  border-color: var(--teal);
+  background: rgba(16, 85, 89, 0.24);
+}
+
+.save-item-cloud-action:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.cloud-save-empty {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.9rem;
+  padding: 2rem;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.cloud-save-empty small {
+  color: var(--text-muted);
+}
+
+.cloud-save-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.cloud-save-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid rgba(184, 138, 42, 0.28);
+  padding: 0.8rem 0.9rem;
+  background: rgba(17, 21, 28, 0.55);
+}
+
+.cloud-save-item-main {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.cloud-save-item-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.cloud-save-item-head strong {
+  color: #f2d66f;
+}
+
+.cloud-save-item-head span {
+  border: 1px solid rgba(62, 170, 173, 0.4);
+  padding: 0.08rem 0.4rem;
+  color: var(--teal);
+  font-size: 0.68rem;
+}
+
+.cloud-save-item p {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.cloud-save-item small {
+  color: var(--text-muted);
+}
+
+.cloud-save-item-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+.cloud-save-account-panel {
+  display: grid;
+  gap: 0.9rem;
+  border: 1px solid rgba(62, 170, 173, 0.32);
+  padding: 1rem;
+  background: linear-gradient(135deg, rgba(12, 48, 51, 0.12), rgba(6, 9, 13, 0.45));
+}
+
+.cloud-save-account-head,
+.cloud-save-login-row,
+.cloud-save-account-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.cloud-save-account-head h3 {
+  margin: 0 0 0.2rem;
+  color: var(--teal);
+  font-size: 1rem;
+}
+
+.cloud-save-account-head p,
+.cloud-save-login-row p,
+.cloud-save-cap-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.55;
+}
+
+.cloud-save-account-identity {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-shrink: 0;
+}
+
+.cloud-save-account-identity img {
+  border: 1px solid rgba(62, 170, 173, 0.5);
+  border-radius: 50%;
+}
+
+.cloud-save-account-identity span,
+.cloud-save-toggle span,
+.cloud-save-api-mode > span {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.cloud-save-account-identity strong,
+.cloud-save-toggle strong,
+.cloud-save-api-mode strong {
+  color: var(--text-primary);
+  font-size: 0.82rem;
+}
+
+.cloud-save-account-identity small,
+.cloud-save-toggle small,
+.cloud-save-api-mode small {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.cloud-save-warning {
+  border: 1px solid rgba(190, 120, 52, 0.45);
+  padding: 0.65rem 0.8rem;
+  color: #d9ab68;
+  background: rgba(116, 69, 22, 0.12);
+}
+
+.cloud-save-usage {
+  display: grid;
+  grid-template-columns: auto minmax(8rem, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.cloud-save-usage > div:first-child {
+  display: grid;
+  gap: 0.1rem;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.cloud-save-usage strong {
+  color: var(--teal);
+  font-size: 0.82rem;
+}
+
+.cloud-save-usage-track {
+  height: 0.42rem;
+  border: 1px solid rgba(62, 170, 173, 0.36);
+  background: rgba(0, 0, 0, 0.32);
+}
+
+.cloud-save-usage-track span {
+  display: block;
+  height: 100%;
+  max-width: 100%;
+  background: linear-gradient(90deg, #236f74, #d2b34d);
+}
+
+.cloud-save-usage > small {
+  color: var(--text-muted);
+}
+
+.cloud-save-toggle,
+.cloud-save-api-mode {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-top: 1px solid rgba(62, 170, 173, 0.16);
+  padding-top: 0.75rem;
+}
+
+.cloud-save-toggle input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--teal);
+}
+
+.cloud-save-toggle span {
+  flex: 1;
+}
+
+.cloud-save-api-mode select {
+  min-width: min(22rem, 48%);
+}
+
+.cloud-save-api-backup {
+  display: grid;
+  gap: 0.65rem;
+  border: 1px solid rgba(184, 138, 42, 0.22);
+  padding: 0.75rem;
+  background: rgba(4, 7, 10, 0.42);
+}
+
+.cloud-save-api-backup-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.cloud-save-api-backup-head > span {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.cloud-save-api-backup-head strong {
+  color: var(--text-primary);
+  font-size: 0.82rem;
+}
+
+.cloud-save-api-backup-head small,
+.cloud-save-api-backup-head time {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.cloud-save-api-backup-head time {
+  flex-shrink: 0;
+}
+
+.cloud-save-passphrase-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.cloud-save-passphrase-row input {
+  min-width: 0;
+  border: 1px solid rgba(62, 170, 173, 0.32);
+  padding: 0.5rem 0.65rem;
+  background: rgba(0, 0, 0, 0.28);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.cloud-save-api-backup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.cloud-save-account-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.cloud-save-cap-note {
+  border-top: 1px solid rgba(62, 170, 173, 0.16);
+  padding-top: 0.65rem;
+}
+
+.npc-delete-confirm-backdrop {
+  position: fixed;
+  z-index: 20;
+}
+
+.holding-delete-confirm-backdrop {
+  position: fixed;
+  z-index: 21;
+}
+
+.npc-delete-confirm-modal {
+  width: min(520px, 90vw);
+}
+
+.holding-delete-confirm-modal {
+  width: min(600px, 90vw);
+}
+
+.npc-delete-blockers {
+  margin-top: 0.85rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid rgba(196, 63, 63, 0.52);
+  background: rgba(95, 18, 18, 0.24);
+  color: #f0b1a7;
+}
+
+.npc-delete-blockers strong {
+  color: #ffcabf;
+  font-size: 0.86rem;
+}
+
+.npc-delete-blockers ul {
+  margin: 0.55rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.npc-delete-blockers li {
+  margin-top: 0.25rem;
+  line-height: 1.45;
+}
+
+.holding-delete-impact-list {
+  margin: 0.75rem 0 0;
+  padding-left: 1.35rem;
+  color: var(--text-secondary);
+  line-height: 1.65;
+}
+
+.holding-delete-final-warning {
+  padding: 0.8rem 0.9rem;
+  border: 1px solid rgba(196, 63, 63, 0.58);
+  background: rgba(95, 18, 18, 0.28);
+  color: #ffcabf !important;
+}
+
+.holding-delete-blockers {
+  margin-top: 0.85rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid rgba(196, 63, 63, 0.52);
+  background: rgba(95, 18, 18, 0.24);
+  color: #f0b1a7;
+}
+
+.holding-delete-blockers strong {
+  color: #ffcabf;
+  font-size: 0.86rem;
+}
+
+.holding-delete-blockers ul {
+  margin: 0.55rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.holding-delete-blockers li {
+  margin-top: 0.25rem;
+  line-height: 1.45;
+}
+
 .story-export-modal {
   width: min(840px, calc(100vw - 2rem));
   max-height: min(760px, calc(100dvh - 2rem));

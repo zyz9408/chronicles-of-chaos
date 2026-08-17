@@ -1,7 +1,18 @@
-import type { CombatArmorWeight, CombatWeaponWeight } from './CombatTypes';
+import type { CombatArmorWeight, CombatRuntimeCombatant, CombatWeaponWeight } from './CombatTypes';
+import type { EncounterScopedCombatant } from './EncounterContracts';
 
 export const COMBAT_GAUGE_THRESHOLD = 1000 as const;
-export const ARMOR_REDUCTION_BY_TIER = Object.freeze([0, 0.05, 0.10, 0.16, 0.22, 0.30] as const);
+export const COMBAT_STABILIZE_HP_COST = 25 as const;
+export const COMBAT_STABILIZE_HP_RESTORE = 25 as const;
+export const COMBAT_STABILIZE_STAMINA_RESTORE = 20 as const;
+export const ARMOR_REDUCTION_BY_TIER = Object.freeze([0, 0.07, 0.15, 0.24, 0.35, 0.48] as const);
+export const SCOPED_NORMAL_ATTACK_DAMAGE_CAP: Readonly<Record<EncounterScopedCombatant['archetype'], number>> = Object.freeze({
+  rabble: 14,
+  militia: 16,
+  regular: 20,
+  veteran: 26,
+  elite: 32,
+});
 
 const WEAPON_SPEED: Record<CombatWeaponWeight, number> = {
   unarmed: 5,
@@ -21,6 +32,15 @@ const ARMOR_SPEED: Record<CombatArmorWeight, number> = {
 
 export function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+export function normalizeCombatStatuses(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
 }
 
 export function calculateDerivedSpeed(input: {
@@ -47,14 +67,14 @@ export function calculateHitChance(input: {
   defenderLuck: number;
 }): number {
   return clamp(
-    82
-      + (input.attackerMartial - input.defenderMartial) * 0.35
+    80
+      + (input.attackerMartial - input.defenderMartial) * 0.55
       + input.weaponAccuracy
       + input.attackerAccuracy
       - input.defenderEvasion
       + (input.attackerLuck - input.defenderLuck) * 0.1,
-    45,
-    96,
+    25,
+    97,
   );
 }
 
@@ -67,14 +87,14 @@ export function calculateBlockChance(input: {
   attackerPenetration: number;
 }): number {
   return clamp(
-    10
-      + (input.defenderMartial - input.attackerMartial) * 0.15
+    12
+      + (input.defenderMartial - input.attackerMartial) * 0.30
       + input.equipmentBlock
       + input.defenderBlock
       + input.defendActionBonus
       - input.attackerPenetration,
     0,
-    65,
+    75,
   );
 }
 
@@ -91,9 +111,10 @@ export function calculateNormalAttackDamage(input: {
   blocked: boolean;
   defenderWasDefending: boolean;
   armorTier: number;
+  maxDamage?: number;
 }): number {
   let damage = input.weaponBaseDamage
-    + Math.floor(input.attackerMartial * 0.10)
+    + Math.floor(input.attackerMartial * 0.12)
     + input.flatDamage
     + input.randomVariance;
   if (input.critical && !input.blocked) damage *= 1.5;
@@ -101,7 +122,7 @@ export function calculateNormalAttackDamage(input: {
   else if (input.defenderWasDefending) damage *= 0.8;
   const armorReduction = ARMOR_REDUCTION_BY_TIER[clamp(Math.trunc(input.armorTier), 0, 5)] ?? 0;
   damage *= 1 - armorReduction;
-  return Math.min(35, Math.max(1, Math.round(damage)));
+  return Math.min(input.maxDamage ?? 35, Math.max(1, Math.round(damage)));
 }
 
 export function calculateRetreatChance(input: {
@@ -115,4 +136,16 @@ export function calculateRetreatChance(input: {
     20,
     90,
   );
+}
+
+export function canStabilizeAlly(
+  actor: Pick<CombatRuntimeCombatant, 'actorId' | 'side' | 'hp'>,
+  target: Pick<CombatRuntimeCombatant, 'actorId' | 'side' | 'hp' | 'downCount' | 'revivedOnce'>,
+): boolean {
+  return actor.actorId !== target.actorId
+    && actor.side === target.side
+    && actor.hp > COMBAT_STABILIZE_HP_COST
+    && target.hp === 0
+    && target.downCount === 1
+    && !target.revivedOnce;
 }

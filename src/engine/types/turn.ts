@@ -6,6 +6,15 @@ import type { DomesticReportResourceDelta } from './luanshi';
 import type { MemoryRecallTrace } from './memory';
 import type { RuntimeLocationWriteDiagnostic } from './map';
 
+export interface TurnTokenUsageMeta {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cacheMissTokens?: number;
+}
+
 /** 建议行动 */
 export interface SuggestedAction {
   label: string;
@@ -20,11 +29,7 @@ export interface TurnNpcIntentSimulationMeta {
   targetNpcIds: string[];
   provider?: string;
   model?: string;
-  usage?: {
-    promptTokens?: number;
-    completionTokens?: number;
-    totalTokens?: number;
-  };
+  usage?: TurnTokenUsageMeta;
   package?: {
     protocolVersion: 'coc.v2.npcIntent.v1';
     generatedAt: string;
@@ -43,14 +48,42 @@ export interface TurnNpcIntentSimulationMeta {
   };
 }
 
+export interface TurnWorldEvolutionMeta {
+  status: 'completed' | 'skipped' | 'failed';
+  reason?: string;
+  targetNpcIds: string[];
+  appliedNpcIds: string[];
+  provider?: string;
+  model?: string;
+  usage?: TurnTokenUsageMeta;
+}
+
+export interface TurnNarrativeLengthMeta {
+  preference: 'compact' | 'standard' | 'rich' | 'long';
+  label: string;
+  minimumCharacters: number;
+  maximumCharacters: number;
+  retryMinimumCharacters?: number;
+  actualCharacters: number;
+  status: 'under_minimum' | 'within_target' | 'over_target';
+  meetsMinimum: boolean;
+  withinRetryTolerance?: boolean;
+  retryEnabled?: boolean;
+  regenerationAttempted?: boolean;
+  firstAttemptCharacters?: number;
+  regenerationResolved?: boolean;
+}
+
 export type TurnProcessingStage =
   | 'retrievingMemory'
   | 'simulatingNpcs'
   | 'generatingNarrative'
+  | 'regeneratingNarrative'
   | 'repairingTimeAdvance'
   | 'repairingStateWriteback'
   | 'repairingNpcProfiles'
   | 'applyingState'
+  | 'evolvingWorld'
   | 'compressingMemory'
   | 'saving';
 
@@ -58,10 +91,14 @@ export interface TurnProcessingStageEvent {
   stage: TurnProcessingStage;
   label: string;
   status: 'started' | 'finished' | 'failed' | 'skipped';
+  /** 该次阶段尝试开始时间；旧存档可缺省。 */
+  startedAt?: string;
   elapsedMs?: number;
   detail?: string;
   provider?: string;
   model?: string;
+  /** 仅当供应商返回 usage 时记录；不支持缓存统计的接口保持缺省。 */
+  usage?: TurnTokenUsageMeta;
 }
 
 export interface TurnPromptTokenLayerMeta {
@@ -129,6 +166,7 @@ export interface TurnJudgementCard {
   difficulty?: number;
   total?: number;
   margin?: number;
+  experienceAward?: number;
   details?: TurnJudgementDetail[];
   tags?: string[];
   panel?: {
@@ -145,15 +183,20 @@ export interface TurnDisplayMeta {
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cacheMissTokens?: number;
   elapsedMs?: number;
   provider?: string;
   model?: string;
   npcIntentSimulation?: TurnNpcIntentSimulationMeta;
+  worldEvolution?: TurnWorldEvolutionMeta;
   promptTokenEstimate?: TurnPromptTokenEstimateMeta;
   holdingAnnualSettlement?: TurnHoldingAnnualSettlementMeta;
   judgementCards?: TurnJudgementCard[];
   processingStages?: TurnProcessingStageEvent[];
   memoryRecall?: MemoryRecallTrace;
+  narrativeLength?: TurnNarrativeLengthMeta;
   locationWriteback?: {
     errors: string[];
     routeErrors: string[];

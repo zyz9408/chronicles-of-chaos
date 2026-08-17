@@ -312,7 +312,7 @@ describe('dynamic writeback end-to-end smoke', () => {
       abilityScores: { 武力: 35, 统率: 55, 智力: 76, 政治: 68, 魅力: 62, 机运: 50 },
       traits: [{ id: 'trait_old_staff', label: '旧部参军', description: '熟悉旧部军务。', source: 'history' }],
       uniqueArts: [{
-        id: 'art_old_ledger', name: '军簿推演', rarity: 'blue', domain: 'governance', level: 2,
+        id: 'art_old_ledger', name: '军簿推演', rarity: 'blue', domain: 'strategy', level: 2,
         description: '从军簿中追查异常。', effectSummary: '核账时更易发现矛盾。', source: 'history',
       }],
       effects: [{
@@ -368,12 +368,20 @@ describe('dynamic writeback end-to-end smoke', () => {
       statePatch: null,
       writeback: {
         npcProfileSuggestions: [{
-          npcId: 'npc_gu_heng', name: '顾衡', courtesyName: '子正', sex: '男', age: 0,
+          npcId: 'npc_gu_heng', name: '顾衡', courtesyName: '子正',
+          persistenceReason: 'active_system_role',
+          persistenceEvidence: '本回合确认顾衡长期担任营门校尉并持续负责军簿与营门事务。',
+          sex: '男', age: 0,
           role: '营门校尉', locationId: 'place_market', isPresent: true, currentIdentity: '营门校尉',
           summary: '前来递交账册。', appearance: '披甲持簿。', personality: '沉稳。', motivation: '核清账册。',
           relationToPlayer: '初次共事', contactLevel: 5, recentAttitude: '恭谨',
           abilityScores: { 武力: 55, 统率: 60, 智力: 62, 政治: 50, 魅力: 48, 机运: 50 },
           traits: [{ id: 'trait_gate_officer', label: '营门校尉', description: '熟悉营门事务。', source: 'identity' }],
+          uniqueArts: [{
+            id: 'art_gu_heng_ledger', name: '军簿核验', rarity: 'green', domain: 'strategy', level: 1,
+            description: '熟悉营门军簿与签押核验。', effectSummary: '强化军务核验和账册判断。', source: 'identity',
+            acquisition: { kind: 'background', occurredAt: '乱世元年2月', sourceRefId: 'npc-profile:npc_gu_heng_compliance:background', summary: '长期营门军务身份与经历已经确立该能力。' },
+          }],
         }],
         npcMemorySuggestions: [{
           npcId: 'npc_lan_niang_drift', npcName: '兰娘', source: '亲历', content: '与主角当面复核了新军粮账册。',
@@ -417,12 +425,20 @@ describe('dynamic writeback end-to-end smoke', () => {
       writeback: {
         npcProfileSuggestions: [
           {
-            npcId: 'npc_gu_heng', name: '顾衡', courtesyName: '子正', sex: '男', age: 31,
+            npcId: 'npc_gu_heng', name: '顾衡', courtesyName: '子正',
+            persistenceReason: 'active_system_role',
+            persistenceEvidence: '本回合确认顾衡长期担任营门校尉并持续负责军簿与营门事务。',
+            sex: '男', age: 31,
             role: '营门校尉', locationId: 'place_market', isPresent: true, isFocused: true,
             currentIdentity: '营门校尉', summary: '前来递交账册。', appearance: '披甲持簿。', personality: '沉稳。',
             motivation: '核清账册。', relationToPlayer: '初次共事', contactLevel: 5, recentAttitude: '恭谨',
             abilityScores: { 武力: 55, 统率: 60, 智力: 62, 政治: 50, 魅力: 48, 机运: 50 },
             traits: [{ id: 'trait_gate_officer', label: '营门校尉', description: '熟悉营门事务。', source: 'identity' }],
+            uniqueArts: [{
+              id: 'art_gu_heng_ledger', name: '军簿核验', rarity: 'green', domain: 'strategy', level: 1,
+              description: '熟悉营门军簿与签押核验。', effectSummary: '强化军务核验和账册判断。', source: 'identity',
+              acquisition: { kind: 'background', occurredAt: '乱世元年2月', sourceRefId: 'npc-profile:npc_gu_heng_compliance:background', summary: '长期营门军务身份与经历已经确立该能力。' },
+            }],
           },
           {
             ...profileBase, npcId: 'npc_qing_he_drift', name: '清和', courtesyName: null, aliases: ['沈岚', '兰娘'],
@@ -691,6 +707,7 @@ describe('dynamic writeback end-to-end smoke', () => {
               payload: {
                 command: {
                   action: 'upsertPrivateAsset',
+                  operation: 'create',
                   privateAssetId: `asset_post_writeback_${status}`,
                   name: `${status} post-writeback estate`,
                   type: 'estate',
@@ -702,6 +719,12 @@ describe('dynamic writeback end-to-end smoke', () => {
                   workers: 5,
                   workshopScale: 1,
                   ranchCapacity: 0,
+                  acquisition: {
+                    kind: 'grant',
+                    occurredAt: '189-09-01',
+                    sourceRefId: `turn:grant-estate-${status}`,
+                    summary: 'The estate is formally granted this turn.',
+                  },
                   updatedAt: '189-09-01',
                 },
               },
@@ -796,6 +819,7 @@ describe('dynamic writeback end-to-end smoke', () => {
               payload: {
                 command: {
                   action: 'upsertPrivateAsset',
+                  operation: 'create',
                   privateAssetId: 'asset_failed_batch_only',
                   name: 'Failed batch estate',
                   type: 'estate',
@@ -803,6 +827,12 @@ describe('dynamic writeback end-to-end smoke', () => {
                   status: 'active',
                   summary: 'This asset must roll back with the failed batch.',
                   households: 5,
+                  acquisition: {
+                    kind: 'grant',
+                    occurredAt: '189-09-01',
+                    sourceRefId: 'turn:failed-grant',
+                    summary: 'The invalid batch attempts to grant the estate.',
+                  },
                   updatedAt: '189-09-01',
                 },
               },

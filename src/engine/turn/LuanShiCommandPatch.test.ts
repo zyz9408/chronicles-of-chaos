@@ -383,6 +383,26 @@ describe('LuanShiCommandPatch faction ledger normalization', () => {
       recentActions: ['郡兵军府正在清点麾下士卒与粮械。'],
     });
   });
+
+  it('recognizes a top-level recent faction action patch as a structured command', () => {
+    const command = extractLuanShiCommandFromPatch({
+      type: 'recordFactionRecentAction',
+      payload: {
+        factionId: ' faction_chenliu_command ',
+        summary: ' 陈留军府派出斥候探查渡口 ',
+        knownLevel: '听闻',
+        sourceNote: '商旅转述',
+      },
+    } as any);
+
+    expect(command).toMatchObject({
+      action: 'recordFactionRecentAction',
+      factionId: ' faction_chenliu_command ',
+      summary: ' 陈留军府派出斥候探查渡口 ',
+      knownLevel: '听闻',
+      sourceNote: '商旅转述',
+    });
+  });
 });
 
 describe('LuanShiCommandPatch troop ledger normalization', () => {
@@ -481,6 +501,39 @@ describe('LuanShiCommandPatch troop ledger normalization', () => {
     expect(command).toMatchObject({
       action: 'upsertTroopLedger',
       upkeepSource: 'superior_provision',
+    });
+  });
+
+  it.each([
+    ['曹操府库自筹军需', 'superior_provision'],
+    ['曹操自家府库承担', 'superior_provision'],
+    ['太平道府库供养', 'superior_provision'],
+    ['该部自行筹措', 'superior_provision'],
+    ['玩家府库承担', 'player_resources'],
+    ['主角自筹钱粮', 'player_resources'],
+  ])('does not confuse another faction treasury with player resources: %s', (input, expected) => {
+    const command = extractLuanShiCommandFromPatch({
+      type: 'luanshiCommand',
+      payload: {
+        command: {
+          action: 'upsertTroopLedger',
+          troopId: 'troop_supply_source',
+          name: '军需来源测试部队',
+          size: 80,
+          morale: 62,
+          training: 66,
+          supplies: 40,
+          task: '驻防',
+          relationToPlayer: '友军',
+          leaderNpcId: 'npc_other_commander',
+          upkeepSource: input,
+        },
+      },
+    } as any);
+
+    expect(command).toMatchObject({
+      action: 'upsertTroopLedger',
+      upkeepSource: expected,
     });
   });
 });

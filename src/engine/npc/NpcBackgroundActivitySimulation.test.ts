@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { RuntimeState } from '../types';
 import { ensureLuanShiState } from '../state/createInitialRuntimeState';
 import { selectNpcIntentSimulationTargets } from './NpcIntentSimulation';
+import { selectRelationshipWorldEvolutionCandidates } from '../worldEvolution/RelationshipWorldEvolution';
 
 function makeState(): RuntimeState {
   return ensureLuanShiState({
@@ -20,17 +21,29 @@ function makeState(): RuntimeState {
         dueAt: '0189-09-10 11:00', visibility: 'playerKnown',
       },
     }] as any,
+    bondThreads: [{
+      bondThreadId: 'bond_scout',
+      targetNpcIds: ['npc_due'],
+      targetNames: ['远场斥候'],
+      bondType: 'ally',
+      status: 'active',
+      summary: '受命外出的可靠斥候。',
+      lastUpdatedAt: '0189-09-09 08:00',
+    }],
   });
 }
 
-describe('NPC background activity simulation target', () => {
-  it('selects only an offstage NPC whose existing activity has reached its review time', () => {
-    const targets = selectNpcIntentSimulationTargets(makeState(), '我在城门等待消息', { maxNpcCount: 5 });
+describe('NPC background activity execution boundary', () => {
+  it('routes a due offstage relationship NPC only to world evolution', () => {
+    const state = makeState();
+    const targets = selectNpcIntentSimulationTargets(state, '我在城门等待消息', { maxNpcCount: 5 });
+    const evolutionTargets = selectRelationshipWorldEvolutionCandidates(state, '我在城门等待消息', 3);
 
-    expect(targets).toHaveLength(1);
-    expect(targets[0]).toMatchObject({
+    expect(targets).toEqual([]);
+    expect(evolutionTargets).toHaveLength(1);
+    expect(evolutionTargets[0]).toMatchObject({
       npcId: 'npc_due',
-      scope: 'activityDue',
+      trigger: 'due',
       backgroundActivity: {
         activityId: 'activity_due_scout',
         status: 'active',
@@ -39,7 +52,7 @@ describe('NPC background activity simulation target', () => {
     });
   });
 
-  it('does not revive a due background activity after its linked matter is completed', () => {
+  it('does not send a completed-matter background activity back into foreground NPC simulation', () => {
     const state = makeState();
     state.activeQuests = [{
       id: 'quest_river_watch',

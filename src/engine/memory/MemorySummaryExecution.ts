@@ -25,7 +25,7 @@ import type {
 import {
   applyMemorySummaryResult,
   buildRecentTurnMemorySummaryTask,
-  shouldCreateRecentTurnSummaryTask,
+  type MemorySummaryCompressionScope,
   type MemorySummaryResult,
   type MemorySummaryTaskInput,
 } from './MemorySummaryProjection';
@@ -48,6 +48,7 @@ export interface MemorySummaryExecutionResult {
   ignoredSummaries: string[];
   sourceRecentTurnCount: number;
   keptRecentTurnCount: number;
+  activeScopes?: MemorySummaryCompressionScope[];
   apiTaskId?: 'memorySummary' | 'mainNarrative';
   provider?: string;
   model?: string;
@@ -94,7 +95,8 @@ export async function executeMemorySummaryCompression(
   options: MemorySummaryExecutionOptions = {},
   apiTaskId?: 'memorySummary' | 'mainNarrative',
 ): Promise<MemorySummaryExecutionResult> {
-  if (!shouldCreateRecentTurnSummaryTask(state)) {
+  const task = buildRecentTurnMemorySummaryTask(state);
+  if (task.activeScopes.length === 0) {
     return {
       status: 'skipped',
       reason: 'threshold not reached',
@@ -103,6 +105,7 @@ export async function executeMemorySummaryCompression(
       ignoredSummaries: [],
       sourceRecentTurnCount: 0,
       keptRecentTurnCount: 0,
+      activeScopes: [],
       apiTaskId,
     };
   }
@@ -116,11 +119,11 @@ export async function executeMemorySummaryCompression(
       ignoredSummaries: [],
       sourceRecentTurnCount: 0,
       keptRecentTurnCount: 0,
+      activeScopes: task.activeScopes,
       apiTaskId,
     };
   }
 
-  const task = buildRecentTurnMemorySummaryTask(state);
   const llmClient = options.llmClient ?? new BrowserLlmClient();
   const result = await llmClient.generate({
     config: options.apiConfig,
@@ -140,6 +143,7 @@ export async function executeMemorySummaryCompression(
     ignoredSummaries: [],
     sourceRecentTurnCount: task.sourceRecentTurnSummaries.length,
     keptRecentTurnCount: task.keptRecentTurnIds.length,
+    activeScopes: task.activeScopes,
     apiTaskId,
     provider: result.provider,
     model: result.model,
@@ -194,8 +198,9 @@ export function appendMemorySummaryExecutionSummary(
   if (!latestLog || result.status === 'skipped') return;
 
   const routeLabel = result.apiTaskId ? `[${result.apiTaskId}]` : '';
+  const sourceLabel = buildMemorySummarySourceLabel(result.task);
   const suffix = result.status === 'applied'
-    ? `memorySummary${routeLabel}：${result.appliedSummaries.join('、')}；压缩${result.sourceRecentTurnCount}条，保留近期${result.keptRecentTurnCount}条`
+    ? `memorySummary${routeLabel}：${result.appliedSummaries.join('、')}；${sourceLabel}`
     : `memorySummary${routeLabel}失败：${result.reason ?? '未知原因'}`;
 
   latestLog.statePatchSummary = [
@@ -205,8 +210,10 @@ export function appendMemorySummaryExecutionSummary(
 }
 
 export function buildMemorySummaryCompressionMessages(task: MemorySummaryTaskInput): LlmMessage[] {
-  const outputJsonSchema = JSON.stringify({
-    midTermSummaries: [
+  const sourceTurnContext = buildSourceTurnCompressionContext(task);
+  const outputShape: Record<string, unknown> = {};
+  if (task.activeScopes.includes('playerRecentToMid')) {
+    outputShape.midTermSummaries = [
       {
         summaryId: 'stable_id',
         title: '阶段标题',
@@ -219,22 +226,8 @@ export function buildMemorySummaryCompressionMessages(task: MemorySummaryTaskInp
         sourceRecentTurnIds: ['recent_turn_id'],
         updatedAt: task.createdAt,
       },
-    ],
-    longTermStorySummaries: [
-      {
-        summaryId: 'stable_long_story_id',
-        title: '长期阶段标题',
-        fromCreatedAt: '起始时间',
-        toCreatedAt: '结束时间',
-        summary: '由十条中期摘要压缩成的长期生平摘要',
-        sourceMidTermSummaryIds: ['mid_term_summary_id'],
-        relatedNpcIds: ['npc_id'],
-        relatedLocationIds: ['location_id'],
-        tags: ['tag'],
-        updatedAt: task.createdAt,
-      },
-    ],
-    longTermFacts: [
+    ];
+    outputShape.longTermFacts = [
       {
         factId: 'stable_id',
         category: 'identity/promise/enmity/relationship/world/location/consequence/other',
@@ -247,8 +240,8 @@ export function buildMemorySummaryCompressionMessages(task: MemorySummaryTaskInp
         sourceTurnNumbers: [1],
         tags: ['tag'],
       },
-    ],
-    npcInteractionSummaries: [
+    ];
+    outputShape.npcInteractionSummaries = [
       {
         npcId: 'npc_id',
         npcName: 'NPC名称',
@@ -259,8 +252,50 @@ export function buildMemorySummaryCompressionMessages(task: MemorySummaryTaskInp
         tags: ['tag'],
         updatedAt: task.createdAt,
       },
-    ],
-    npcMidTermSummaries: [
+    ];
+    outputShape.locationMemorySummaries = [
+      {
+        locationId: 'location_id',
+        locationName: '地点名',
+        summary: '地点长期记忆摘要',
+        recentEventIds: ['event_id'],
+        tags: ['tag'],
+        updatedAt: task.createdAt,
+      },
+    ];
+  }
+  if (task.activeScopes.includes('playerMidToLong')) {
+    outputShape.longTermStorySummaries = [
+      {
+        summaryId: 'stable_long_story_id',
+        title: '长期阶段标题',
+        fromCreatedAt: '起始时间',
+        toCreatedAt: '结束时间',
+        summary: '由十条中期摘要压缩成的长期生平摘要',
+        sourceMidTermSummaryIds: ['mid_term_summary_id'],
+        relatedNpcIds: ['npc_id'],
+        relatedLocationIds: ['location_id'],
+        tags: ['tag'],
+        updatedAt: task.createdAt,
+      },
+    ];
+    outputShape.longTermFacts ??= [
+      {
+        factId: 'stable_id',
+        category: 'identity/promise/enmity/relationship/world/location/consequence/other',
+        createdAt: '发生时间',
+        updatedAt: task.createdAt,
+        summary: '长期事实',
+        importance: 'low/medium/high/critical',
+        relatedNpcIds: ['npc_id'],
+        relatedLocationIds: ['location_id'],
+        sourceTurnNumbers: [1],
+        tags: ['tag'],
+      },
+    ];
+  }
+  if (task.activeScopes.includes('npcRawToMid')) {
+    outputShape.npcMidTermSummaries = [
       {
         summaryId: 'stable_npc_mid_id',
         npcId: 'npc_id',
@@ -272,8 +307,22 @@ export function buildMemorySummaryCompressionMessages(task: MemorySummaryTaskInp
         tags: ['tag'],
         updatedAt: task.createdAt,
       },
-    ],
-    npcLongTermSummaries: [
+    ];
+    outputShape.npcInteractionSummaries ??= [
+      {
+        npcId: 'npc_id',
+        npcName: 'NPC名称',
+        summary: '该 NPC 与主角的长期互动摘要',
+        fromCreatedAt: '起始时间',
+        toCreatedAt: '结束时间',
+        sourceMemoryIds: ['memory_id'],
+        tags: ['tag'],
+        updatedAt: task.createdAt,
+      },
+    ];
+  }
+  if (task.activeScopes.includes('npcMidToLong')) {
+    outputShape.npcLongTermSummaries = [
       {
         summaryId: 'stable_npc_long_id',
         npcId: 'npc_id',
@@ -285,45 +334,92 @@ export function buildMemorySummaryCompressionMessages(task: MemorySummaryTaskInp
         tags: ['tag'],
         updatedAt: task.createdAt,
       },
-    ],
-    locationMemorySummaries: [
-      {
-        locationId: 'location_id',
-        locationName: '地点名',
-        summary: '地点长期记忆摘要',
-        recentEventIds: ['event_id'],
-        tags: ['tag'],
-        updatedAt: task.createdAt,
-      },
-    ],
-    notes: ['可选调试说明'],
-  }, null, 2);
+    ];
+  }
+  outputShape.notes = ['可选调试说明'];
+  const outputJsonSchema = JSON.stringify(outputShape, null, 2);
   const compressionRules = [
     '- 保留因果、承诺、未完成目标、地点变化、NPC关系变化、重要物品线索、不可逆后果。',
     '- 已完成、失败、失效或归档的承诺/事项必须保留其终态与结果；不得重新压缩成待办、尚未交付或仍需履行。',
     '- 普通闲聊不要进入长期事实。',
-    '- 中期摘要用于替代一批连续短期记忆，应该有明确时间范围。',
-    '- 玩家近期输入达到本地阈值时只能生成一条中期摘要；不足阈值时 midTermSummaries 必须为 []。',
-    '- sourceMidTermSummaries 满十条时只能生成一条长期剧情摘要；不足十条时 longTermStorySummaries 必须为 []。长期摘要必须保留承诺、因果、关系与未完成线索。',
-    '- 每个 NPC 原始记忆块只能生成一条 NPC 中期记忆；每个 NPC 中期块满十条时只能生成一条 NPC 长期记忆。',
     '- sourceRecentTurnIds、sourceMemoryIds、sourceMidTermSummaryIds 与摘要稳定 ID 最终由本地引擎按实际批次覆盖；不要拆分同一批次或为同一主体返回多条摘要。',
-    '- 长期事实只写后续游玩仍然重要的稳定事实。',
-    '- 已有长期事实发生演进、补充或状态更新时必须复用已有 factId 并改写该条，不得仅更换 factId 新增同义事实。',
-    '- 没有合格玩家近期批次且没有十条玩家中期输入时，longTermFacts 必须为 []；NPC-only 压缩只输出 NPC 记忆相关数组。',
-    '- NPC互动摘要只写该 NPC 与主角/当前事件的可承接关系史。',
     '- NPC 记忆必须保留亲历、听闻、误会、推测等信息来源与置信边界；不得把听闻改写为亲历，不得把误会或推测改写为确定事实，NPC 相信的内容不得自动写成世界客观事实。',
-    '- 地点记忆摘要只写该地点后续相关时应想起的变化或线索。',
+    ...(task.activeScopes.includes('playerRecentToMid') ? [
+      '- 中期摘要用于替代这一批连续短期记忆，应该有明确时间范围；只能生成一条玩家中期摘要。',
+      '- 长期事实只写后续游玩仍然重要的稳定事实；已有事实发生演进时必须复用 factId，不得更换 ID 新增同义事实。',
+      '- NPC互动摘要只写本批次涉及 NPC 与主角/当前事件的可承接关系史。',
+      '- 地点记忆摘要只写本批次涉及地点后续相关时应想起的变化或线索。',
+    ] : []),
+    ...(task.activeScopes.includes('playerMidToLong') ? [
+      '- 十条玩家中期摘要只能生成一条长期剧情摘要，必须保留承诺、因果、关系与未完成线索。',
+      '- 长期事实只写后续游玩仍然重要的稳定事实；已有事实发生演进时必须复用 factId。',
+    ] : []),
+    ...(task.activeScopes.includes('npcRawToMid') ? [
+      '- 每个 NPC 原始记忆块只能生成一条 NPC 中期记忆；不得处理未提供的 NPC。',
+    ] : []),
+    ...(task.activeScopes.includes('npcMidToLong') ? [
+      '- 每个 NPC 的十条中期记忆只能生成一条 NPC 长期记忆；不得处理未提供的 NPC。',
+    ] : []),
+    '- 只输出本任务 JSON 结构列出的数组；没有列出的层级本次未达阈值，禁止生成。',
   ].join('\n');
   const defaultSystemPrompt = [
     '你是乱世风云录 V2 的记忆压缩器。',
     '只返回 JSON 对象，不要输出 Markdown、解释、标签或正文叙事。',
-    '你的任务是把过长的近期剧情记忆压缩为中期摘要、长期事实、NPC互动摘要和地点记忆摘要。',
+    `本次只整理已达到本地阈值的队列：${task.activeScopes.join(', ')}。`,
     '不要发明没有来源的新事实；不确定的内容宁可不写。',
     '不要删除或改写本地原始回合正文；本地会完整保留 turnLog，你只负责生成分层摘要。',
   ].join('\n');
+  const activeInputSections = [
+    ...(task.activeScopes.includes('playerRecentToMid') ? [
+      '### 待压缩玩家短期回合',
+      JSON.stringify(task.sourceRecentTurnSummaries, null, 2),
+      '',
+      '### 对应回合正文原文',
+      JSON.stringify(sourceTurnContext, null, 2),
+      '',
+      '### 相关既有玩家中期摘要',
+      JSON.stringify(task.existingMidTermSummaries, null, 2),
+      '',
+      '### 相关既有长期事实',
+      JSON.stringify(task.existingLongTermFacts, null, 2),
+      '',
+      '### 相关既有 NPC 互动摘要',
+      JSON.stringify(task.existingNpcInteractionSummaries, null, 2),
+      '',
+      '### 相关既有地点摘要',
+      JSON.stringify(task.existingLocationMemorySummaries, null, 2),
+    ] : []),
+    ...(task.activeScopes.includes('playerMidToLong') ? [
+      '### 待压缩玩家中期摘要',
+      JSON.stringify(task.sourceMidTermSummaries, null, 2),
+      '',
+      '### 既有长期剧情摘要',
+      JSON.stringify(task.existingLongTermStorySummaries, null, 2),
+      '',
+      '### 相关既有长期事实',
+      JSON.stringify(task.existingLongTermFacts, null, 2),
+    ] : []),
+    ...(task.activeScopes.includes('npcRawToMid') ? [
+      '### 待压缩 NPC 原始记忆块',
+      JSON.stringify(task.relatedNpcMemoryBlocks, null, 2),
+      '',
+      '### 相关既有 NPC 中长期记忆',
+      JSON.stringify({
+        midTerm: task.existingNpcMidTermSummaries,
+        longTerm: task.existingNpcLongTermSummaries,
+      }, null, 2),
+    ] : []),
+    ...(task.activeScopes.includes('npcMidToLong') ? [
+      '### 待压缩 NPC 中期记忆块',
+      JSON.stringify(task.sourceNpcMidTermBlocks, null, 2),
+      '',
+      '### 相关既有 NPC 长期记忆',
+      JSON.stringify(task.existingNpcLongTermSummaries, null, 2),
+    ] : []),
+  ];
   const defaultUserPrompt = [
     '## 任务',
-    '短期记忆压缩为中期摘要，并提取仍需长期承接的事实。',
+    `只整理这些已达到阈值的队列：${task.activeScopes.join(', ')}`,
     '',
     '## 输出 JSON 结构',
     outputJsonSchema,
@@ -338,38 +434,13 @@ export function buildMemorySummaryCompressionMessages(task: MemorySummaryTaskInp
     `keptRecentTurnIds: ${task.keptRecentTurnIds.join(', ')}`,
     `tokenBudgetHint: ${JSON.stringify(task.tokenBudgetHint)}`,
     '',
-    '### 待压缩近期回合摘要',
-    JSON.stringify(task.sourceRecentTurnSummaries, null, 2),
-    '',
-    '### 对应回合正文原文',
-    JSON.stringify(task.sourceTurnLogs, null, 2),
-    '',
-    '### 待压缩玩家中期摘要（十条生成一条长期）',
-    JSON.stringify(task.sourceMidTermSummaries, null, 2),
-    '',
-    '### 待压缩 NPC 原始记忆块（二十条生成一条中期）',
-    JSON.stringify(task.relatedNpcMemoryBlocks, null, 2),
-    '',
-    '### 待压缩 NPC 中期记忆块（十条生成一条长期）',
-    JSON.stringify(task.sourceNpcMidTermBlocks, null, 2),
-    '',
-    '### 已有中期摘要',
-    JSON.stringify(task.existingMidTermSummaries, null, 2),
-    '',
-    '### 已有长期事实',
-    JSON.stringify(task.existingLongTermFacts, null, 2),
-    '',
-    '### 已有 NPC 互动摘要',
-    JSON.stringify(task.existingNpcInteractionSummaries, null, 2),
-    '',
-    '### 已有地点摘要',
-    JSON.stringify(task.existingLocationMemorySummaries, null, 2),
+    ...activeInputSections,
   ].join('\n');
   const userTemplateValues = {
     createdAt: task.createdAt,
     currentLocationId: task.currentLocationId,
     sourceRecentTurnSummaries: JSON.stringify(task.sourceRecentTurnSummaries, null, 2),
-    sourceTurnLogs: JSON.stringify(task.sourceTurnLogs, null, 2),
+    sourceTurnLogs: JSON.stringify(sourceTurnContext, null, 2),
     sourceMidTermSummaries: JSON.stringify(task.sourceMidTermSummaries, null, 2),
     relatedNpcMemoryBlocks: JSON.stringify(task.relatedNpcMemoryBlocks, null, 2),
     sourceNpcMidTermBlocks: JSON.stringify(task.sourceNpcMidTermBlocks, null, 2),
@@ -395,21 +466,57 @@ export function buildMemorySummaryCompressionMessages(task: MemorySummaryTaskInp
         resolvePromptTemplate('memory.summaryCompressionUserPrompt', defaultUserPrompt, userTemplateValues),
         '',
         '## P1 分层压缩强制输入（即使自定义模板较旧也必须处理）',
-        '- 对应输入为空时，输出中的对应数组必须是 []，不得凭空生成摘要。',
-        `playerRecentBatchQualified: ${task.sourceRecentTurnSummaries.length >= task.recentTurnCompressThreshold}`,
+        `activeCompressionScopes: ${JSON.stringify(task.activeScopes)}`,
+        '- 只有 activeCompressionScopes 列出的队列达到阈值；禁止生成其他层级。',
+        `playerRecentBatchQualified: ${task.activeScopes.includes('playerRecentToMid')}`,
         `playerRecentBatchThreshold: ${task.recentTurnCompressThreshold}`,
-        `playerMidBatchQualified: ${task.sourceMidTermSummaries.length >= 10}`,
+        `playerMidBatchQualified: ${task.activeScopes.includes('playerMidToLong')}`,
         '- playerRecentBatchQualified=false 时 midTermSummaries=[]；playerRecentBatchQualified=false 且 playerMidBatchQualified=false 时 longTermFacts=[]。',
         '- 每个合格玩家批次只返回一条摘要；每个 npcRawMemoryBlocks/npcMidTermBlocks 主体只返回一条摘要。',
         '- 来源 ID 和稳定摘要 ID 由本地覆盖，不得把一个批次拆成多条摘要。',
         '- 已完成、失败、失效或归档的承诺/事项必须保留其终态与结果；不得重新压缩成待办、尚未交付或仍需履行。',
         `sourceRecentTurnIds: ${JSON.stringify(task.sourceRecentTurnSummaries.map((item) => item.id))}`,
-        `sourceMidTermSummaries: ${JSON.stringify(task.sourceMidTermSummaries)}`,
-        `npcRawMemoryBlocks: ${JSON.stringify(task.relatedNpcMemoryBlocks)}`,
-        `npcMidTermBlocks: ${JSON.stringify(task.sourceNpcMidTermBlocks)}`,
+        `sourceMidTermSummaryIds: ${JSON.stringify(task.sourceMidTermSummaries.map((item) => item.summaryId))}`,
+        `npcRawMemoryBlockIds: ${JSON.stringify(task.relatedNpcMemoryBlocks.map((block) => ({
+          npcId: block.npcId,
+          sourceMemoryIds: block.memories.map((memory) => memory.memoryId),
+        })))}`,
+        `npcMidTermBlockIds: ${JSON.stringify(task.sourceNpcMidTermBlocks.map((block) => ({
+          npcId: block.npcId,
+          sourceMidTermSummaryIds: block.summaries.map((summary) => summary.summaryId),
+        })))}`,
       ].join('\n'),
     },
   ];
+}
+
+function buildSourceTurnCompressionContext(task: MemorySummaryTaskInput): Array<Record<string, unknown>> {
+  return task.sourceTurnLogs.map((turn) => ({
+    turnNumber: turn.turnNumber,
+    date: turn.date,
+    playerInput: turn.playerInput,
+    narrativeText: turn.fullNarrativeText || turn.narrativeText,
+    statePatchSummary: turn.statePatchSummary,
+  }));
+}
+
+function buildMemorySummarySourceLabel(task?: MemorySummaryTaskInput): string {
+  if (!task) return '已整理达到阈值的记忆队列';
+  const labels = [
+    ...(task.activeScopes.includes('playerRecentToMid')
+      ? [`玩家短期${task.sourceRecentTurnSummaries.length}条`]
+      : []),
+    ...(task.activeScopes.includes('playerMidToLong')
+      ? [`玩家中期${task.sourceMidTermSummaries.length}条`]
+      : []),
+    ...(task.activeScopes.includes('npcRawToMid')
+      ? [`NPC原始记忆${task.relatedNpcMemoryBlocks.reduce((sum, block) => sum + block.memories.length, 0)}条`]
+      : []),
+    ...(task.activeScopes.includes('npcMidToLong')
+      ? [`NPC中期记忆${task.sourceNpcMidTermBlocks.reduce((sum, block) => sum + block.summaries.length, 0)}条`]
+      : []),
+  ];
+  return `仅整理达到阈值队列（${labels.join('、')}）`;
 }
 
 export function parseMemorySummaryResult(content: string, fallbackUpdatedAt: string): MemorySummaryResult {

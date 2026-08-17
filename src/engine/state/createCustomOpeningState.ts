@@ -8,6 +8,8 @@ import type {
   InventoryItem,
   MapNode,
   PlayerMemory,
+  GameDifficultyLevel,
+  NarrativePerspective,
   RuntimeState,
   StartBookmark,
   WorldlineRuntimeSettings,
@@ -16,6 +18,7 @@ import type {
 import { createPendingOpeningLoadout } from '../character/openingLoadout';
 import { clampReputationScore, getFameTierLabel, getMoralityTierLabel } from '../character/reputation';
 import { formatGameClock, tryCreateGameClockFromDateLabel } from '../time/gameClock';
+import { ensureCompleteBirthDate } from '../time/npcAge';
 import { ensureLuanShiState } from './createInitialRuntimeState';
 
 export interface CreateCustomOpeningStateInput {
@@ -27,6 +30,8 @@ export interface CreateCustomOpeningStateInput {
   courtesyName?: string;
   playerSex: '男' | '女' | '其他';
   playerAge: number;
+  playerBirthMonth?: number;
+  playerBirthDay?: number;
   origin: string;
   birthOrigin?: string;
   birthOriginDescription?: string;
@@ -53,6 +58,10 @@ export interface CreateCustomOpeningStateInput {
   reputation?: CharacterReputation;
   playerMemory?: PlayerMemory;
   worldlineSettings?: WorldlineRuntimeSettings;
+  gameDifficulty?: GameDifficultyLevel;
+  combatDifficulty?: GameDifficultyLevel;
+  warDifficulty?: GameDifficultyLevel;
+  narrativePerspective?: NarrativePerspective;
   openingExtraRequest?: string;
   customNotes?: string;
 }
@@ -183,6 +192,8 @@ export function createCustomOpeningState(input: CreateCustomOpeningStateInput) {
     courtesyName,
     playerSex,
     playerAge,
+    playerBirthMonth,
+    playerBirthDay,
     origin,
     birthOrigin,
     birthOriginDescription,
@@ -209,6 +220,10 @@ export function createCustomOpeningState(input: CreateCustomOpeningStateInput) {
     reputation,
     playerMemory,
     worldlineSettings,
+    gameDifficulty,
+    combatDifficulty,
+    warDifficulty,
+    narrativePerspective,
     openingExtraRequest,
     customNotes,
   } = input;
@@ -232,6 +247,14 @@ export function createCustomOpeningState(input: CreateCustomOpeningStateInput) {
   const safeSituation = clean(situationSummary) || `${safeName}以${origin}身份踏入乱世。`;
   const openingClock = tryCreateGameClockFromDateLabel(bookmark.startDate);
   const openingDateLabel = openingClock ? formatGameClock(openingClock) : bookmark.startDate;
+  const normalizedPlayerAge = floorAtLeast(playerAge, 18, 1);
+  const playerBirthDate = ensureCompleteBirthDate({
+    age: normalizedPlayerAge,
+    currentDate: openingDateLabel,
+    stableId: 'player_1',
+    preferredMonth: playerBirthMonth,
+    preferredDay: playerBirthDay,
+  });
   const openingDeedSummary = `自定义开局：${safeName}以${origin}身份开始行动。`;
   const normalizedVitals = vitals ?? defaultVitals;
   const normalizedReputation = reputation ?? deriveOpeningReputation({
@@ -284,7 +307,8 @@ export function createCustomOpeningState(input: CreateCustomOpeningStateInput) {
     name: safeName,
     courtesyName: safeCourtesyName || undefined,
     sex: playerSex,
-    age: floorAtLeast(playerAge, 18, 1),
+    age: normalizedPlayerAge,
+    birthDate: playerBirthDate,
     roleType: origin,
     socialClass: origin,
     birthOrigin: safeBirthOrigin || undefined,
@@ -317,6 +341,10 @@ export function createCustomOpeningState(input: CreateCustomOpeningStateInput) {
     worldBookId: worldBook.manifest.id,
     worldBookVersion: worldBook.manifest.version,
     worldBookSource: worldBook.manifest.source,
+    gameDifficulty,
+    combatDifficulty,
+    warDifficulty,
+    narrativePerspective,
     worldlineSettings: {
       knowledgeMode: worldlineSettings?.knowledgeMode ?? 'default',
       knowledgeBaseId: worldlineSettings?.knowledgeBaseId,

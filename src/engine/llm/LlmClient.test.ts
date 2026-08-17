@@ -331,7 +331,13 @@ describe('BrowserLlmClient', () => {
   it('uses the OpenAI-compatible chat completions shape for mainstream compatible providers', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       choices: [{ message: { content: '{"narrativeText":"AI正文","suggestedActions":[],"statePatch":null}' } }],
-      usage: { prompt_tokens: 1234, completion_tokens: 456, total_tokens: 1690 },
+      usage: {
+        prompt_tokens: 1234,
+        completion_tokens: 456,
+        total_tokens: 1690,
+        prompt_cache_hit_tokens: 1000,
+        prompt_cache_miss_tokens: 234,
+      },
     }), { status: 200 }));
     const client = new BrowserLlmClient(fetchImpl);
 
@@ -349,6 +355,8 @@ describe('BrowserLlmClient', () => {
       promptTokens: 1234,
       completionTokens: 456,
       totalTokens: 1690,
+      cacheReadTokens: 1000,
+      cacheMissTokens: 234,
     });
     expect(fetchImpl).toHaveBeenCalledWith(
       'https://api.deepseek.com/v1/chat/completions',
@@ -371,6 +379,144 @@ describe('BrowserLlmClient', () => {
       ],
       response_format: { type: 'json_object' },
     });
+  });
+
+  it('keeps GLM structured-output request shaping for the Coding Plan endpoint', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }],
+    }), { status: 200 }));
+    const client = new BrowserLlmClient(fetchImpl);
+
+    const result = await client.generate({
+      config: makeConfig({
+        provider: 'zhipu_coding',
+        baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+        model: 'glm-4.5',
+      }),
+      messages: [{ role: 'user', content: 'structured prompt' }],
+      responseFormat: 'json_object',
+    });
+
+    const fetchCalls = fetchImpl.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(fetchCalls[0][0]).toBe('https://open.bigmodel.cn/api/coding/paas/v4/chat/completions');
+    expect(JSON.parse(String(fetchCalls[0][1].body))).toMatchObject({
+      response_format: { type: 'json_object' },
+    });
+    expect(result).toMatchObject({ content: '{"ok":true}', finishReason: 'stop' });
+  });
+
+  it('uses MiniMax reasoning separation without forcing response_format', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{
+        message: { reasoning_content: 'internal reasoning', content: '{"ok":true}' },
+        finish_reason: 'stop',
+      }],
+    }), { status: 200 }));
+    const client = new BrowserLlmClient(fetchImpl);
+
+    const result = await client.generate({
+      config: makeConfig({
+        provider: 'minimax',
+        baseUrl: 'https://api.minimaxi.com/v1',
+        model: 'MiniMax-M2.1',
+      }),
+      messages: [{ role: 'user', content: 'structured prompt' }],
+      responseFormat: 'json_object',
+    });
+
+    const fetchCalls = fetchImpl.mock.calls as unknown as Array<[string, RequestInit]>;
+    const body = JSON.parse(String(fetchCalls[0][1].body));
+    expect(body).toMatchObject({ reasoning_split: true, max_tokens: 2048 });
+    expect(body.response_format).toBeUndefined();
+    expect(result).toMatchObject({ content: '{"ok":true}', finishReason: 'stop' });
+    expect(result.content).not.toContain('internal reasoning');
+  });
+
+  it('normalizes cumulative MiniMax SSE content while ignoring reasoning_content', async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"think","content":"{\\"ok\\""}}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"thinking","content":"{\\"ok\\":true"}}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"{\\"ok\\":true}"},"finish_reason":"stop"}]}\n\n'));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    });
+    const client = new BrowserLlmClient(vi.fn(async () => new Response(stream, { status: 200 })));
+    const deltas: string[] = [];
+
+    const result = await client.generate({
+      config: makeConfig({
+        provider: 'minimax_international',
+        baseUrl: 'https://api.minimax.io/v1',
+        model: 'MiniMax-M2.1',
+      }),
+      messages: [{ role: 'user', content: 'stream prompt' }],
+      responseFormat: 'json_object',
+      onContentDelta: (delta) => deltas.push(delta),
+    });
+
+    expect(deltas).toEqual(['{"ok"', ':true', '}']);
+    expect(result).toMatchObject({ content: '{"ok":true}', finishReason: 'stop' });
+  });
+
+  it('keeps GLM SSE content incremental and reports its finish reason', async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"think","content":"{\\"ok\\""}}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":":true}"},"finish_reason":"stop"}]}\n\n'));
+        controller.close();
+      },
+    });
+    const fetchImpl = vi.fn(async () => new Response(stream, { status: 200 }));
+    const client = new BrowserLlmClient(fetchImpl);
+    const deltas: string[] = [];
+
+    const result = await client.generate({
+      config: makeConfig({
+        provider: 'zhipu',
+        baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+        model: 'glm-4.5',
+      }),
+      messages: [{ role: 'user', content: 'stream prompt' }],
+      responseFormat: 'json_object',
+      onContentDelta: (delta) => deltas.push(delta),
+    });
+
+    const fetchCalls = fetchImpl.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(JSON.parse(String(fetchCalls[0][1].body))).toMatchObject({
+      response_format: { type: 'json_object' },
+    });
+    expect(deltas).toEqual(['{"ok"', ':true}']);
+    expect(result).toMatchObject({ content: '{"ok":true}', finishReason: 'stop' });
+  });
+
+  it('keeps ordinary OpenAI-compatible request and incremental stream semantics unchanged', async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"A"}}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"AB"},"finish_reason":"stop"}]}\n\n'));
+        controller.close();
+      },
+    });
+    const fetchImpl = vi.fn(async () => new Response(stream, { status: 200 }));
+    const client = new BrowserLlmClient(fetchImpl);
+
+    const result = await client.generate({
+      config: makeConfig(),
+      messages: [{ role: 'user', content: 'stream prompt' }],
+      responseFormat: 'json_object',
+      onContentDelta: () => undefined,
+    });
+
+    const fetchCalls = fetchImpl.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(JSON.parse(String(fetchCalls[0][1].body))).toMatchObject({
+      response_format: { type: 'json_object' },
+    });
+    expect(result.content).toBe('AAB');
   });
 
   it('throws a typed empty-content error with usage for OpenAI-compatible responses', async () => {
@@ -544,6 +690,94 @@ describe('BrowserLlmClient', () => {
     expect(JSON.parse(String(fetchCalls[0][1].body))).toMatchObject({ stream: true });
   });
 
+  it('keeps the final OpenAI-compatible SSE delta when the provider closes without a blank-line terminator', async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"{\\"narrativeText\\":\\"流式正文"}}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"\\"}"}}]}'));
+        controller.close();
+      },
+    });
+    const fetchImpl = vi.fn(async () => new Response(stream, { status: 200 }));
+    const client = new BrowserLlmClient(fetchImpl);
+    const deltas: string[] = [];
+
+    const result = await client.generate({
+      config: makeConfig(),
+      messages: [{ role: 'user', content: 'user prompt' }],
+      onContentDelta: (delta) => deltas.push(delta),
+    });
+
+    expect(deltas).toEqual(['{"narrativeText":"流式正文', '"}']);
+    expect(result.content).toBe('{"narrativeText":"流式正文"}');
+  });
+
+  it('adds stable prompt-cache routing only for the official OpenAI endpoint', async () => {
+    const encoder = new TextEncoder();
+    const makeStream = () => new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    });
+    const fetchImpl = vi.fn(async () => new Response(makeStream(), { status: 200 }));
+    const client = new BrowserLlmClient(fetchImpl);
+
+    await client.generate({
+      config: makeConfig({
+        provider: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-cache-test',
+      }),
+      messages: [
+        { role: 'system', content: 'stable system contract' },
+        { role: 'user', content: 'dynamic turn one' },
+      ],
+      onContentDelta: () => undefined,
+    });
+    await client.generate({
+      config: makeConfig({
+        provider: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-cache-test',
+      }),
+      messages: [
+        { role: 'system', content: 'stable system contract' },
+        { role: 'user', content: 'dynamic turn two' },
+      ],
+      onContentDelta: () => undefined,
+    });
+
+    const fetchCalls = fetchImpl.mock.calls as unknown as Array<[string, RequestInit]>;
+    const firstBody = JSON.parse(String(fetchCalls[0][1].body));
+    const secondBody = JSON.parse(String(fetchCalls[1][1].body));
+    expect(firstBody.prompt_cache_key).toMatch(/^coc-v2:gpt-cache-test:[0-9a-f]{8}$/);
+    expect(firstBody.prompt_cache_key).toBe(secondBody.prompt_cache_key);
+    expect(firstBody.stream_options).toEqual({ include_usage: true });
+  });
+
+  it('does not add official OpenAI cache parameters to a custom compatible host', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: '代理正文' } }],
+    }), { status: 200 }));
+    const client = new BrowserLlmClient(fetchImpl);
+
+    await client.generate({
+      config: makeConfig({
+        provider: 'openai',
+        baseUrl: 'https://openai-proxy.example/v1',
+      }),
+      messages: [{ role: 'user', content: 'user prompt' }],
+    });
+
+    const fetchCalls = fetchImpl.mock.calls as unknown as Array<[string, RequestInit]>;
+    const body = JSON.parse(String(fetchCalls[0][1].body));
+    expect(body.prompt_cache_key).toBeUndefined();
+    expect(body.stream_options).toBeUndefined();
+  });
+
   it('uses the typed empty-content error for empty OpenAI-compatible streams', async () => {
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
@@ -573,7 +807,12 @@ describe('BrowserLlmClient', () => {
   it('uses Anthropic Messages API shape for Claude configs', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       content: [{ type: 'text', text: 'Claude正文' }],
-      usage: { input_tokens: 3200, output_tokens: 620 },
+      usage: {
+        input_tokens: 3200,
+        output_tokens: 620,
+        cache_read_input_tokens: 2400,
+        cache_creation_input_tokens: 400,
+      },
     }), { status: 200 }));
     const client = new BrowserLlmClient(fetchImpl);
 
@@ -594,6 +833,8 @@ describe('BrowserLlmClient', () => {
       promptTokens: 3200,
       completionTokens: 620,
       totalTokens: 3820,
+      cacheReadTokens: 2400,
+      cacheWriteTokens: 400,
     });
     expect(fetchImpl).toHaveBeenCalledWith(
       'https://api.anthropic.com/v1/messages',
@@ -609,10 +850,39 @@ describe('BrowserLlmClient', () => {
     const body = JSON.parse(String(fetchCalls[0][1].body));
     expect(body).toMatchObject({
       model: 'claude-sonnet-test',
-      system: 'system prompt',
+      system: [{
+        type: 'text',
+        text: 'system prompt',
+        cache_control: { type: 'ephemeral' },
+      }],
       messages: [{ role: 'user', content: 'user prompt' }],
       max_tokens: 2048,
     });
+  });
+
+  it('keeps the legacy string system shape for non-official Anthropic-compatible endpoints', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      content: [{ type: 'text', text: '代理正文' }],
+      usage: { input_tokens: 100, output_tokens: 20 },
+    }), { status: 200 }));
+    const client = new BrowserLlmClient(fetchImpl);
+
+    await client.generate({
+      config: makeConfig({
+        provider: 'anthropic',
+        baseUrl: 'https://anthropic-proxy.example/v1',
+        model: 'claude-compatible',
+      }),
+      messages: [
+        { role: 'system', content: 'system prompt' },
+        { role: 'user', content: 'user prompt' },
+      ],
+    });
+
+    const fetchCalls = fetchImpl.mock.calls as unknown as Array<[string, RequestInit]>;
+    const body = JSON.parse(String(fetchCalls[0][1].body));
+    expect(body.system).toBe('system prompt');
+    expect(body.cache_control).toBeUndefined();
   });
 
   it('throws a typed empty-content error with usage for Anthropic responses', async () => {

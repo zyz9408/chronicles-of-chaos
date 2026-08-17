@@ -311,27 +311,9 @@ async function cloneCurrentSaveAsB(page: Page): Promise<string> {
       saveB.updatedAt = '2026-07-10T09:00:00.000Z';
       saveB.runtimeState.player.name = 'B档主角';
 
-      const currentLocation = saveB.runtimeState.locations?.find(
-        (location: Record<string, any>) => location.locationId === saveB.runtimeState.currentLocationId,
-      );
-      const saveBSummary = {
-        id: saveB.id,
-        label: saveB.label,
-        saveKind: saveB.saveKind ?? 'auto',
-        createdAt: saveB.createdAt,
-        updatedAt: saveB.updatedAt,
-        worldBookId: saveB.worldBookId,
-        startBookmarkId: saveB.startBookmarkId,
-        currentDate: saveB.currentDate,
-        playerName: saveB.runtimeState.player.name || '未命名角色',
-        locationName: currentLocation?.name ?? '',
-        turnCount: saveB.runtimeState.turnLog?.length ?? 0,
-      };
-
       await new Promise<void>((resolve, reject) => {
-        const tx = db.transaction(['saves', 'saveSummaries'], 'readwrite');
+        const tx = db.transaction('saves', 'readwrite');
         tx.objectStore('saves').put(saveB);
-        tx.objectStore('saveSummaries').put(saveBSummary);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
@@ -549,9 +531,10 @@ test('closing an in-game load modal invalidates its pending save read without sw
   await page.locator('.save-modal-close').click();
   await expect(page.locator('.input-row textarea')).toHaveValue('关闭空闲读档窗口后应保留');
 
+  const completedBReads = await delayedRead.completedReadCount(SAVE_B_ID);
   await page.getByTestId('game-load-progress').click();
+  await expect.poll(() => delayedRead.completedReadCount(SAVE_B_ID)).toBeGreaterThan(completedBReads);
   const saveBItem = page.locator('.save-item').filter({ hasText: 'B档主角' });
-  await expect(saveBItem).toBeVisible();
   await saveBItem.evaluate((element, saveId) => {
     element.addEventListener('click', () => {
       (window as unknown as { __cocDelayNextSaveReadId?: string }).__cocDelayNextSaveReadId = saveId;

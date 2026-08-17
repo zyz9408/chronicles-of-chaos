@@ -4,6 +4,11 @@ import type {
   TroopSemanticProfile,
 } from './EncounterContracts';
 import type { WarTactic } from './WarTypes';
+import {
+  troopFatigueCombatMultiplier,
+  troopFatiguePercentFromBand,
+  troopFatigueRetreatPenaltyPoints,
+} from '../troops/TroopFatigue';
 
 export interface NormalizedWarSupply {
   value: number;
@@ -17,6 +22,14 @@ export interface WarTacticCoefficients {
   fatigueCost: number;
   supplyCost: number;
 }
+
+export interface WarTroopCompositionComponent {
+  primaryClass: Exclude<TroopSemanticProfile['primaryClass'], 'mixed'> | 'mixed';
+  sharePercent: number;
+  tags: TroopSemanticProfile['tags'];
+}
+
+type WarTroopProfileLike = Pick<TroopSemanticProfile, 'primaryClass' | 'tags' | 'composition'>;
 
 export const WAR_ROUND_LIMIT_DECISIVE_RATIO = 1.20 as const;
 
@@ -36,6 +49,44 @@ export function clampWarValue(value: number, minimum: number, maximum: number): 
   return Math.max(minimum, Math.min(maximum, value));
 }
 
+export function warMoraleFactor(morale: number): number {
+  const value = clampWarValue(morale, 0, 100);
+  if (value >= 80) return 1.05 + (value - 80) * 0.0025;
+  if (value >= 60) return 0.95 + (value - 60) * 0.005;
+  if (value >= 40) return 0.80 + (value - 40) * 0.0075;
+  if (value >= 20) return 0.60 + (value - 20) * 0.01;
+  return 0.35 + value * 0.0125;
+}
+
+function legacyWarMoraleFactor(morale: number): number {
+  const value = clampWarValue(morale, 0, 100);
+  return (0.5 + value / 200) * (value < 15 ? 0.8 : 1);
+}
+
+export function warMoraleCasualtyExposure(morale: number): number {
+  const value = clampWarValue(morale, 0, 100);
+  if (value >= 80) return 0.95;
+  if (value >= 60) return 1;
+  if (value >= 40) return 1.08;
+  if (value >= 20) return 1.22;
+  return 1.45;
+}
+
+export function resolveWarTroopComposition(profile: WarTroopProfileLike): WarTroopCompositionComponent[] {
+  if (profile.composition && profile.composition.length >= 2) {
+    return profile.composition.map((component) => ({
+      primaryClass: component.primaryClass,
+      sharePercent: component.sharePercent,
+      tags: [...new Set([...profile.tags, ...(component.tags ?? [])])],
+    }));
+  }
+  return [{
+    primaryClass: profile.primaryClass,
+    sharePercent: 100,
+    tags: [...profile.tags],
+  }];
+}
+
 export function normalizeWarQuality(value: '低' | '中' | '高' | '精锐' | undefined): number {
   if (value === '低') return 85;
   if (value === '高') return 112;
@@ -50,10 +101,7 @@ export function normalizeWarReadiness(value: '低' | '中' | '高' | undefined):
 }
 
 export function normalizeWarFatigue(value: '低' | '中' | '高' | '极高' | undefined): number {
-  if (value === '中') return 35;
-  if (value === '高') return 60;
-  if (value === '极高') return 85;
-  return 15;
+  return troopFatiguePercentFromBand(value);
 }
 
 const SUPPLY_STATUS_VALUES = new Map<string, number>([
@@ -124,6 +172,64 @@ export function calculateWarCommanderScore(input: WarCommanderScoreInput): numbe
     + clampWarValue(input.charm, 0, 100) * 0.10
     + clampWarValue(input.politics, 0, 100) * 0.05
   ).toFixed(2));
+}
+
+export function calculateWarCommanderFactor(input: {
+  commanderPresent: boolean;
+  leadership?: number;
+  leadershipKnown?: boolean;
+}): number {
+  if (!input.commanderPresent) return 0.56;
+  if (!input.leadershipKnown) return 0.68;
+  const leadership = clampWarValue(input.leadership ?? 0, 0, 100);
+  const anchors = [
+    { leadership: 0, factor: 0.56 },
+    { leadership: 40, factor: 0.80 },
+    { leadership: 50, factor: 1.00 },
+    { leadership: 60, factor: 1.24 },
+    { leadership: 70, factor: 1.56 },
+    { leadership: 80, factor: 1.92 },
+    { leadership: 90, factor: 2.40 },
+    { leadership: 95, factor: 2.72 },
+    { leadership: 100, factor: 3.08 },
+  ] as const;
+  const upperIndex = anchors.findIndex((anchor) => leadership <= anchor.leadership);
+  if (upperIndex <= 0) return anchors[0].factor;
+  const lower = anchors[upperIndex - 1];
+  const upper = anchors[upperIndex];
+  const progress = (leadership - lower.leadership) / (upper.leadership - lower.leadership);
+  return Number((lower.factor + (upper.factor - lower.factor) * progress).toFixed(3));
+}
+
+/**
+ * Frozen War V2.4 commander curve. Existing active encounters keep this
+ * calculation so a balance update cannot change a sealed checkpoint.
+ */
+export function calculateWarV24CommanderFactor(input: {
+  commanderPresent: boolean;
+  leadership?: number;
+  leadershipKnown?: boolean;
+}): number {
+  if (!input.commanderPresent) return 0.45;
+  if (!input.leadershipKnown) return 0.60;
+  const leadership = clampWarValue(input.leadership ?? 0, 0, 100);
+  const anchors = [
+    { leadership: 0, factor: 0.45 },
+    { leadership: 40, factor: 0.75 },
+    { leadership: 50, factor: 1.00 },
+    { leadership: 60, factor: 1.30 },
+    { leadership: 70, factor: 1.70 },
+    { leadership: 80, factor: 2.15 },
+    { leadership: 90, factor: 2.75 },
+    { leadership: 95, factor: 3.15 },
+    { leadership: 100, factor: 3.60 },
+  ] as const;
+  const upperIndex = anchors.findIndex((anchor) => leadership <= anchor.leadership);
+  if (upperIndex <= 0) return anchors[0].factor;
+  const lower = anchors[upperIndex - 1];
+  const upper = anchors[upperIndex];
+  const progress = (leadership - lower.leadership) / (upper.leadership - lower.leadership);
+  return Number((lower.factor + (upper.factor - lower.factor) * progress).toFixed(3));
 }
 
 export function resolveWarTacticCoefficients(
@@ -197,6 +303,155 @@ export function troopEnvironmentFactor(input: {
   return Number(clampWarValue(factor, 0.5, 1.5).toFixed(4));
 }
 
+function componentMatchupFactor(input: {
+  attacker: WarTroopCompositionComponent;
+  defender: WarTroopCompositionComponent;
+  environmentTags: EncounterEnvironmentTag[];
+  attackerTactic: WarTactic;
+  defenderTactic: WarTactic;
+}): number {
+  const attackerClass = input.attacker.primaryClass;
+  const defenderClass = input.defender.primaryClass;
+  let factor = 1;
+  if (attackerClass === 'cavalry') {
+    if (defenderClass === 'infantry') factor = 1.35;
+    else if (defenderClass === 'ranged') factor = 1.85;
+    else if (defenderClass === 'siege') factor = 1.55;
+    else if (defenderClass === 'naval') factor = 0.65;
+  } else if (attackerClass === 'infantry') {
+    if (defenderClass === 'cavalry') factor = 0.80;
+    else if (defenderClass === 'ranged') factor = 1.15;
+    else if (defenderClass === 'siege') factor = 1.20;
+  } else if (attackerClass === 'ranged') {
+    if (defenderClass === 'infantry') factor = 1.20;
+    else if (defenderClass === 'cavalry') factor = 0.70;
+    else if (defenderClass === 'siege') factor = 1.10;
+  } else if (attackerClass === 'siege') {
+    factor = input.environmentTags.includes('fortified') ? 1.75 : 0.60;
+  } else if (attackerClass === 'naval') {
+    factor = input.environmentTags.includes('water') ? 1.65 : 0.55;
+  }
+
+  const attacksCavalry = defenderClass === 'cavalry';
+  if (input.attacker.tags.includes('anti_cavalry') && attacksCavalry) {
+    factor = Math.max(factor, input.attackerTactic === 'hold_position' ? 2.20 : 1.85);
+  }
+  if (attackerClass === 'cavalry' && input.defender.tags.includes('anti_cavalry')) factor *= 0.42;
+  if (attackerClass === 'cavalry'
+    && input.attacker.tags.includes('heavy')
+    && input.environmentTags.includes('open')
+    && (defenderClass === 'infantry' || defenderClass === 'ranged' || defenderClass === 'siege')) {
+    factor *= 1.25;
+  }
+  if (input.defender.tags.includes('heavy')) factor *= 0.80;
+  if (input.defender.tags.includes('defensive') && input.defenderTactic === 'hold_position') factor *= 0.82;
+  if ((input.environmentTags.includes('fortified') || input.environmentTags.includes('difficult'))
+    && input.attackerTactic === 'flank'
+    && input.defenderTactic === 'hold_position') {
+    factor *= 0.62;
+  }
+  return clampWarValue(factor, 0.40, 2.20);
+}
+
+export function troopMatchupFactor(input: {
+  attacker: WarTroopProfileLike;
+  defender: WarTroopProfileLike;
+  environmentTags: EncounterEnvironmentTag[];
+  attackerTactic: WarTactic;
+  defenderTactic: WarTactic;
+}): number {
+  const attackers = resolveWarTroopComposition(input.attacker);
+  const defenders = resolveWarTroopComposition(input.defender);
+  let factor = 0;
+  for (const attacker of attackers) {
+    for (const defender of defenders) {
+      factor += componentMatchupFactor({
+        attacker,
+        defender,
+        environmentTags: input.environmentTags,
+        attackerTactic: input.attackerTactic,
+        defenderTactic: input.defenderTactic,
+      }) * (attacker.sharePercent / 100) * (defender.sharePercent / 100);
+    }
+  }
+  return Number(clampWarValue(factor, 0.40, 2.20).toFixed(4));
+}
+
+export function calculateWarShockMoralePenalty(input: {
+  attacker: WarTroopProfileLike;
+  defender: WarTroopProfileLike;
+  environmentTags: EncounterEnvironmentTag[];
+  attackerTactic: WarTactic;
+  defenderTactic: WarTactic;
+  attackerMorale: number;
+  attackerTraining: number;
+  attackerReadiness: number;
+  attackerSupply: number;
+  defenderTraining: number;
+  defenderQuality: number;
+}): number {
+  if (!input.environmentTags.includes('open')) return 0;
+  if (!['all_out_assault', 'flank'].includes(input.attackerTactic)) return 0;
+  if (input.attackerMorale < 40 || input.attackerReadiness < 45 || input.attackerSupply < 25) return 0;
+  const attackers = resolveWarTroopComposition(input.attacker);
+  const defenders = resolveWarTroopComposition(input.defender);
+  const heavyCavalryShare = attackers.reduce((sum, component) => (
+    component.primaryClass === 'cavalry' && component.tags.includes('heavy')
+      ? sum + component.sharePercent / 100
+      : sum
+  ), 0);
+  if (heavyCavalryShare < 0.35) return 0;
+  const vulnerableShare = defenders.reduce((sum, component) => {
+    if (component.tags.includes('anti_cavalry')) return sum;
+    if (component.primaryClass === 'ranged' || component.primaryClass === 'siege') {
+      return sum + component.sharePercent / 100;
+    }
+    if (component.primaryClass === 'infantry' || component.primaryClass === 'mixed') {
+      return sum + component.sharePercent / 200;
+    }
+    return sum;
+  }, 0);
+  const antiCavalryShare = defenders.reduce((sum, component) => (
+    component.tags.includes('anti_cavalry') ? sum + component.sharePercent / 100 : sum
+  ), 0);
+  let penalty = 8
+    + heavyCavalryShare * 12
+    + vulnerableShare * 8
+    + Math.max(0, input.attackerTraining - input.defenderTraining) * 0.18
+    + Math.max(0, 100 - input.defenderQuality) * 0.12;
+  penalty *= 1 - antiCavalryShare * 0.80;
+  if (input.defenderTactic === 'hold_position') penalty *= 0.75;
+  return Math.round(clampWarValue(penalty, 0, 30));
+}
+
+function compressWarNumericalAdvantage(own: number, enemy: number, coordination: number): number {
+  if (own <= enemy || enemy <= 0) return own;
+  const ratio = own / enemy;
+  const coordinationScale = 0.65 + clampWarValue(coordination, 0, 100) / 225;
+  const engagedRatio = Math.min(ratio, 1 + Math.log(ratio) * coordinationScale);
+  return enemy * engagedRatio;
+}
+
+export function resolveWarEngagedStrengths(input: {
+  playerRawStrength: number;
+  enemyRawStrength: number;
+  playerCoordination: number;
+  enemyCoordination: number;
+}): { player: number; enemy: number } {
+  return {
+    player: compressWarNumericalAdvantage(
+      Math.max(0, input.playerRawStrength),
+      Math.max(0, input.enemyRawStrength),
+      input.playerCoordination,
+    ),
+    enemy: compressWarNumericalAdvantage(
+      Math.max(0, input.enemyRawStrength),
+      Math.max(0, input.playerRawStrength),
+      input.enemyCoordination,
+    ),
+  };
+}
+
 export function calculateWarEffectiveStrength(input: {
   strength: number;
   training: number;
@@ -206,20 +461,25 @@ export function calculateWarEffectiveStrength(input: {
   supply: number;
   fatigue: number;
   commanderScore: number;
+  commanderFactor?: number;
   environmentFactor: number;
+  matchupFactor?: number;
+  moraleModel?: 'legacy' | 'v22';
   tacticFactor: number;
   semanticModifierPercent: number;
 }): number {
   if (input.strength <= 0) return 0;
   const trainingFactor = 0.5 + clampWarValue(input.training, 0, 100) / 200;
-  const moraleValue = clampWarValue(input.morale, 0, 100);
-  const moraleFactor = (0.5 + moraleValue / 200) * (moraleValue < 15 ? 0.8 : 1);
+  const moraleFactor = input.moraleModel === 'legacy'
+    ? legacyWarMoraleFactor(input.morale)
+    : warMoraleFactor(input.morale);
   const qualityFactor = clampWarValue(input.quality, 70, 130) / 100;
   const readinessFactor = 0.5 + clampWarValue(input.readiness, 0, 100) / 200;
   const supplyFactor = 0.5 + clampWarValue(input.supply, 0, 100) / 200;
-  const fatigueFactor = clampWarValue(1 - clampWarValue(input.fatigue, 0, 100) / 150, 0.35, 1);
-  const commanderFactor = 0.75 + clampWarValue(input.commanderScore, 0, 100) / 200;
-  const semanticFactor = 1 + clampWarValue(input.semanticModifierPercent, -30, 30) / 100;
+  const fatigueFactor = troopFatigueCombatMultiplier(input.fatigue);
+  const commanderFactor = input.commanderFactor
+    ?? 0.75 + clampWarValue(input.commanderScore, 0, 100) / 200;
+  const semanticFactor = 1 + clampWarValue(input.semanticModifierPercent, -80, 280) / 100;
   return Math.max(0, input.strength
     * trainingFactor
     * moraleFactor
@@ -229,6 +489,7 @@ export function calculateWarEffectiveStrength(input: {
     * fatigueFactor
     * commanderFactor
     * clampWarValue(input.environmentFactor, 0.5, 1.5)
+    * clampWarValue(input.matchupFactor ?? 1, 0.4, 2.2)
     * clampWarValue(input.tacticFactor, 0.5, 1.6)
     * semanticFactor);
 }
@@ -240,6 +501,7 @@ export function calculateWarCasualtyRate(input: {
   ownExposure: number;
   perturbation: number;
   semanticModifierPercent: number;
+  commanderModifierPercent?: number;
 }): number {
   const ratio = Math.sqrt(Math.max(0, input.enemyEffectiveStrength) / Math.max(1, input.ownEffectiveStrength));
   const rate = 0.02
@@ -247,7 +509,8 @@ export function calculateWarCasualtyRate(input: {
     * clampWarValue(input.enemyOffense, 0.5, 1.6)
     * clampWarValue(input.ownExposure, 0.5, 1.5)
     * clampWarValue(input.perturbation, 0.95, 1.05)
-    * (1 + clampWarValue(input.semanticModifierPercent, -30, 30) / 100);
+    * (1 + clampWarValue(input.semanticModifierPercent, -80, 280) / 100)
+    * (1 + clampWarValue(input.commanderModifierPercent ?? 0, -35, 35) / 100);
   return Number(clampWarValue(rate, 0.005, 0.08).toFixed(6));
 }
 
@@ -263,7 +526,7 @@ export function calculateWarRetreatChance(input: {
   const chance = 50
     + (input.ownMobility - input.enemyMobility) * 35
     + (input.ownMorale - input.enemyMorale) * 0.20
-    - input.ownFatigue * 0.15
+    - troopFatigueRetreatPenaltyPoints(input.ownFatigue)
     + (input.ownCommanderScore - input.enemyCommanderScore) * 0.20;
   return Math.round(clampWarValue(chance, 20, 90));
 }

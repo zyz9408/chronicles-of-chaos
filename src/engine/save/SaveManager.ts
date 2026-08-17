@@ -36,6 +36,8 @@ const LAST_SAVE_KEY = 'coc_v2_last_save_id';
 const LAST_SAVE_META_KEY = 'lastSaveId';
 const LEGACY_MIGRATION_META_KEY = 'legacySavesMigratedFromLocalStorage';
 const SAVE_SUMMARY_INDEX_META_KEY = 'saveSummaryIndexReadyV1';
+const DEVELOPER_OVERRIDE_CHECKPOINT_META_PREFIX = 'developerOverrideCheckpoint:';
+const RUNTIME_VARIABLE_CHECKPOINT_META_PREFIX = 'runtimeVariableCheckpoint:';
 const PERSISTED_FULL_TURN_DIAGNOSTIC_LIMIT = 5;
 
 export interface SaveArchive {
@@ -84,6 +86,48 @@ export interface CommitTurnRestoreInput extends SaveMutationOptions {
   saveId: string;
   runtimeState: RuntimeState;
   deleteSnapshotsAfterTurn: number;
+}
+
+export interface DeveloperOverrideCheckpoint {
+  version: 1;
+  saveId: string;
+  commandText: string;
+  createdAt: string;
+  committedStateFingerprint: string;
+  runtimeState: RuntimeState;
+}
+
+export interface CommitDeveloperOverrideInput extends SaveMutationOptions {
+  saveId: string;
+  previousRuntimeState: RuntimeState;
+  runtimeState: RuntimeState;
+  commandText: string;
+}
+
+export interface CommitDeveloperOverrideResult {
+  save: SaveData;
+  checkpoint: DeveloperOverrideCheckpoint;
+}
+
+export interface RuntimeVariableCheckpoint {
+  version: 1;
+  saveId: string;
+  summary: string;
+  createdAt: string;
+  committedStateFingerprint: string;
+  runtimeState: RuntimeState;
+}
+
+export interface CommitRuntimeVariableEditInput extends SaveMutationOptions {
+  saveId: string;
+  previousRuntimeState: RuntimeState;
+  runtimeState: RuntimeState;
+  summary: string;
+}
+
+export interface CommitRuntimeVariableEditResult {
+  save: SaveData;
+  checkpoint: RuntimeVariableCheckpoint;
 }
 
 /**
@@ -293,6 +337,200 @@ export async function commitTurnRestore(
 }
 
 /**
+ * 原子保存开发者事实纠错及其纠错前检查点。该检查点不属于正常回合快照，
+ * 不会改变回合数，也不会挤占玩家设置的重ROLL深度。
+ */
+export async function commitDeveloperOverride(
+  input: CommitDeveloperOverrideInput,
+): Promise<CommitDeveloperOverrideResult | null> {
+  assertEncounterPersistenceAllowed(input.previousRuntimeState);
+  assertEncounterPersistenceAllowed(input.runtimeState);
+  await ensureLegacySavesMigrated();
+  throwIfSignalAborted(input.signal);
+
+  return withLocalTransaction(
+    ['saves', 'saveSummaries', 'meta'],
+    'readwrite',
+    async ({ store, request }) => {
+      const existing = await request<SaveData | undefined>(store('saves').get(input.saveId));
+      if (!existing) return null;
+
+      const next = buildUpdatedSave(existing, input.runtimeState);
+      const checkpoint: DeveloperOverrideCheckpoint = {
+        version: 1,
+        saveId: input.saveId,
+        commandText: input.commandText,
+        createdAt: new Date().toISOString(),
+        committedStateFingerprint: fingerprintRuntimeState(next.runtimeState),
+        runtimeState: compactRuntimeStateForPersistence(input.previousRuntimeState),
+      };
+      await Promise.all([
+        request(store('saves').put(next)),
+        request(store('saveSummaries').put(toSaveListItem(next))),
+        request(store('meta').put({ key: LAST_SAVE_META_KEY, value: next.id })),
+        request(store('meta').put({
+          key: developerOverrideCheckpointMetaKey(input.saveId),
+          value: checkpoint,
+        })),
+      ]);
+      return { save: next, checkpoint };
+    },
+    input,
+  );
+}
+
+export async function hasRestorableDeveloperOverrideCheckpoint(saveId: string): Promise<boolean> {
+  await ensureLegacySavesMigrated();
+  return withLocalTransaction(
+    ['saves', 'meta'],
+    'readonly',
+    async ({ store, request }) => {
+      const [save, checkpointItem] = await Promise.all([
+        request<SaveData | undefined>(store('saves').get(saveId)),
+        request<{ key: string; value: DeveloperOverrideCheckpoint } | undefined>(
+          store('meta').get(developerOverrideCheckpointMetaKey(saveId)),
+        ),
+      ]);
+      return Boolean(
+        save
+        && checkpointItem?.value?.version === 1
+        && checkpointItem.value.saveId === saveId
+        && checkpointItem.value.committedStateFingerprint === fingerprintRuntimeState(save.runtimeState),
+      );
+    },
+  );
+}
+
+export async function restoreDeveloperOverrideCheckpoint(
+  saveId: string,
+  options: SaveMutationOptions = {},
+): Promise<SaveData | null> {
+  await ensureLegacySavesMigrated();
+  throwIfSignalAborted(options.signal);
+  return withLocalTransaction(
+    ['saves', 'saveSummaries', 'meta'],
+    'readwrite',
+    async ({ store, request }) => {
+      const key = developerOverrideCheckpointMetaKey(saveId);
+      const [existing, checkpointItem] = await Promise.all([
+        request<SaveData | undefined>(store('saves').get(saveId)),
+        request<{ key: string; value: DeveloperOverrideCheckpoint } | undefined>(store('meta').get(key)),
+      ]);
+      const checkpoint = checkpointItem?.value;
+      if (!existing || !checkpoint || checkpoint.version !== 1 || checkpoint.saveId !== saveId) return null;
+      if (checkpoint.committedStateFingerprint !== fingerprintRuntimeState(existing.runtimeState)) return null;
+
+      const restored = buildUpdatedSave(existing, checkpoint.runtimeState);
+      await Promise.all([
+        request(store('saves').put(restored)),
+        request(store('saveSummaries').put(toSaveListItem(restored))),
+        request(store('meta').put({ key: LAST_SAVE_META_KEY, value: restored.id })),
+        request(store('meta').delete(key)),
+      ]);
+      return restored;
+    },
+    options,
+  );
+}
+
+/**
+ * 原子保存一次受控变量修改及其修改前检查点。变量管理与 /dev 事实纠错各自
+ * 维护独立撤销点，互不覆盖，也不占用正常回合的重ROLL快照深度。
+ */
+export async function commitRuntimeVariableEdit(
+  input: CommitRuntimeVariableEditInput,
+): Promise<CommitRuntimeVariableEditResult | null> {
+  assertEncounterPersistenceAllowed(input.previousRuntimeState);
+  assertEncounterPersistenceAllowed(input.runtimeState);
+  await ensureLegacySavesMigrated();
+  throwIfSignalAborted(input.signal);
+
+  return withLocalTransaction(
+    ['saves', 'saveSummaries', 'meta'],
+    'readwrite',
+    async ({ store, request }) => {
+      const existing = await request<SaveData | undefined>(store('saves').get(input.saveId));
+      if (!existing) return null;
+
+      const next = buildUpdatedSave(existing, input.runtimeState);
+      const checkpoint: RuntimeVariableCheckpoint = {
+        version: 1,
+        saveId: input.saveId,
+        summary: input.summary,
+        createdAt: new Date().toISOString(),
+        committedStateFingerprint: fingerprintRuntimeState(next.runtimeState),
+        runtimeState: compactRuntimeStateForPersistence(input.previousRuntimeState),
+      };
+      await Promise.all([
+        request(store('saves').put(next)),
+        request(store('saveSummaries').put(toSaveListItem(next))),
+        request(store('meta').put({ key: LAST_SAVE_META_KEY, value: next.id })),
+        request(store('meta').put({
+          key: runtimeVariableCheckpointMetaKey(input.saveId),
+          value: checkpoint,
+        })),
+      ]);
+      return { save: next, checkpoint };
+    },
+    input,
+  );
+}
+
+export async function hasRestorableRuntimeVariableCheckpoint(saveId: string): Promise<boolean> {
+  await ensureLegacySavesMigrated();
+  return withLocalTransaction(
+    ['saves', 'meta'],
+    'readonly',
+    async ({ store, request }) => {
+      const [save, checkpointItem] = await Promise.all([
+        request<SaveData | undefined>(store('saves').get(saveId)),
+        request<{ key: string; value: RuntimeVariableCheckpoint } | undefined>(
+          store('meta').get(runtimeVariableCheckpointMetaKey(saveId)),
+        ),
+      ]);
+      return Boolean(
+        save
+        && checkpointItem?.value?.version === 1
+        && checkpointItem.value.saveId === saveId
+        && checkpointItem.value.committedStateFingerprint === fingerprintRuntimeState(save.runtimeState),
+      );
+    },
+  );
+}
+
+export async function restoreRuntimeVariableCheckpoint(
+  saveId: string,
+  options: SaveMutationOptions = {},
+): Promise<SaveData | null> {
+  await ensureLegacySavesMigrated();
+  throwIfSignalAborted(options.signal);
+  return withLocalTransaction(
+    ['saves', 'saveSummaries', 'meta'],
+    'readwrite',
+    async ({ store, request }) => {
+      const key = runtimeVariableCheckpointMetaKey(saveId);
+      const [existing, checkpointItem] = await Promise.all([
+        request<SaveData | undefined>(store('saves').get(saveId)),
+        request<{ key: string; value: RuntimeVariableCheckpoint } | undefined>(store('meta').get(key)),
+      ]);
+      const checkpoint = checkpointItem?.value;
+      if (!existing || !checkpoint || checkpoint.version !== 1 || checkpoint.saveId !== saveId) return null;
+      if (checkpoint.committedStateFingerprint !== fingerprintRuntimeState(existing.runtimeState)) return null;
+
+      const restored = buildUpdatedSave(existing, checkpoint.runtimeState);
+      await Promise.all([
+        request(store('saves').put(restored)),
+        request(store('saveSummaries').put(toSaveListItem(restored))),
+        request(store('meta').put({ key: LAST_SAVE_META_KEY, value: restored.id })),
+        request(store('meta').delete(key)),
+      ]);
+      return restored;
+    },
+    options,
+  );
+}
+
+/**
  * 加载指定存档
  */
 export async function loadSave(saveId: string): Promise<SaveData | null> {
@@ -428,6 +666,34 @@ export async function exportSaves(): Promise<SaveArchive> {
     exportedAt: new Date().toISOString(),
     lastSaveId: await idbGetMeta<string>(LAST_SAVE_META_KEY) ?? null,
     saves,
+    turnSnapshots,
+  };
+}
+
+/**
+ * Build a portable archive for one local slot only.
+ * Cloud sync uses this boundary so it never uploads unrelated saves,
+ * generated visual assets, API settings, or embedding indexes.
+ */
+export async function exportSingleSave(
+  saveId: string,
+  maxSnapshotCount = 3,
+): Promise<SaveArchive | null> {
+  await ensureLegacySavesMigrated();
+  const save = await loadSaveById(saveId);
+  if (!save) return null;
+  const snapshotLimit = Number.isSafeInteger(maxSnapshotCount)
+    ? Math.max(0, Math.min(10, maxSnapshotCount))
+    : 3;
+  const turnSnapshots = (await listTurnSnapshots(saveId))
+    .sort((left, right) => left.turnNumber - right.turnNumber)
+    .slice(-snapshotLimit);
+  return {
+    schema: 'coc.v2.saves',
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    lastSaveId: save.id,
+    saves: [save],
     turnSnapshots,
   };
 }
@@ -642,6 +908,8 @@ const OPTIONAL_RUNTIME_ARRAY_FIELDS = [
   'npcAwarenessIndex',
   'heroineThreads',
   'bondThreads',
+  'correspondence',
+  'correspondenceCommitments',
 ] as const;
 
 const OPTIONAL_RUNTIME_RECORD_FIELDS = [
@@ -677,6 +945,8 @@ const RUNTIME_ARRAY_FIELD_NAMES = new Set([
   'aliases',
   'attitudeHints',
   'bondThreads',
+  'correspondence',
+  'correspondenceCommitments',
   'calendarEras',
   'cards',
   'checkHooks',
@@ -684,6 +954,7 @@ const RUNTIME_ARRAY_FIELD_NAMES = new Set([
   'combatRecords',
   'commanderNpcIds',
   'completedProjectIds',
+  'conditions',
   'conditionNotes',
   'conflicts',
   'connectedRegionIds',
@@ -696,6 +967,7 @@ const RUNTIME_ARRAY_FIELD_NAMES = new Set([
   'currentPressure',
   'decisiveFactors',
   'details',
+  'deliverables',
   'documents',
   'domesticReports',
   'edicts',
@@ -720,6 +992,7 @@ const RUNTIME_ARRAY_FIELD_NAMES = new Set([
   'involvedNpcIds',
   'involvedTroopIds',
   'items',
+  'itemIds',
   'judgementCards',
   'keyDeeds',
   'keyOfficials',
@@ -759,6 +1032,7 @@ const RUNTIME_ARRAY_FIELD_NAMES = new Set([
   'processingStages',
   'progressNotes',
   'projectHighlights',
+  'recentActionRecords',
   'recentActions',
   'recentChanges',
   'recentEventIds',
@@ -766,6 +1040,7 @@ const RUNTIME_ARRAY_FIELD_NAMES = new Set([
   'recentTurns',
   'recentTurnSummaries',
   'relatedConflictIds',
+  'relatedCommitmentIds',
   'relatedFactionIds',
   'relatedLocationIds',
   'relatedNpcIds',
@@ -788,6 +1063,7 @@ const RUNTIME_ARRAY_FIELD_NAMES = new Set([
   'sides',
   'sourceConflictIds',
   'sourceIds',
+  'appliedOperationIds',
   'sourceMemoryIds',
   'sourceMidTermSummaryIds',
   'sourceRecentTurnIds',
@@ -805,6 +1081,7 @@ const RUNTIME_ARRAY_FIELD_NAMES = new Set([
   'traits',
   'troopEffects',
   'troops',
+  'troopIds',
   'turnEvents',
   'turningPoints',
   'turnLog',
@@ -825,15 +1102,24 @@ const RUNTIME_RECURSION_SKIP_FIELDS = new Set([
   'statBonuses',
 ]);
 
-function hasValidKnownArrayContainers(value: unknown): boolean {
-  if (Array.isArray(value)) return value.every(hasValidKnownArrayContainers);
+function hasValidKnownArrayContainers(value: unknown, ownerArrayField?: string): boolean {
+  if (Array.isArray(value)) {
+    return value.every((item) => hasValidKnownArrayContainers(item, ownerArrayField));
+  }
   if (!isRecord(value)) return true;
 
   for (const [field, child] of Object.entries(value)) {
-    if (RUNTIME_ARRAY_FIELD_NAMES.has(field) && child !== undefined && !Array.isArray(child)) {
+    const isKnownTextNote = field === 'notes'
+      && (ownerArrayField === 'routeEdges' || ownerArrayField === 'relationshipNetwork')
+      && isString(child);
+    if (RUNTIME_ARRAY_FIELD_NAMES.has(field)
+      && child !== undefined
+      && !Array.isArray(child)
+      && !isKnownTextNote) {
       return false;
     }
-    if (!RUNTIME_RECURSION_SKIP_FIELDS.has(field) && !hasValidKnownArrayContainers(child)) {
+    if (!RUNTIME_RECURSION_SKIP_FIELDS.has(field)
+      && !hasValidKnownArrayContainers(child, Array.isArray(child) ? field : undefined)) {
       return false;
     }
   }
@@ -1430,6 +1716,24 @@ export function compactRuntimeStateForPersistence(runtimeState: RuntimeState): R
     return { ...entry, displayMeta };
   });
   return changed ? { ...runtimeState, turnLog } : runtimeState;
+}
+
+function developerOverrideCheckpointMetaKey(saveId: string): string {
+  return `${DEVELOPER_OVERRIDE_CHECKPOINT_META_PREFIX}${saveId}`;
+}
+
+function runtimeVariableCheckpointMetaKey(saveId: string): string {
+  return `${RUNTIME_VARIABLE_CHECKPOINT_META_PREFIX}${saveId}`;
+}
+
+function fingerprintRuntimeState(runtimeState: RuntimeState): string {
+  const serialized = JSON.stringify(compactRuntimeStateForPersistence(runtimeState));
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < serialized.length; index += 1) {
+    hash ^= serialized.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${serialized.length}:${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
 function shouldPersistNormalizedSave(previous: SaveData, normalized: SaveData): boolean {

@@ -236,7 +236,7 @@ export function applyHistoricalRoleCompletion(
     selectedTraitIds,
     customNotes: trimOr(
       payload.supplementalNotes,
-      `史实人物补全：${name}；后续真开局应按当前剧本、身份、地点和资料库承接，不提前套用后期身份。`,
+      `史实人物补全：${name}；后续开场剧情应按当前剧本、身份、地点和资料库承接，不提前套用后期身份。`,
     ),
   };
 }

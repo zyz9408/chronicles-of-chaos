@@ -10,10 +10,12 @@ import type {
 import { advanceRuntimeClock } from '../time/gameClock';
 import {
   type EncounterRuntimeLedger,
+  type EncounterTransitionOffer,
   type PersonalCombatStartIntent,
   type SealedEncounterResult,
   type SemanticProjection,
   type UnsealedCombatResult,
+  type UniqueArtSemanticProfile,
 } from './EncounterContracts';
 import { verifyEncounterResultHash } from './EncounterDeterminism';
 import {
@@ -30,6 +32,8 @@ import {
   createValidatedCombatProjectionBundle,
 } from './CombatSnapshotAdapter';
 import { createCombatEngineState } from './CombatEngine';
+import { normalizeCombatStatuses } from './CombatRules';
+import { ensureStableUniqueArtProjections } from './UniqueArtProjectionRuntime';
 import type {
   CombatCharacterSource,
   CombatEncounterSnapshot,
@@ -37,6 +41,13 @@ import type {
   CombatThreatTier,
 } from './CombatTypes';
 import { canonicalizeEncounterPlayerAlias } from './EncounterIntentCanonicalization';
+import { applyPlayerExperience } from '../character/progression';
+import { projectEquippedItems } from '../character/loadoutIdentity';
+import {
+  balanceEncounterScopedEnemyComposition,
+  materializeEncounterScopedCombatant,
+} from './EncounterScopedCombatants';
+import { applyCombatUniqueArtProgress } from './EncounterUniqueArtProgression';
 
 export interface StageCombatEncounterInput {
   saveId: string;
@@ -49,6 +60,8 @@ export interface PrepareCombatEncounterForPlayInput {
   selectedPlayerActorIds?: string[];
   startedAt: string;
 }
+
+export interface StageCombatEncounterOfferInput extends StageCombatEncounterInput {}
 
 export interface PreparedCombatEncounter {
   session: NonNullable<EncounterRuntimeLedger['active']>['session'];
@@ -103,18 +116,88 @@ export function mergeEncounterSemanticProjections(
   state: RuntimeState,
   incoming: readonly SemanticProjection[],
 ): RuntimeState {
-  if (incoming.length === 0) return state;
   const ledger = normalizeLedger(state);
   const bySourceId = new Map(ledger.semanticProjections.map((profile) => [profile.sourceId, profile]));
-  for (const profile of incoming) bySourceId.set(profile.sourceId, clone(profile));
+  let changed = false;
+  for (const profile of incoming) {
+    const existing = bySourceId.get(profile.sourceId);
+    const existingIsUniqueArt = existing?.profileKind === 'ability' && existing.sourceType === 'unique_art';
+    const incomingIsUniqueArt = profile.profileKind === 'ability' && profile.sourceType === 'unique_art';
+    if (existingIsUniqueArt && incomingIsUniqueArt) {
+      const extended = mergePassiveUniqueArtExtension(existing, profile);
+      if (extended) {
+        bySourceId.set(profile.sourceId, extended);
+        changed = true;
+      }
+      continue;
+    }
+    bySourceId.set(profile.sourceId, clone(profile));
+    changed = true;
+  }
+  if (!changed) return ensureStableUniqueArtProjections(state);
   const bundle = createValidatedCombatProjectionBundle([...bySourceId.values()]);
-  return {
+  return ensureStableUniqueArtProjections({
     ...clone(state),
     encounterV2: {
       ...ledger,
       semanticProjections: clone(bundle.profiles),
     },
+  });
+}
+
+function mergePassiveUniqueArtExtension(
+  existing: UniqueArtSemanticProfile,
+  incoming: UniqueArtSemanticProfile,
+): UniqueArtSemanticProfile | undefined {
+  if (existing.status !== 'executable'
+    || incoming.status !== 'executable'
+    || (incoming.activation !== 'passive' && incoming.activation !== 'hybrid')) {
+    return undefined;
+  }
+  const additiveEffects = incoming.effects.filter((effect) => {
+    const validTrigger = effect.trigger === 'after_runtime_turn' || effect.trigger === 'round_start';
+    const validScope = effect.trigger === 'after_runtime_turn'
+      ? incoming.rulesetScopes.includes('runtime_turn')
+      : incoming.rulesetScopes.includes('personal_combat');
+    return validTrigger
+      && validScope
+      && (effect.operation === 'restore_hp' || effect.operation === 'restore_stamina')
+      && (effect.trigger === 'after_runtime_turn'
+        ? effect.target === 'self'
+        : effect.target === 'self' || effect.target === 'current_attacker')
+      && ['always', 'self_hp_below_30', 'self_stamina_below_30'].includes(effect.condition)
+      && Number.isFinite(effect.value)
+      && effect.value > 0;
+  });
+  if (additiveEffects.length === 0) return undefined;
+
+  const effectKeys = new Set(existing.effects.map(effectIdentity));
+  const additions = additiveEffects.filter((effect) => !effectKeys.has(effectIdentity(effect)));
+  const addedScopes = [
+    ...(additions.some((effect) => effect.trigger === 'after_runtime_turn') ? ['runtime_turn'] as const : []),
+    ...(additions.some((effect) => effect.trigger === 'round_start') ? ['personal_combat'] as const : []),
+  ];
+  if (additions.length === 0 && addedScopes.every((scope) => existing.rulesetScopes.includes(scope))) {
+    return undefined;
+  }
+  return {
+    ...clone(existing),
+    activation: existing.activation === 'passive' && incoming.activation === 'passive' ? 'passive' : 'hybrid',
+    rulesetScopes: [...new Set([...existing.rulesetScopes, ...addedScopes])],
+    effects: [...clone(existing.effects), ...clone(additions)],
   };
+}
+
+function effectIdentity(effect: UniqueArtSemanticProfile['effects'][number]): string {
+  return [
+    effect.trigger,
+    effect.condition,
+    effect.operation,
+    effect.target,
+    effect.value,
+    effect.priority,
+    effect.statusId ?? '',
+  ].join('|');
 }
 
 function characterId(source: CombatCharacterSource): string {
@@ -123,7 +206,10 @@ function characterId(source: CombatCharacterSource): string {
   return id;
 }
 
-function collectCharacterSources(state: RuntimeState): Map<string, CombatCharacterSource> {
+function collectCharacterSources(
+  state: RuntimeState,
+  intent?: PersonalCombatStartIntent,
+): Map<string, CombatCharacterSource> {
   const sources = new Map<string, CombatCharacterSource>();
   const add = (source: CombatCharacterSource) => {
     const id = characterId(source);
@@ -132,15 +218,80 @@ function collectCharacterSources(state: RuntimeState): Map<string, CombatCharact
   add({ ...state.player, persistent: true });
   for (const npc of state.npcs ?? []) add({ ...npc, persistent: true });
   for (const actor of state.knownActors ?? []) add({ ...actor, persistent: true });
+  for (const scoped of intent?.scopedCombatants ?? []) {
+    if (sources.has(scoped.actorId)) {
+      throw new Error(`本场临时参战者 ${scoped.actorId} 与长期角色账本冲突。`);
+    }
+    add(materializeEncounterScopedCombatant(scoped).source);
+  }
   return sources;
+}
+
+const TERMINAL_TROOP_LIFECYCLE_STATUSES = new Set([
+  'routed',
+  'merged',
+  'destroyed',
+  'surrendered',
+  'disbanded',
+  'archived',
+]);
+
+function hasStructuredEscortEntitlement(state: RuntimeState): boolean {
+  const entitlement = state.player.personalEscortEntitlement;
+  if (entitlement) return entitlement.status === 'customary';
+
+  // Legacy-save bridge: only operational authority already encoded as exact data.
+  // Titles and identity prose cannot express rank thresholds safely, so they are never parsed or treated as enough.
+  if (['manager', 'full'].includes(state.player.factionAssetAccess?.accessLevel ?? '')) return true;
+  return (state.troops ?? []).some((troop) => (
+    troop.size > 0
+    && !TERMINAL_TROOP_LIFECYCLE_STATUSES.has(troop.lifecycleStatus ?? 'active')
+    && (troop.leaderNpcId === state.player.id || troop.leaderNpcId === 'player')
+  ));
+}
+
+function resolveLocalTemporaryEscorts(
+  state: RuntimeState,
+  sourceIntent: PersonalCombatStartIntent,
+): PersonalCombatStartIntent {
+  const intent = clone(sourceIntent);
+  const priorEscortIds = new Set(
+    (intent.scopedCombatants ?? [])
+      .filter((combatant) => combatant.systemRole === 'temporary_escort')
+      .map((combatant) => combatant.actorId),
+  );
+  intent.playerParty.actorIds = intent.playerParty.actorIds.filter((actorId) => !priorEscortIds.has(actorId));
+  const retainedScopedCombatants = balanceEncounterScopedEnemyComposition(
+    (intent.scopedCombatants ?? []).filter((combatant) => combatant.systemRole !== 'temporary_escort'),
+    intent.enemyParty.actorIds,
+  );
+
+  const availableSlots = Math.max(0, 3 - intent.playerParty.actorIds.length);
+  const escortCount = intent.escortAvailability === 'normal' && hasStructuredEscortEntitlement(state)
+    ? Math.min(2, availableSlots)
+    : 0;
+  const escorts = Array.from({ length: escortCount }, (_, index) => ({
+    actorId: `${intent.encounterId}:scoped:player_guard_${index + 1}`,
+    name: index === 0 ? '随身护卫甲' : '随身护卫乙',
+    archetype: 'regular' as const,
+    weaponClass: 'standard' as const,
+    armorClass: 'light' as const,
+    systemRole: 'temporary_escort' as const,
+  }));
+  intent.playerParty.actorIds.push(...escorts.map((escort) => escort.actorId));
+  const scopedCombatants = [...retainedScopedCombatants, ...escorts];
+  if (scopedCombatants.length > 0) intent.scopedCombatants = scopedCombatants;
+  else delete intent.scopedCombatants;
+  return intent;
 }
 
 function requireSources(
   state: RuntimeState,
+  intent: PersonalCombatStartIntent,
   actorIds: readonly string[],
   label: string,
 ): CombatCharacterSource[] {
-  const sources = collectCharacterSources(state);
+  const sources = collectCharacterSources(state, intent);
   return actorIds.map((actorId) => {
     const source = sources.get(actorId);
     if (!source) throw new Error(`${label}参战者 ${actorId} 不存在于当前角色账本。`);
@@ -153,7 +304,7 @@ function calculateThreatTier(
   enemySources: readonly CombatCharacterSource[],
 ): CombatThreatTier {
   const strength = (sources: readonly CombatCharacterSource[]) => sources.reduce(
-    (sum, source) => sum + Math.max(1, source.level ?? 1) * (0.5 + ((source.abilityScores?.武力 ?? 50) / 100)),
+    (sum, source) => sum + 0.5 + ((source.abilityScores?.武力 ?? 50) / 100),
     0,
   );
   const ratio = strength(enemySources) / Math.max(1, strength(playerSources));
@@ -164,13 +315,15 @@ function calculateThreatTier(
 }
 
 function collectLootableItemIds(enemySources: readonly CombatCharacterSource[]): string[] {
-  return enemySources.flatMap((source) => (source.inventory ?? [])
+  return enemySources.filter((source) => source.persistent !== false).flatMap((source) => (source.inventory ?? [])
     .filter((item) => item.quantity > 0 && item.keyItem !== true)
     .map((item) => item.id));
 }
 
 function collectCapturableEquipmentIds(enemySources: readonly CombatCharacterSource[]): string[] {
-  return enemySources.flatMap((source) => (source.equipment ?? []).map((item) => item.id));
+  return enemySources
+    .filter((source) => source.persistent !== false)
+    .flatMap((source) => projectEquippedItems(source.equipment ?? []).map((item) => item.id));
 }
 
 function createSnapshot(
@@ -178,8 +331,11 @@ function createSnapshot(
   sessionId: string,
   intent: PersonalCombatStartIntent,
 ): CombatEncounterSnapshot {
-  const playerSources = requireSources(state, intent.playerParty.actorIds, '我方');
-  const enemySources = requireSources(state, intent.enemyParty.actorIds, '敌方');
+  if (!intent.playerParty.actorIds.includes(state.player.id)) {
+    throw new Error(`Combat V2 我方参战名单必须包含当前玩家 ${state.player.id}。`);
+  }
+  const playerSources = requireSources(state, intent, intent.playerParty.actorIds, '我方');
+  const enemySources = requireSources(state, intent, intent.enemyParty.actorIds, '敌方');
   const downedPlayer = playerSources.find((source) => (
     (source.id === state.player.id || source.id === 'player')
     && Number.isFinite(source.vitals?.hp)
@@ -189,13 +345,19 @@ function createSnapshot(
     throw new Error('玩家当前生命为 0，必须先治疗休养，不能进入战斗。');
   }
   const allowLoot = intent.policy.lootPolicy === 'actual_items_only';
+  const scopedProjections = (intent.scopedCombatants ?? [])
+    .flatMap((combatant) => materializeEncounterScopedCombatant(combatant).projections);
   return createCombatEncounterSnapshot({
     sessionId,
     intent,
     playerSources,
     enemySources,
-    projections: createValidatedCombatProjectionBundle(state.encounterV2?.semanticProjections ?? []),
+    projections: createValidatedCombatProjectionBundle([
+      ...(state.encounterV2?.semanticProjections ?? []),
+      ...scopedProjections,
+    ]),
     threatTier: calculateThreatTier(playerSources, enemySources),
+    combatDifficulty: state.combatDifficulty,
     lootableItemIds: allowLoot ? collectLootableItemIds(enemySources) : [],
     capturableEquipmentItemIds: allowLoot ? collectCapturableEquipmentIds(enemySources) : [],
   });
@@ -205,8 +367,9 @@ export function stageCombatEncounter(
   inputState: RuntimeState,
   input: StageCombatEncounterInput,
 ): RuntimeState {
-  const intent = canonicalizeEncounterPlayerAlias(inputState, input.intent);
-  if (intent.kind !== 'personal_combat') throw new Error('Batch 2 只接收 personal_combat 触发。');
+  const canonicalIntent = canonicalizeEncounterPlayerAlias(inputState, input.intent);
+  if (canonicalIntent.kind !== 'personal_combat') throw new Error('Batch 2 只接收 personal_combat 触发。');
+  const intent = resolveLocalTemporaryEscorts(inputState, canonicalIntent);
   if (intent.sourceTurnNumber !== inputState.turnLog.length) {
     throw new Error(`战斗触发回合 ${intent.sourceTurnNumber} 与当前已提交回合 ${inputState.turnLog.length} 不一致。`);
   }
@@ -214,6 +377,9 @@ export function stageCombatEncounter(
     const active = inputState.encounterV2.active;
     if (active.session.intent.encounterId === intent.encounterId) return inputState;
     throw new Error(`已有未完成冲突 ${active.session.intent.encounterId}，不能启动新的战斗。`);
+  }
+  if (inputState.encounterV2?.pendingOffer) {
+    throw new Error(`已有待确认冲突 ${inputState.encounterV2.pendingOffer.intent.encounterId}，不能直接启动新的战斗。`);
   }
 
   const withProfiles = mergeEncounterSemanticProjections(inputState, input.projections);
@@ -243,15 +409,20 @@ export function stageCombatEncounter(
 function resolveSelectedPlayerIds(
   intent: PersonalCombatStartIntent,
   selected: readonly string[] | undefined,
+  playerActorId: string,
 ): string[] {
-  if (intent.partySelection === 'locked') return [...intent.playerParty.actorIds];
-  const next = selected?.length ? [...selected] : [...intent.playerParty.actorIds];
+  const next = intent.partySelection === 'locked'
+    ? [...intent.playerParty.actorIds]
+    : (selected?.length ? [...selected] : [...intent.playerParty.actorIds]);
   if (next.length < 1 || next.length > 3 || new Set(next).size !== next.length) {
     throw new Error('我方同时上场人数必须为 1—3 人且不得重复。');
   }
   const candidates = new Set(intent.playerParty.actorIds);
   for (const actorId of next) {
     if (!candidates.has(actorId)) throw new Error(`我方选择 ${actorId} 不在开战候选名单。`);
+  }
+  if (!next.includes(playerActorId)) {
+    throw new Error(`Combat V2 出战阵容必须包含当前玩家 ${playerActorId}。`);
   }
   return next;
 }
@@ -268,7 +439,11 @@ export function prepareCombatEncounterForPlay(
   const intent: PersonalCombatStartIntent = {
     ...clone(active.session.intent),
     playerParty: {
-      actorIds: resolveSelectedPlayerIds(active.session.intent, input.selectedPlayerActorIds),
+      actorIds: resolveSelectedPlayerIds(
+        active.session.intent,
+        input.selectedPlayerActorIds,
+        state.player.id,
+      ),
     },
   };
   const snapshot = createSnapshot(state, active.session.sessionId, intent);
@@ -321,6 +496,23 @@ function applyActorDelta(
   state: RuntimeState,
   delta: UnsealedCombatResult['deltas'][number],
 ): void {
+  if (delta.field === 'xp') {
+    if (delta.targetId !== state.player.id) {
+      throw new Error(`Combat V2 经验只能写入当前玩家，收到 ${delta.targetId}。`);
+    }
+    const before = Number(delta.beforeValue);
+    const after = Number(delta.afterValue);
+    const current = typeof state.player.xp === 'number' && Number.isFinite(state.player.xp)
+      ? state.player.xp
+      : 0;
+    applySetNumber(current, before, after, `${delta.targetId}.xp`);
+    const gainedXp = after - before;
+    if (!Number.isInteger(gainedXp) || gainedXp < 0) {
+      throw new Error(`Combat V2 经验增量必须是非负整数，收到 ${gainedXp}。`);
+    }
+    state.player = applyPlayerExperience(state.player, gainedXp, '个人战斗').player;
+    return;
+  }
   updateCharacterById(state, delta.targetId, (character) => {
     if (delta.field === 'vitals.hp') {
       const before = Number(delta.beforeValue);
@@ -339,25 +531,79 @@ function applyActorDelta(
       return;
     }
     if (delta.field === 'combatStatuses') {
-      const before = JSON.stringify(character.combatStatuses ?? []);
-      const expectedBefore = JSON.stringify(delta.beforeValue);
-      const expectedAfter = JSON.stringify(delta.afterValue);
+      const before = JSON.stringify(normalizeCombatStatuses(character.combatStatuses));
+      const normalizedBefore = normalizeCombatStatuses(delta.beforeValue);
+      const normalizedAfter = normalizeCombatStatuses(delta.afterValue);
+      const expectedBefore = JSON.stringify(normalizedBefore);
+      const expectedAfter = JSON.stringify(normalizedAfter);
       if (before !== expectedBefore && before !== expectedAfter) {
         throw new Error(`${delta.targetId}.combatStatuses 与战斗快照不一致，拒绝覆盖。`);
       }
-      character.combatStatuses = clone(delta.afterValue as string[]);
-      return;
-    }
-    if (delta.field === 'xp') {
-      const before = Number(delta.beforeValue);
-      const after = Number(delta.afterValue);
-      const current = 'xp' in character && typeof character.xp === 'number' ? character.xp : 0;
-      const next = applySetNumber(current, before, after, `${delta.targetId}.xp`);
-      if ('xp' in character) character.xp = next;
+      character.combatStatuses = normalizedAfter;
       return;
     }
     throw new Error(`不支持的角色战果字段：${delta.field}。`);
   });
+}
+
+export function stageCombatEncounterOffer(
+  inputState: RuntimeState,
+  input: StageCombatEncounterOfferInput,
+): RuntimeState {
+  const canonicalIntent = canonicalizeEncounterPlayerAlias(inputState, input.intent);
+  if (canonicalIntent.kind !== 'personal_combat') throw new Error('剧情内切入选择只支持 personal_combat。');
+  const intent = resolveLocalTemporaryEscorts(inputState, canonicalIntent);
+  if (intent.sourceTurnNumber !== inputState.turnLog.length) {
+    throw new Error(`战斗选择回合 ${intent.sourceTurnNumber} 与当前已提交回合 ${inputState.turnLog.length} 不一致。`);
+  }
+  if (inputState.encounterV2?.active) {
+    throw new Error(`已有未完成冲突 ${inputState.encounterV2.active.session.intent.encounterId}。`);
+  }
+  const existing = inputState.encounterV2?.pendingOffer;
+  if (existing) {
+    if (existing.intent.encounterId === intent.encounterId) return inputState;
+    throw new Error(`已有待确认冲突 ${existing.intent.encounterId}。`);
+  }
+
+  const withProfiles = mergeEncounterSemanticProjections(inputState, input.projections);
+  createSnapshot(withProfiles, `session:${intent.encounterId}`, intent);
+  const ledger = normalizeLedger(withProfiles);
+  const pendingOffer: EncounterTransitionOffer = {
+    offerId: `offer:${intent.encounterId}`,
+    intent: clone(intent),
+    createdAt: input.createdAt,
+  };
+  return {
+    ...clone(withProfiles),
+    encounterV2: {
+      ...ledger,
+      pendingOffer,
+    },
+  };
+}
+
+export function acceptCombatEncounterOffer(
+  inputState: RuntimeState,
+  input: { saveId: string; acceptedAt: string },
+): RuntimeState {
+  const pendingOffer = inputState.encounterV2?.pendingOffer;
+  if (!pendingOffer) throw new Error('当前没有待确认的个人战。');
+  const cleared = declineCombatEncounterOffer(inputState);
+  return stageCombatEncounter(cleared, {
+    saveId: input.saveId,
+    intent: pendingOffer.intent,
+    projections: [],
+    createdAt: input.acceptedAt,
+  });
+}
+
+export function declineCombatEncounterOffer(inputState: RuntimeState): RuntimeState {
+  if (!inputState.encounterV2?.pendingOffer) return inputState;
+  const next = clone(inputState);
+  const ledger = normalizeLedger(next);
+  delete ledger.pendingOffer;
+  next.encounterV2 = ledger;
+  return next;
 }
 
 function applyItemDelta(state: RuntimeState, delta: UnsealedCombatResult['deltas'][number]): void {
@@ -371,9 +617,14 @@ function applyItemDelta(state: RuntimeState, delta: UnsealedCombatResult['deltas
   if (item.quantity <= 0) holder.inventory = holder.inventory!.filter((candidate) => candidate.id !== delta.targetId);
 }
 
-function applyResultDeltas(state: RuntimeState, result: SealedEncounterResult<UnsealedCombatResult>): void {
+function applyResultDeltas(
+  state: RuntimeState,
+  result: SealedEncounterResult<UnsealedCombatResult>,
+  scopedActorIds: ReadonlySet<string>,
+): void {
   for (const frozenDelta of result.deltas) {
     const delta = clone(frozenDelta) as UnsealedCombatResult['deltas'][number];
+    if (delta.targetKind === 'actor' && scopedActorIds.has(delta.targetId)) continue;
     if (delta.targetKind === 'actor') applyActorDelta(state, delta);
     else if (delta.targetKind === 'item' && delta.field === 'quantity') applyItemDelta(state, delta);
     else throw new Error(`不支持的 Combat V2 战果增量：${delta.targetKind}.${delta.field}。`);
@@ -467,6 +718,11 @@ function upsertLocalCombatRecord(
   locationName?: string,
 ): void {
   const participantNames = new Map(snapshot.combatants.map((combatant) => [combatant.actorId, combatant.name]));
+  const scopedActorIds = new Set(
+    session.intent.kind === 'personal_combat'
+      ? (session.intent.scopedCombatants ?? []).map((combatant) => combatant.actorId)
+      : [],
+  );
   const outcome = resultOutcomeText(result);
   const record: CombatRecord = {
     combatId: session.intent.encounterId,
@@ -478,7 +734,9 @@ function upsertLocalCombatRecord(
     locationName,
     participants: result.combatants.map((combatant) => ({
       participantId: combatant.actorId,
-      npcId: combatant.actorId === state.player.id ? undefined : combatant.actorId,
+      npcId: combatant.actorId === state.player.id || scopedActorIds.has(combatant.actorId)
+        ? undefined
+        : combatant.actorId,
       name: participantNames.get(combatant.actorId) ?? combatant.actorId,
       side: combatant.side === 'player'
         ? (combatant.actorId === state.player.id ? 'player' : 'ally')
@@ -493,7 +751,7 @@ function upsertLocalCombatRecord(
     chronicleWorthy: snapshot.threatTier === 'deadly',
     relatedNpcIds: result.combatants
       .map((combatant) => combatant.actorId)
-      .filter((actorId) => actorId !== state.player.id),
+      .filter((actorId) => actorId !== state.player.id && !scopedActorIds.has(actorId)),
     briefText: `行动 ${result.actionLog.length} 次，耗时 ${result.elapsedMinutes} 分钟。`,
     visualTags: result.actionLog.map((entry) => entry.summaryKey),
     updatedAt: state.currentDate,
@@ -527,10 +785,15 @@ export function commitCombatResultToRuntime(
     createdAt: input.committedAt,
   });
 
-  const next = clone(inputState);
+  let next = clone(inputState);
   const occurredAt = next.currentDate;
-  applyResultDeltas(next, input.result);
+  const scopedActorIds = new Set(
+    (input.session.intent as PersonalCombatStartIntent).scopedCombatants
+      ?.map((combatant) => combatant.actorId) ?? [],
+  );
+  applyResultDeltas(next, input.result, scopedActorIds);
   transferResultLoot(next, input.result);
+  next = applyCombatUniqueArtProgress(next, snapshot, input.result, occurredAt);
   advanceRuntimeClock(next, { minutesAdvanced: input.result.elapsedMinutes });
   upsertLocalCombatRecord(next, input.session, input.result, snapshot, occurredAt, input.locationName);
   next.encounterV2 = {

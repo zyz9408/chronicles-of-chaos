@@ -27,6 +27,48 @@ describe('Combat V2 main-turn protocol', () => {
     expect(response.writeback?.semanticProjections).toEqual([profile]);
   });
 
+  it('keeps start, offer, and none decisions consistent with encounter authority', () => {
+    const intent = makeCombatIntent();
+    const start = parseNarratorResponse(JSON.stringify({
+      narrativeText: '【旁白】长刀已经劈落。',
+      suggestedActions: [],
+      statePatches: [],
+      writeback: {
+        encounterTransitionDecision: { mode: 'start', reason: '兵刃已经挥出' },
+        encounterStartIntent: intent,
+      },
+    }));
+    expect(start.writeback?.encounterTransitionDecision?.mode).toBe('start');
+    expect(start.writeback?.encounterStartIntent).toEqual(intent);
+
+    const offer = parseNarratorResponse(JSON.stringify({
+      narrativeText: '【旁白】双方拔刀对峙，仍可退让。',
+      suggestedActions: [],
+      statePatches: [],
+      writeback: {
+        encounterTransitionDecision: { mode: 'offer', reason: '仍可决定是否交锋' },
+        encounterStartIntent: intent,
+      },
+    }));
+    expect(offer.writeback?.encounterTransitionDecision?.mode).toBe('offer');
+    expect(offer.writeback?.encounterStartIntent).toEqual(intent);
+
+    const none = parseNarratorResponse(JSON.stringify({
+      narrativeText: '【旁白】远处传来交战消息。',
+      suggestedActions: [],
+      statePatches: [],
+      writeback: {
+        encounterTransitionDecision: { mode: 'none', reason: '只是远场传闻' },
+        encounterStartIntent: intent,
+      },
+    }));
+    expect(none.writeback?.encounterTransitionDecision?.mode).toBe('none');
+    expect(none.writeback?.encounterStartIntent).toBeNull();
+    expect(none.writeback?.debugNotes).toContain(
+      'Encounter V2 切入决定为 none，已拒绝同时返回的开战意图。',
+    );
+  });
+
   it('drops malformed encounter authority instead of trusting arbitrary JSON', () => {
     const intent = makeCombatIntent();
     intent.enemyParty.actorIds = [...intent.playerParty.actorIds];
@@ -43,20 +85,29 @@ describe('Combat V2 main-turn protocol', () => {
     ]);
   });
 
-  it('normalizes model-authored encounter audit time to the local prompt timestamp', () => {
+  it('normalizes model-authored encounter audit metadata to local turn authority', () => {
     const intent = makeCombatIntent();
     intent.createdAt = '兴平元年五月初三';
+    intent.sourceTurnNumber = 0;
     const localCreatedAt = '2026-07-20T12:00:00.000Z';
+    const localSourceTurnNumber = 41;
     const response = parseNarratorResponse(JSON.stringify({
       narrativeText: '【旁白】双方已拔刃相向。',
       suggestedActions: [],
       statePatches: [],
       writeback: { encounterStartIntent: intent },
-    }), { encounterIntentCreatedAt: localCreatedAt });
+    }), {
+      encounterIntentCreatedAt: localCreatedAt,
+      encounterIntentSourceTurnNumber: localSourceTurnNumber,
+    });
 
     expect(response.writeback?.encounterStartIntent?.createdAt).toBe(localCreatedAt);
+    expect(response.writeback?.encounterStartIntent?.sourceTurnNumber).toBe(localSourceTurnNumber);
     expect(response.writeback?.debugNotes).toContain(
       'Encounter V2 createdAt 已由本地回合时间规范化。',
+    );
+    expect(response.writeback?.debugNotes).toContain(
+      'Encounter V2 sourceTurnNumber 已由本地回合序号规范化。',
     );
   });
 
@@ -87,6 +138,9 @@ describe('Combat V2 main-turn protocol', () => {
 
   it('tells the main narrator to stop before outcome and never emit a V1 combat result in the trigger turn', () => {
     const requirements = buildTurnOutputRequirements();
+    expect(requirements).toContain('encounterTransitionDecision');
+    expect(requirements).toContain('scopedCombatants');
+    expect(requirements).toContain('同伴或敌人');
     expect(requirements).toContain('encounterStartIntent');
     expect(requirements).toContain('不得裁定胜负');
     expect(requirements).toContain('不得写入 upsertCombatRecord');
@@ -132,6 +186,9 @@ describe('War V2 main-turn protocol', () => {
     const requirements = buildTurnOutputRequirements();
     expect(requirements).toContain('kind:"war"');
     expect(requirements).toContain('targetHoldingId');
+    expect(requirements).toContain('同响应 statePatches');
+    expect(requirements).toContain('upsertHoldingLedger / upsertTroopLedger');
+    expect(requirements).toContain('禁止按名称或正文猜孤立 ID');
     expect(requirements).toContain('不得写入 upsertConflictRecord');
     expect(requirements).toContain('远场战争');
   });

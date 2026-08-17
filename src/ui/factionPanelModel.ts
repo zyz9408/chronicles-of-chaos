@@ -3,6 +3,7 @@ import { isOpenCurrentMatter } from '../engine/state/currentMatterLifecycle';
 import { formatFactionTypeForDisplay } from '../engine/state/factionTypeNormalization';
 import { normalizeCurrentTroopReferenceIds } from '../engine/state/troopLifecycle';
 import { isWorldChronicleEligible } from '../engine/state/worldChroniclePolicy';
+import { normalizeFactionRecentActionHistory } from '../engine/state/factionRecentActionHistory';
 
 export interface FactionPanelRosterItem {
   factionId: string;
@@ -28,6 +29,14 @@ export interface FactionPanelDetailSection {
   rows: FactionPanelDetailRow[];
 }
 
+export interface FactionPanelRecentAction {
+  key: string;
+  summary: string;
+  knownLevel: FactionLedgerEntry['knownLevel'];
+  observedAt?: string;
+  sourceNote?: string;
+}
+
 export interface FactionPanelModel {
   rosterItems: FactionPanelRosterItem[];
   selectedFactionId: string | null;
@@ -43,7 +52,7 @@ export interface FactionPanelModel {
   relatedMatters: string[];
   relatedSignals: string[];
   relatedChronicles: string[];
-  recentActions: string[];
+  recentActions: FactionPanelRecentAction[];
 }
 
 const STANCE_LABELS: Record<string, string> = {
@@ -100,8 +109,19 @@ export function buildFactionPanelModel(runtimeState: RuntimeState, selectedFacti
     relatedMatters: selectedFaction ? buildRelatedMatterLabels(runtimeState, selectedFaction.factionId) : [],
     relatedSignals: selectedFaction ? buildRelatedSignalLabels(runtimeState, selectedFaction.factionId) : [],
     relatedChronicles: selectedFaction ? buildRelatedChronicleLabels(runtimeState, selectedFaction.factionId) : [],
-    recentActions: selectedFaction?.recentActions ?? [],
+    recentActions: selectedFaction ? buildRecentActionRows(selectedFaction) : [],
   };
+}
+
+function buildRecentActionRows(faction: FactionLedgerEntry): FactionPanelRecentAction[] {
+  const normalized = normalizeFactionRecentActionHistory(faction);
+  return (normalized.recentActionRecords ?? []).map((record, index) => ({
+    key: `${index}:${record.knownLevel}:${record.observedAt ?? ''}:${record.summary}`,
+    summary: record.summary,
+    knownLevel: record.knownLevel,
+    observedAt: record.observedAt,
+    sourceNote: record.sourceNote,
+  }));
 }
 
 function buildSummaryRows(faction: FactionLedgerEntry): FactionPanelDetailRow[] {
@@ -222,12 +242,12 @@ function formatFactionType(value?: string): string {
 
 function buildBriefingRows(runtimeState: RuntimeState, faction: FactionLedgerEntry): FactionPanelBriefingRow[] {
   const risk = summarizeFactionRisk(faction.stanceToPlayer);
-  const recentActions = faction.recentActions ?? [];
+  const recentActions = buildRecentActionRows(faction);
   return [
     { key: 'stance', label: '对玩家立场', value: formatStance(faction.stanceToPlayer) },
     { key: 'controller', label: '实际主事', value: resolveEntityText(runtimeState, faction.actualController) ?? '主事未明' },
     { key: 'sphere', label: '已知范围', value: faction.knownSphere?.trim() || '范围未详' },
-    { key: 'recentAction', label: '近期动作', value: recentActions[recentActions.length - 1]?.trim() || '暂无新近动作' },
+    { key: 'recentAction', label: '近期动作', value: recentActions[recentActions.length - 1]?.summary || '暂无新近动作' },
     { key: 'intelTime', label: '情报时间', value: faction.lastKnownAt?.trim() || faction.updatedAt?.trim() || '时间未详' },
     { key: 'risk', label: '风险提示', value: risk.value, tone: risk.tone },
   ];

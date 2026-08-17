@@ -30,4 +30,17 @@ describe('MapHistoricalBaseLayer', () => {
     expect(html).not.toContain('map-historical-forest-layer');
     expect(html).not.toContain('<ellipse');
   });
+
+  it('disables native image dragging so pointer gestures stay on the map surface', () => {
+    const html = renderToStaticMarkup(<MapHistoricalBaseLayer />);
+
+    expect(html).toContain('draggable="false"');
+  });
+
+  it('can use the shared geographic projection as the exclusive close-range base', () => {
+    const html = renderToStaticMarkup(<MapHistoricalBaseLayer mode="geographic" />);
+
+    expect(html).toContain('data-base-mode="geographic"');
+    expect(html).toContain('data-render-role="geographic-base"');
+  });
 });

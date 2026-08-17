@@ -22,6 +22,29 @@ const runtimeState = {
         description: 'Commands mounted troops with steady timing.',
         effectSummary: 'Adds advantage when leading cavalry or responding to cavalry threats.',
         source: 'opening',
+        acquisition: {
+          kind: 'teaching',
+          occurredAt: '189-08-01 08:00',
+          sourceRefId: 'teaching:chen-da:cavalry',
+          summary: 'Chen Da taught the player mounted command.',
+          instructorNpcId: 'npc_guard',
+        },
+        bankedProgress: 6,
+        progressHistory: [{
+          eventId: 'event_art_use_1',
+          source: 'actual_use',
+          intensity: 'normal',
+          occurredAt: '189-09-01 08:00',
+          sourceRefId: 'turn:12:warfare',
+          summary: 'Directed cavalry during the field action.',
+          awardedProgress: 7,
+          levelBefore: 2,
+          progressBefore: 38,
+          levelAfter: 2,
+          progressAfter: 45,
+          levelledUp: false,
+          appliedTurnKey: 'turn:12',
+        }],
         promptHint: 'Use in army judgement when cavalry command matters.',
         checkHooks: [{ scope: 'warfare.cavalry', modifier: 8, note: 'Cavalry command edge.' }],
       },
@@ -83,6 +106,19 @@ describe('buildUniqueArtsPanelModel', () => {
       effectSummary: 'Adds advantage when leading cavalry or responding to cavalry threats.',
       promptHint: 'Use in army judgement when cavalry command matters.',
       progressText: '45%',
+      currentProgress: 45,
+      progressPercent: 45,
+      bankedProgress: 6,
+      isMaxLevel: false,
+      nextLevelText: '距离 Lv.3 还需 55 点',
+      acquisitionLabel: '他人传授',
+      acquisitionInstructorName: 'Chen Da',
+    });
+    expect(model.selectedArt?.progressHistory[0]).toMatchObject({
+      sourceLabel: '实际运用',
+      intensityLabel: '正常',
+      awardedText: '+7',
+      transitionText: 'Lv.2 · 45%',
     });
   });
 
@@ -111,6 +147,7 @@ describe('buildUniqueArtsPanelModel', () => {
     expect(source).toContain('<span>持有者</span>');
     expect(source).toContain('<h4>触发与承接</h4>');
     expect(source).toContain('<h4>判定条件</h4>');
+    expect(source).toContain('成长记录');
     expect(source).not.toContain('updateCharacterUniqueArts 写回');
     expect(source).not.toContain('<h4>判定钩子</h4>');
   });

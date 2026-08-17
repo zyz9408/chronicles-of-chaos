@@ -1,5 +1,4 @@
 import { expect, type Page, test } from '@playwright/test';
-import { installSuccessfulTurnApi, seedMainNarrativeApi } from './e2eStorage';
 
 function getTurnByTitle(page: Page, title: RegExp) {
   const matchingTitle = page.getByTestId('turn-display-title').filter({ hasText: title });
@@ -74,8 +73,7 @@ function expectAtMostOneCardPerSemanticTurn(observedStates: ObservedNarrativeCar
 }
 
 async function enterDebugGame(page: Page) {
-  await installSuccessfulTurnApi(page);
-  await seedMainNarrativeApi(page);
+  await page.goto('/');
   await page.getByRole('button', { name: '新的征程' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
@@ -87,7 +85,7 @@ async function enterDebugGame(page: Page) {
   await expect(page.getByRole('main')).toBeVisible();
 }
 
-test('turn header keeps reasoning, raw response, and token stats behind the inspection menu', async ({ page }) => {
+test('turn header keeps processing trace, raw response, and token stats behind the inspection menu', async ({ page }) => {
   await enterDebugGame(page);
   await observeNarrativeCardStates(page);
 
@@ -110,8 +108,9 @@ test('turn header keeps reasoning, raw response, and token stats behind the insp
   await expect(savedTurn.getByTestId('turn-display-stats')).toContainText(/入\s+[\d,]+/);
   await expect(savedTurn.getByTestId('turn-display-stats')).toContainText(/出\s+\d+/);
 
-  await savedTurn.getByTestId('turn-reasoning-button').click();
-  await expect(page.getByTestId('turn-reasoning-content')).toContainText('公开');
+  await savedTurn.getByTestId('turn-processing-trace-button').click();
+  await expect(page.getByTestId('turn-processing-trace-content')).toContainText('应用状态写回');
+  await expect(page.getByTestId('turn-processing-trace-content')).not.toContainText('思路摘要');
   await page.getByRole('button', { name: '关闭' }).click();
 
   await savedTurn.getByTestId('turn-raw-button').click();

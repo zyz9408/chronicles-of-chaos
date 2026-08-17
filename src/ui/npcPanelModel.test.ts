@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RuntimeState } from '../engine/types';
+import { ensureLuanShiState } from '../engine/state/createInitialRuntimeState';
 import { buildNpcPanelModel, selectNpcPrivateRecords } from './npcPanelModel';
 import { readUiStyleSource } from './readUiStyleSource.test-helper';
 
@@ -135,6 +136,44 @@ describe('buildNpcPanelModel', () => {
       { label: '魅力', value: 45 },
     ]);
     expect(model.cards[0].abilityRows.map((row) => row.label)).not.toContain('机运');
+  });
+
+  it('projects duplicate persisted traits and unique arts only once with stable chip IDs', () => {
+    const sourceNpc = baseState.npcs![0];
+    const state: RuntimeState = {
+      ...baseState,
+      npcs: [{
+        ...sourceNpc,
+        traits: [
+          ...sourceNpc.traits!,
+          {
+            ...sourceNpc.traits![0],
+            id: 'trait_veteran_drifted',
+            label: ' 军中老练 ',
+            rarity: 'orange',
+          },
+        ],
+        uniqueArts: [
+          ...sourceNpc.uniqueArts!,
+          {
+            ...sourceNpc.uniqueArts![0],
+            id: 'art_gate_guard_drifted',
+            name: 'Gate  Guarding',
+            rarity: 'purple',
+          },
+        ],
+      }],
+    };
+
+    const first = buildNpcPanelModel(state);
+    const second = buildNpcPanelModel(state, { selectedNpcId: sourceNpc.npcId });
+
+    expect(first.cards[0].traitChips).toHaveLength(1);
+    expect(first.cards[0].traitChips[0]).toMatchObject({ id: 'trait_veteran', rarity: 'orange' });
+    expect(first.cards[0].uniqueArtChips).toHaveLength(1);
+    expect(first.cards[0].uniqueArtChips[0]).toMatchObject({ id: 'art_gate_guard', rarity: 'purple' });
+    expect(second.cards[0].traitChips).toEqual(first.cards[0].traitChips);
+    expect(second.cards[0].uniqueArtChips).toEqual(first.cards[0].uniqueArtChips);
   });
 
   it('filters polluted protagonist self-clone NPCs while keeping same-name real NPCs', () => {
@@ -340,12 +379,71 @@ describe('buildNpcPanelModel', () => {
     expect(model.cards[0].memoryPreview[4]).toContain('第1条记忆');
   });
 
+  it('groups NPC raw, mid-term, and long-term memories into visible archive layers', () => {
+    const memoryState = {
+      ...baseState,
+      memoryArchive: {
+        ...ensureLuanShiState(baseState).memoryArchive,
+        npcInteractionSummaries: [{
+          npcId: 'npc_chen_heng',
+          npcName: '陈衡',
+          summary: '陈衡与刘良从同营旧识逐渐成为可信赖的袍泽。',
+          fromCreatedAt: '公元189年09月01日',
+          toCreatedAt: '公元189年10月01日',
+          sourceMemoryIds: ['mem_1'],
+          updatedAt: '公元189年10月01日',
+        }],
+        npcMidTermSummaries: [{
+          summaryId: 'npc_mid_chen_1',
+          npcId: 'npc_chen_heng',
+          npcName: '陈衡',
+          summary: '陈衡多次协助刘良稳定营中秩序。',
+          fromCreatedAt: '公元189年09月01日',
+          toCreatedAt: '公元189年09月20日',
+          sourceMemoryIds: ['mem_1'],
+          foldedIntoLongTermSummaryId: 'npc_long_chen_1',
+          updatedAt: '公元189年09月20日',
+        }],
+        npcLongTermSummaries: [{
+          summaryId: 'npc_long_chen_1',
+          npcId: 'npc_chen_heng',
+          npcName: '陈衡',
+          summary: '陈衡与刘良共同经历了洛阳军营的一段动荡。',
+          fromCreatedAt: '公元189年09月01日',
+          toCreatedAt: '公元189年10月01日',
+          sourceMidTermSummaryIds: ['npc_mid_chen_1'],
+          updatedAt: '公元189年10月01日',
+        }],
+        locationMemorySummaries: [],
+      },
+    } as RuntimeState;
+
+    const card = buildNpcPanelModel(memoryState).cards[0];
+
+    expect(card.memoryLayers.map((layer) => [layer.key, layer.entries.length])).toEqual([
+      ['recent', 1],
+      ['mid', 1],
+      ['long', 2],
+    ]);
+    expect(card.memoryLayers[1].entries[0]).toMatchObject({
+      id: 'npc_mid_chen_1',
+      detail: '已归入长期摘要',
+    });
+    expect(card.memoryLayers[2].entries.map((entry) => entry.content)).toEqual([
+      '陈衡与刘良共同经历了洛阳军营的一段动荡。',
+      '陈衡与刘良从同营旧识逐渐成为可信赖的袍泽。',
+    ]);
+    expect(buildNpcPanelModel(memoryState, { searchText: '稳定营中秩序' }).visibleCount).toBe(1);
+  });
+
   it('keeps NPC memory list locally scrollable in the archive UI styles', async () => {
     const css = await readUiStyleSource();
     const block = css.match(/\.npc-memory-list\s*\{(?<rules>[^}]+)\}/)?.groups?.rules ?? '';
 
-    expect(block).toContain('max-height: 12rem');
+    expect(block).toContain('max-height: min(18rem, 36vh)');
     expect(block).toContain('overflow-y: auto');
+    expect(block).toContain('overscroll-behavior: contain');
+    expect(block).toContain('scrollbar-gutter: stable');
   });
 
   it('keeps the private record viewport stable while supporting 10, 20, and all local records', async () => {
@@ -787,6 +885,20 @@ describe('buildNpcPanelModel', () => {
     expect(card?.femaleProfile?.adultPrivateSections.flatMap((section: any) => section.rows.map((row: any) => row.label))).not.toContain('来源');
   });
 
+  it('shows the NPC full birth date and keeps age derived from the current game date', () => {
+    const model = buildNpcPanelModel({
+      ...baseState,
+      currentDate: '公元189年04月17日 09:30（巳时）',
+      npcs: [{
+        ...baseState.npcs![0],
+        birthDate: '146-04-18',
+      }],
+    });
+
+    expect(model.cards[0].overviewRows.map((row) => row.label)).not.toContain('出生年月日');
+    expect(model.cards[0].statusBadges).toContain('男 42岁 · 公元146年04月18日生');
+  });
+
   it('shows structured pregnancy progress inside the existing womb section', () => {
     const model = buildNpcPanelModel({
       ...baseState,
@@ -1031,6 +1143,55 @@ describe('buildNpcPanelModel', () => {
       '偏好记录',
       '边界记录',
       '敏感记录',
+    ]);
+  });
+
+  it('projects one non-treasure item per slot while preserving distinct same-name treasures', () => {
+    const state: RuntimeState = {
+      ...baseState,
+      npcs: (baseState.npcs ?? []).map((npc) => ({
+        ...npc,
+        equipment: [
+          {
+            id: 'eq_zhao_spear',
+            slot: 'weapon',
+            name: '龙胆亮银枪',
+            quality: '传奇',
+            description: '稳定武器记录。',
+          },
+          {
+            id: 'eq_zhao_spear',
+            slot: 'weapon',
+            name: '龙胆亮银枪',
+            quality: '传奇',
+            description: '重复武器记录。',
+          },
+          {
+            id: 'treasure_tiger_tally_a',
+            slot: 'treasure',
+            name: '虎符',
+            quality: '名品',
+            description: '左符。',
+          },
+          {
+            id: 'treasure_tiger_tally_b',
+            slot: 'treasure',
+            name: '虎符',
+            quality: '名品',
+            description: '右符。',
+          },
+        ],
+      })),
+    };
+
+    const model = buildNpcPanelModel(state);
+
+    expect(model.cards[0].equipmentRows.filter((row) => row.label === '武器')).toEqual([
+      expect.objectContaining({ id: 'eq_zhao_spear', value: '龙胆亮银枪' }),
+    ]);
+    expect(model.cards[0].equipmentRows.filter((row) => row.label === '宝物')).toEqual([
+      expect.objectContaining({ id: 'treasure_tiger_tally_a', value: '虎符' }),
+      expect.objectContaining({ id: 'treasure_tiger_tally_b', value: '虎符' }),
     ]);
   });
 

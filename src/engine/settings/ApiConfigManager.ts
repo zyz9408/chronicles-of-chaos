@@ -17,6 +17,9 @@ export type ApiProviderId =
   | 'anthropic'
   | 'qwen'
   | 'zhipu'
+  | 'zhipu_coding'
+  | 'minimax'
+  | 'minimax_international'
   | 'moonshot'
   | 'doubao'
   | 'xai'
@@ -31,6 +34,72 @@ export interface ApiProviderOption {
   label: string;
   defaultBaseUrl: string;
   modelsEndpoint?: string;
+}
+
+export const DEFAULT_API_MAX_OUTPUT_TOKENS = 8_192;
+
+export const API_MAX_OUTPUT_TOKEN_PRESETS = [
+  { id: '8k', label: '8K', value: 8_192 },
+  { id: '32k', label: '32K', value: 32_768 },
+  { id: '64k', label: '64K', value: 65_536 },
+] as const;
+
+export type ApiMaxOutputTokenPresetId = typeof API_MAX_OUTPUT_TOKEN_PRESETS[number]['id'] | 'custom';
+
+export function getApiMaxOutputTokenPresetId(maxOutputTokens?: number): ApiMaxOutputTokenPresetId {
+  return API_MAX_OUTPUT_TOKEN_PRESETS.find((preset) => preset.value === maxOutputTokens)?.id ?? 'custom';
+}
+
+export function getApiMaxOutputTokenGuidance(maxOutputTokens?: number): {
+  tone: 'default' | 'caution' | 'warning';
+  message: string;
+} {
+  if (maxOutputTokens === undefined) {
+    return {
+      tone: 'caution',
+      message: '当前未设置上限，将由接口自行决定；新建 API 档案默认使用 8K。',
+    };
+  }
+  if (maxOutputTokens === 8_192) {
+    return {
+      tone: 'default',
+      message: '8K 通常足够普通回合和辅助任务；它是允许上限，不会要求模型每次写满。',
+    };
+  }
+  if (maxOutputTokens < 8_192) {
+    return {
+      tone: 'caution',
+      message: `当前自定义上限为 ${maxOutputTokens}；低于 8K 可能截断较长正文或结构化写回。`,
+    };
+  }
+  if (maxOutputTokens === 32_768) {
+    return {
+      tone: 'caution',
+      message: '32K 适合较长开局或复杂结构化输出；请确认所选模型和代理支持该输出上限。',
+    };
+  }
+  if (maxOutputTokens < 32_768) {
+    return {
+      tone: 'caution',
+      message: `当前自定义上限为 ${maxOutputTokens}；高于 8K 时请确认所选模型和代理支持该数值。`,
+    };
+  }
+  if (maxOutputTokens === 65_536) {
+    return {
+      tone: 'caution',
+      message: '64K 只建议用于明确支持长输出的模型；不兼容的接口可能拒绝或忽略该参数。',
+    };
+  }
+  if (maxOutputTokens < 65_536) {
+    return {
+      tone: 'caution',
+      message: `当前自定义上限为 ${maxOutputTokens}；超过 32K 只建议用于明确支持长输出的模型。`,
+    };
+  }
+  return {
+    tone: 'warning',
+    message: '自定义值已超过 64K。请先核对模型官方输出上限，否则接口可能报错、忽略参数或产生很长的尾部等待。',
+  };
 }
 
 export interface ApiConfigArchive {
@@ -57,11 +126,14 @@ type ApiConfigSaveInput = Omit<ApiConfigArchive, 'temperature' | 'maxOutputToken
 export type ApiTaskId =
   | 'mainNarrative'
   | 'stateWriteback'
+  | 'stateWritebackFallback'
   | 'quickInteraction'
+  | 'letterPolish'
   | 'memorySummary'
   | 'embedding'
   | 'npcSimulation'
   | 'npcCompletion'
+  | 'npcCompletionFallback'
   | 'worldEvolution'
   | 'imagePrompt';
 
@@ -101,6 +173,9 @@ export const API_PROVIDER_OPTIONS: ApiProviderOption[] = [
   { id: 'anthropic', label: 'Anthropic Claude', defaultBaseUrl: 'https://api.anthropic.com/v1' },
   { id: 'qwen', label: '通义千问/Qwen', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
   { id: 'zhipu', label: '智谱 GLM', defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
+  { id: 'zhipu_coding', label: '智谱 GLM Coding Plan', defaultBaseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4' },
+  { id: 'minimax', label: 'MiniMax（国内）', defaultBaseUrl: 'https://api.minimaxi.com/v1' },
+  { id: 'minimax_international', label: 'MiniMax（国际）', defaultBaseUrl: 'https://api.minimax.io/v1' },
   { id: 'moonshot', label: 'Moonshot/Kimi', defaultBaseUrl: 'https://api.moonshot.cn/v1' },
   { id: 'doubao', label: '豆包/火山方舟', defaultBaseUrl: 'https://ark.cn-beijing.volces.com/api/v3' },
   { id: 'xai', label: 'xAI Grok', defaultBaseUrl: 'https://api.x.ai/v1' },
@@ -113,24 +188,30 @@ export const API_PROVIDER_OPTIONS: ApiProviderOption[] = [
 
 export const API_TASKS: Array<{ id: ApiTaskId; label: string; description: string; required?: boolean }> = [
   { id: 'mainNarrative', label: '主剧情', description: '主剧情回合，使用强模型保证叙事质量。', required: true },
-  { id: 'stateWriteback', label: '状态写回', description: '整理主回合返回的状态补丁和写回结构；未选择时跳过独立整理，使用主回合原始写回。' },
+  { id: 'stateWriteback', label: '状态写回主要 API', description: '整理主回合返回的状态补丁和写回结构；未选择时跳过独立整理，使用主回合原始写回。' },
+  { id: 'stateWritebackFallback', label: '状态写回备用 API', description: '主要状态写回 API 在 60 秒内失败、返回空内容或无效结构时自动切换；未配置时不额外切换。' },
   { id: 'quickInteraction', label: '快速互动', description: '闲聊、短文本反馈、轻量补全。' },
+  { id: 'letterPolish', label: '书信润色', description: '仅在玩家主动点击时润色书信；可单独配置，未配置时复用低频的 NPC 建档主要 API，绝不调用主剧情 API。' },
   { id: 'memorySummary', label: '记忆压缩/摘要', description: '近期记忆压缩、中期摘要、长期事实与 NPC/地点记忆总结。' },
   { id: 'embedding', label: '向量嵌入', description: '记忆向量化与语义检索索引。' },
   { id: 'npcSimulation', label: 'NPC动态模拟', description: '本回合相关 NPC 心态预处理与反应建议。' },
-  { id: 'npcCompletion', label: '开局/NPC建档', description: '开局历史人物补全、NPC 基础档案生成。' },
-  { id: 'worldEvolution', label: '世界演化', description: '后台局势演化、剧情计划维护。' },
+  { id: 'npcCompletion', label: 'NPC建档主要 API', description: '开局历史人物补全、NPC 基础档案生成与人物志合规修复。' },
+  { id: 'npcCompletionFallback', label: 'NPC建档备用 API', description: '主要 NPC 建档 API 在 60 秒内失败、返回空内容或无效结构时自动切换；未配置时不额外切换。' },
+  { id: 'worldEvolution', label: '后台世界演化', description: '离场羁绊与红颜人物的到期行动、历史轨迹推进和近况投递。' },
   { id: 'imagePrompt', label: '文生图提示词', description: '后续图片生成前的画面提示词整理。' },
 ];
 
 const defaultRoutes = (): ApiTaskRoutes => ({
   mainNarrative: null,
   stateWriteback: null,
+  stateWritebackFallback: null,
   quickInteraction: null,
+  letterPolish: null,
   memorySummary: null,
   embedding: null,
   npcSimulation: null,
   npcCompletion: null,
+  npcCompletionFallback: null,
   worldEvolution: null,
   imagePrompt: null,
 });
@@ -153,7 +234,7 @@ export function createApiConfigDraft(provider: ApiProviderId = 'openai_compatibl
     apiKey: '',
     model: '',
     models: [],
-    maxOutputTokens: 8192,
+    maxOutputTokens: DEFAULT_API_MAX_OUTPUT_TOKENS,
     createdAt: now,
     updatedAt: now,
   };
@@ -163,6 +244,12 @@ const optionalNumber = (value: number | string | undefined): number | undefined 
   if (value === undefined || value === '') return undefined;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : undefined;
+};
+
+const optionalPositiveInteger = (value: number | string | undefined): number | undefined => {
+  const numeric = optionalNumber(value);
+  if (numeric === undefined || numeric <= 0) return undefined;
+  return Math.floor(numeric);
 };
 
 const normalizeModelNames = (values: readonly string[]): string[] => Array.from(new Set(
@@ -187,7 +274,7 @@ function normalizeStoredApiConfig(config: ApiConfigArchive): ApiConfigArchive {
     model: models[0] ?? '',
     models,
     temperature: optionalNumber(config.temperature),
-    maxOutputTokens: optionalNumber(config.maxOutputTokens),
+    maxOutputTokens: optionalPositiveInteger(config.maxOutputTokens),
   };
 }
 
@@ -204,7 +291,7 @@ export function prepareApiConfigForSave(config: ApiConfigSaveInput): ApiConfigAr
     model: models[0] ?? '',
     models,
     temperature: optionalNumber(config.temperature),
-    maxOutputTokens: optionalNumber(config.maxOutputTokens),
+    maxOutputTokens: optionalPositiveInteger(config.maxOutputTokens),
   };
 }
 

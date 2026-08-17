@@ -89,6 +89,7 @@ function runCombat(seed: string, scenario: CombatScenario) {
   return finalizeCombatResult(
     simulateCombatWithLocalAi(createCombatEngineState(snapshot), { maxActions: 500 }),
     '2026-07-20T08:00:00.000Z',
+    { playerActorId: playerIds[0] },
   );
 }
 
@@ -101,9 +102,15 @@ interface WarScenario {
   enemyClass?: Parameters<typeof makeTroopProfile>[1];
   playerTags?: Parameters<typeof makeTroopProfile>[2];
   enemyTags?: Parameters<typeof makeTroopProfile>[2];
+  playerComposition?: Parameters<typeof makeTroopProfile>[3];
+  enemyComposition?: Parameters<typeof makeTroopProfile>[3];
+  playerTroop?: Parameters<typeof makeWarTroop>[1];
+  enemyTroop?: Parameters<typeof makeWarTroop>[1];
   environment?: Array<'open' | 'difficult' | 'fortified' | 'water'>;
   playerTactic?: WarTactic;
   enemyTactic?: WarTactic;
+  playerCommanderPresent?: boolean;
+  enemyCommanderPresent?: boolean;
 }
 
 function commanderAbilities(score: number) {
@@ -111,26 +118,45 @@ function commanderAbilities(score: number) {
 }
 
 function runWar(seed: string, scenario: WarScenario) {
-  const player = makeWarTroop('troop_player', { size: scenario.playerSize });
-  const enemy = makeWarTroop('troop_enemy', { size: scenario.enemySize });
-  const intent = makeWarIntent([player.troopId], [enemy.troopId]);
+  const player = makeWarTroop('troop_player', { ...scenario.playerTroop, size: scenario.playerSize });
+  const enemy = makeWarTroop('troop_enemy', { ...scenario.enemyTroop, size: scenario.enemySize });
+  const intent = makeWarIntent([player.troopId], [enemy.troopId], {
+    player: [scenario.playerSize],
+    enemy: [scenario.enemySize],
+  });
   intent.encounterId = `war_${seed}`;
   intent.seed = seed;
   intent.environmentTags = scenario.environment ?? ['open'];
+  if (scenario.playerCommanderPresent === false) delete intent.playerForce.commanderActorId;
+  if (scenario.enemyCommanderPresent === false) delete intent.enemyForce.commanderActorId;
   const snapshot = createWarEncounterSnapshot({
     sessionId: `session_${seed}`,
     intent,
     playerTroops: [player],
     enemyTroops: [enemy],
-    playerCommander: makeWarCommander('player_liuping', {
-      abilityScores: commanderAbilities(scenario.playerScore ?? 60),
-    }),
-    enemyCommander: makeWarCommander('npc_enemy_commander', {
-      abilityScores: commanderAbilities(scenario.enemyScore ?? 60),
-    }),
+    playerCommander: scenario.playerCommanderPresent === false
+      ? undefined
+      : makeWarCommander('player_liuping', {
+        abilityScores: commanderAbilities(scenario.playerScore ?? 60),
+      }),
+    enemyCommander: scenario.enemyCommanderPresent === false
+      ? undefined
+      : makeWarCommander('npc_enemy_commander', {
+        abilityScores: commanderAbilities(scenario.enemyScore ?? 60),
+      }),
     projections: createValidatedWarProjectionBundle([
-      makeTroopProfile(player.troopId, scenario.playerClass ?? 'infantry', scenario.playerTags ?? []),
-      makeTroopProfile(enemy.troopId, scenario.enemyClass ?? 'infantry', scenario.enemyTags ?? []),
+      makeTroopProfile(
+        player.troopId,
+        scenario.playerClass ?? 'infantry',
+        scenario.playerTags ?? [],
+        scenario.playerComposition,
+      ),
+      makeTroopProfile(
+        enemy.troopId,
+        scenario.enemyClass ?? 'infantry',
+        scenario.enemyTags ?? [],
+        scenario.enemyComposition,
+      ),
     ]),
   });
   let state = createInitialWarState(snapshot);
@@ -307,5 +333,89 @@ describe('Encounter V2 formula calibration matrix', () => {
     expect([...curve.values()].every(({ results }) => results.every((result) => (
       result.objectiveAchieved === (result.outcome === 'player_victory')
     )))).toBe(true);
+  });
+
+  it('lets one thousand elite heavy cavalry rout ten thousand loose low-quality archers without exterminating them', () => {
+    const results = SEEDS.map((seed) => runWar(`${seed}-elite-heavy-cavalry`, {
+      playerSize: 1_000,
+      enemySize: 10_000,
+      playerScore: 85,
+      enemyScore: 45,
+      playerClass: 'cavalry',
+      playerTags: ['heavy', 'mobile', 'assault'],
+      enemyClass: 'ranged',
+      environment: ['open'],
+      playerTactic: 'all_out_assault',
+      enemyTactic: 'steady_advance',
+      playerTroop: {
+        quality: '精锐', training: 95, morale: 90, readiness: '高', supplies: 90,
+      },
+      enemyTroop: {
+        quality: '低', training: 20, morale: 35, readiness: '低', supplies: 45,
+      },
+    }));
+    const summary = summarize(results);
+    const playerLosses = results.map((result) => (
+      result.forces.find((force) => force.side === 'player')!.casualties
+    ));
+    const survivingEnemies = results.map((result) => (
+      result.forces.find((force) => force.side === 'enemy')!.remainingStrength
+    ));
+
+    expect(summary.outcomes.player_victory).toBe(SEEDS.length);
+    expect(Math.max(...playerLosses)).toBeLessThanOrEqual(150);
+    expect(Math.min(...survivingEnemies)).toBeGreaterThan(0);
+  });
+
+  it('lets a 90-command leader defeat four times as many leaderless troops, but not an organized equal-quality force', () => {
+    const leaderless = summarize(SEEDS.map((seed) => runWar(`${seed}-command-90-vs-leaderless`, {
+      playerSize: 200,
+      enemySize: 800,
+      playerScore: 90,
+      enemyCommanderPresent: false,
+      playerClass: 'infantry',
+      enemyClass: 'infantry',
+      environment: ['open'],
+      playerTactic: 'steady_advance',
+      enemyTactic: 'steady_advance',
+    })));
+    const organized = summarize(SEEDS.map((seed) => runWar(`${seed}-command-90-vs-organized`, {
+      playerSize: 200,
+      enemySize: 800,
+      playerScore: 90,
+      enemyScore: 50,
+      playerClass: 'infantry',
+      enemyClass: 'infantry',
+      environment: ['open'],
+      playerTactic: 'steady_advance',
+      enemyTactic: 'steady_advance',
+    })));
+
+    expect(leaderless.outcomes.player_victory).toBe(SEEDS.length);
+    expect(organized.outcomes.enemy_victory).toBe(SEEDS.length);
+  });
+
+  it('does not let heavy cavalry repeat that result into prepared anti-cavalry infantry', () => {
+    const results = SEEDS.map((seed) => runWar(`${seed}-prepared-anti-cavalry`, {
+      playerSize: 1_000,
+      enemySize: 10_000,
+      playerScore: 85,
+      enemyScore: 60,
+      playerClass: 'cavalry',
+      playerTags: ['heavy', 'mobile', 'assault'],
+      enemyClass: 'infantry',
+      enemyTags: ['anti_cavalry', 'defensive'],
+      environment: ['open'],
+      playerTactic: 'all_out_assault',
+      enemyTactic: 'hold_position',
+      playerTroop: {
+        quality: '精锐', training: 95, morale: 90, readiness: '高', supplies: 90,
+      },
+      enemyTroop: {
+        quality: '中', training: 65, morale: 70, readiness: '高', supplies: 70,
+      },
+    }));
+
+    expect(summarize(results).outcomes.enemy_victory).toBe(SEEDS.length);
   });
 });

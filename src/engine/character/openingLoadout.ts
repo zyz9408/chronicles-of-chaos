@@ -12,6 +12,6 @@ export function createPendingOpeningLoadout(): OpeningLoadout {
     personalMoney: 0,
     equipment: [],
     inventory: [],
-    summary: '初始行装待真开局 AI 根据世界书、时代书签、主角出身、当前身份、地点与开局额外要求生成并结构化写回。',
+    summary: '初始行装将根据时代背景、主角出身、当前身份、地点与开局额外要求，随开场剧情一并确定。',
   };
 }

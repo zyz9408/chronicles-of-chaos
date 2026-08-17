@@ -4,6 +4,7 @@ import type {
   ResourceChangedPayload,
   StatePatch,
 } from '../types';
+import { resolveCanonicalLedgerNumberField } from '../state/resourceLedgerIdentity';
 
 export type PayloadNormalizationResult<T> =
   | { ok: true; payload: T }
@@ -51,6 +52,17 @@ export function normalizeResourceChangedPayload(
   const resource = normalizeRequiredId(payload.resource);
   if (!resource) {
     return { ok: false, error: 'resourceChanged.resource 必须是非空字符串' };
+  }
+  const canonicalLedgerField = resolveCanonicalLedgerNumberField(resource);
+  if (canonicalLedgerField) {
+    const writebackField = canonicalLedgerField === 'money' ? 'moneyGuan' : canonicalLedgerField;
+    const reconciliationHint = canonicalLedgerField === 'money'
+      ? '，并同时提供 previousMoneyGuan 与 moneyDeltaGuan'
+      : '';
+    return {
+      ok: false,
+      error: `resourceChanged.resource=${resource} 是府库标准资源保留键；请改用 updateResourceLedger.${writebackField}${reconciliationHint} 写当前总量`,
+    };
   }
 
   const hasChange = hasOwn(payload, 'change');

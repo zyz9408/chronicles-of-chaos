@@ -2,6 +2,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { RuntimeState } from '../engine/types';
 import {
   advanceCombatToNextAction,
+  ARMOR_REDUCTION_BY_TIER,
+  COMBAT_STABILIZE_HP_COST,
+  canStabilizeAlly,
   chooseCombatAiAction,
   executeCombatAction,
   finalizeCombatResult,
@@ -33,12 +36,29 @@ interface CombatEncounterScreenProps {
   statusMessage?: string;
 }
 
+const SCOPED_ARCHETYPE_LABEL = {
+  rabble: '乌合',
+  militia: '民勇',
+  regular: '正规',
+  veteran: '老练',
+  elite: '精锐',
+} as const;
+
 type PlaybackSpeed = 1 | 2 | 4;
 
-function actorName(state: RuntimeState, actorId: string): string {
+function actorName(
+  state: RuntimeState,
+  actorId: string,
+  snapshot?: CombatEncounterSnapshot,
+): string {
   if (state.player.id === actorId) return state.player.name;
   return state.npcs?.find((npc) => npc.npcId === actorId)?.name
     ?? state.knownActors.find((actor) => actor.id === actorId)?.name
+    ?? snapshot?.combatants.find((combatant) => combatant.actorId === actorId)?.name
+    ?? (state.encounterV2?.active?.session.intent.kind === 'personal_combat'
+      ? state.encounterV2.active.session.intent.scopedCombatants
+        ?.find((combatant) => combatant.actorId === actorId)?.name
+      : undefined)
     ?? actorId;
 }
 
@@ -64,9 +84,13 @@ function outcomeLabel(outcome?: UnsealedCombatResult['outcome']): string {
   return outcome ? labels[outcome] : '等待结算';
 }
 
-function logLabel(entry: CombatEngineState['actionLog'][number], state: RuntimeState): string {
-  const actor = actorName(state, entry.actorId);
-  const targets = entry.targetIds.map((id) => actorName(state, id)).join('、');
+function logLabel(
+  entry: CombatEngineState['actionLog'][number],
+  state: RuntimeState,
+  snapshot?: CombatEncounterSnapshot,
+): string {
+  const actor = actorName(state, entry.actorId, snapshot);
+  const targets = entry.targetIds.map((id) => actorName(state, id, snapshot)).join('、');
   const labels: Record<string, string> = {
     normal_attack: '发动普通攻击',
     defend: '采取防御',
@@ -76,6 +100,9 @@ function logLabel(entry: CombatEngineState['actionLog'][number], state: RuntimeS
     retreat: '尝试撤退',
     surrender: '选择投降',
   };
+  if (entry.actionType === 'stabilize') {
+    return `${actor}消耗${entry.values.rescuerHpSpent ?? COMBAT_STABILIZE_HP_COST}点生命援护${targets || '同伴'}`;
+  }
   return `${actor}${labels[entry.actionType] ?? '采取行动'}${targets ? `，目标：${targets}` : ''}`;
 }
 
@@ -86,7 +113,7 @@ function prepareArtTargets(
   artId: string,
 ): string[] {
   const actor = state.snapshot.combatants.find((entry) => entry.actorId === actorId);
-  const art = actor?.uniqueArtProfiles.find((entry) => entry.sourceId === artId);
+  const art = actor?.uniqueArtProfiles.find((entry) => entry.sourceId === artId && entry.activation !== 'passive');
   if (!actor || !art) return [];
   const allies = activeCombatants(state, actor.side);
   const enemies = activeCombatants(state, actor.side === 'player' ? 'enemy' : 'player');
@@ -146,6 +173,15 @@ function CombatantSlot({
   const maxStamina = live?.maxStamina ?? frozen?.maxStamina ?? 100;
   const gauge = live?.gauge ?? 0;
   const statuses = live?.statuses ?? [];
+  const armorReduction = frozen
+    ? Math.round((ARMOR_REDUCTION_BY_TIER[frozen.armor.armorTier] ?? 0) * 100)
+    : 0;
+  const effectiveFacts = frozen ? [
+    frozen.combatArchetype ? SCOPED_ARCHETYPE_LABEL[frozen.combatArchetype] : null,
+    `兵刃 ${frozen.weapon.baseDamage}`,
+    `减伤 ${armorReduction}%`,
+    `格挡 +${frozen.armor.blockBonus}`,
+  ].filter(Boolean).join(' · ') : '';
   return (
     <button
       type="button"
@@ -162,7 +198,7 @@ function CombatantSlot({
       data-actor-id={actorId}
     >
       <span className="combat-v2-slot-heading">
-        <span className="combat-v2-slot-name">{actorName(runtimeState, actorId)}</span>
+        <span className="combat-v2-slot-name">{actorName(runtimeState, actorId, snapshot)}</span>
         <span className="combat-v2-slot-state">{statuses.length > 0 ? statuses.join(' · ') : (hp > 0 ? '备战' : '倒地')}</span>
       </span>
       <span className="combat-v2-slot-resource">
@@ -173,6 +209,7 @@ function CombatantSlot({
         <span className="combat-v2-slot-values">体力 {stamina}/{maxStamina}</span>
         <span className="combat-v2-slot-meter combat-v2-slot-meter--stamina"><i style={{ width: `${Math.max(0, stamina / maxStamina) * 100}%` }} /></span>
       </span>
+      {effectiveFacts ? <span className="combat-v2-slot-effective">{effectiveFacts}</span> : null}
       <span className="combat-v2-slot-gauge" aria-label={`行动槽 ${Math.min(100, Math.round(gauge / 10))}%`}>
         <i style={{ width: `${Math.min(100, gauge / 10)}%` }} />
       </span>
@@ -200,7 +237,10 @@ export function CombatEncounterScreen({
   const [lastAction, setLastAction] = useState<CombatEngineState['actionLog'][number] | null>(null);
   const [localStatus, setLocalStatus] = useState('');
   const [resultSaveError, setResultSaveError] = useState('');
+  const [resultSavePending, setResultSavePending] = useState(false);
   const resolvedResultRef = useRef<SealedEncounterResult<UnsealedCombatResult> | null>(null);
+  const resolvedAtRef = useRef<string | null>(null);
+  const resultSaveAttemptRef = useRef(0);
 
   useEffect(() => {
     setSelectedPlayerIds(intent?.playerParty.actorIds ?? []);
@@ -211,7 +251,10 @@ export function CombatEncounterScreen({
     setLastAction(null);
     setLocalStatus('');
     setResultSaveError('');
+    setResultSavePending(false);
     resolvedResultRef.current = null;
+    resolvedAtRef.current = null;
+    resultSaveAttemptRef.current = 0;
   }, [active?.session.sessionId, intent?.encounterId]);
 
   const briefingCard: BattleBriefingCard | null = useMemo(() => intent ? {
@@ -247,6 +290,7 @@ export function CombatEncounterScreen({
 
   const togglePlayerCandidate = (actorId: string) => {
     if (!intent || intent.partySelection === 'locked') return;
+    if (actorId === runtimeState.player.id) return;
     setSelectedPlayerIds((current) => {
       if (current.includes(actorId)) return current.length > 1 ? current.filter((id) => id !== actorId) : current;
       return current.length < 3 ? [...current, actorId] : current;
@@ -296,7 +340,7 @@ export function CombatEncounterScreen({
         const entry = acted.actionLog[acted.actionLog.length - 1] ?? null;
         setLastAction(entry);
         setEngineState(acted);
-        if (entry) setLocalStatus(logLabel(entry, runtimeState));
+        if (entry) setLocalStatus(logLabel(entry, runtimeState, acted.snapshot));
       } catch (error) {
         setAutoMode(false);
         setLocalStatus(error instanceof Error ? error.message : '本地战斗推进失败。');
@@ -307,24 +351,51 @@ export function CombatEncounterScreen({
 
   const persistResolvedResult = useCallback(async (result: SealedEncounterResult<UnsealedCombatResult>) => {
     if (!prepared) return;
+    const attempt = resultSaveAttemptRef.current + 1;
+    resultSaveAttemptRef.current = attempt;
     try {
+      setResultSavePending(true);
       setResultSaveError('');
       await onResolved({ session: prepared.session, result });
     } catch (error) {
-      setResultSaveError(error instanceof Error ? error.message : '战果保存失败。');
+      const detail = error instanceof Error ? error.message : '战果保存失败。';
+      setResultSaveError(`第 ${attempt} 次保存失败：${detail}`);
+    } finally {
+      setResultSavePending(false);
     }
   }, [onResolved, prepared]);
+
+  const sealResolvedResult = useCallback(() => {
+    if (!engineState || engineState.phase !== 'resolved') {
+      throw new Error('当前没有可重新封存的已结算战果。');
+    }
+    const resolvedAt = resolvedAtRef.current ?? new Date().toISOString();
+    resolvedAtRef.current = resolvedAt;
+    return finalizeCombatResult(engineState, resolvedAt, {
+      playerActorId: runtimeState.player.id,
+    });
+  }, [engineState, runtimeState.player.id]);
+
+  const retryResolvedResult = useCallback(() => {
+    try {
+      const result = sealResolvedResult();
+      resolvedResultRef.current = result;
+      void persistResolvedResult(result);
+    } catch (error) {
+      setResultSaveError(error instanceof Error ? error.message : '战果重新封存失败。');
+    }
+  }, [persistResolvedResult, sealResolvedResult]);
 
   useEffect(() => {
     if (!engineState || engineState.phase !== 'resolved' || !prepared || resolvedResultRef.current) return;
     try {
-      const result = finalizeCombatResult(engineState, new Date().toISOString());
+      const result = sealResolvedResult();
       resolvedResultRef.current = result;
       void persistResolvedResult(result);
     } catch (error) {
       setResultSaveError(error instanceof Error ? error.message : '战果封存失败。');
     }
-  }, [engineState, persistResolvedResult, prepared]);
+  }, [engineState, persistResolvedResult, prepared, sealResolvedResult]);
 
   if (!active || !intent) return null;
 
@@ -332,6 +403,7 @@ export function CombatEncounterScreen({
     && active.checkpoint.result.kind === 'personal_combat'
     ? active.checkpoint.result
     : null;
+  const preStart = !prepared && !postResult;
   const currentActor = engineState?.combatants.find((entry) => entry.actorId === engineState.currentActorId);
   const currentSnapshot = currentActor
     ? engineState?.snapshot.combatants.find((entry) => entry.actorId === currentActor.actorId)
@@ -362,7 +434,7 @@ export function CombatEncounterScreen({
 
   return (
     <section
-      className="combat-v2-screen"
+      className={`combat-v2-screen${preStart ? ' is-prestart' : ''}`}
       data-testid="combat-v2-screen"
       data-playback-speed={speed}
       aria-label="个人战"
@@ -387,7 +459,7 @@ export function CombatEncounterScreen({
       <div className="combat-v2-timeline" aria-label="行动速度条">
         {(engineState?.combatants ?? []).slice().sort((left, right) => right.gauge - left.gauge || right.speed - left.speed).map((combatant) => (
           <span key={combatant.actorId} className={`combat-v2-timeline-token combat-v2-timeline-token--${combatant.side}`} style={{ left: `${Math.min(96, combatant.gauge / 10)}%` }}>
-            {actorName(runtimeState, combatant.actorId).slice(0, 2)}
+            {actorName(runtimeState, combatant.actorId, engineState?.snapshot).slice(0, 2)}
           </span>
         ))}
       </div>
@@ -416,7 +488,30 @@ export function CombatEncounterScreen({
             })}
           </div>
         </div>
-        <div className="combat-v2-stage-seal" aria-hidden="true"><span>战</span></div>
+        {preStart ? (
+          <section className="combat-v2-stage-start" data-testid="combat-v2-stage-start" aria-label="出战准备">
+            <small>出战准备</small>
+            <h2>迎敌</h2>
+            <p>{intent.partySelection === 'locked' ? '本场阵容已经锁定。' : '选择 1—3 名我方角色同时上场。'}</p>
+            <button type="button" className="combat-v2-primary" onClick={beginCombat}>进入战斗</button>
+          </section>
+        ) : postResult && narrativeBusy ? (
+          <section
+            className="combat-v2-stage-start combat-v2-stage-narrative"
+            data-testid="combat-v2-stage-narrative"
+            role="status"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <span className="combat-v2-stage-wait-mark" aria-hidden="true" />
+            <small>战斗已经结算</small>
+            <h2>正在生成战后正文</h2>
+            <p>正在整理本场战果与后续影响，请稍候。</p>
+            {onCancelNarrative && <button type="button" className="combat-v2-danger" onClick={onCancelNarrative}>中止生成</button>}
+          </section>
+        ) : (
+          <div className="combat-v2-stage-seal" aria-hidden="true"><span>战</span></div>
+        )}
         <div className="combat-v2-side combat-v2-side--player" data-testid="combat-side-player">
           <h2>我方</h2>
           <div className="combat-v2-slot-list">
@@ -444,7 +539,7 @@ export function CombatEncounterScreen({
         </div>
       </div>
 
-      <div className="combat-v2-lower">
+      {!preStart && <div className="combat-v2-lower">
         <div className="combat-v2-log" aria-label="战斗记录">
           <h3>交锋记录</h3>
           {activeLog.length === 0 ? <p>双方尚未交手。</p> : (
@@ -452,20 +547,13 @@ export function CombatEncounterScreen({
           )}
         </div>
         <div className="combat-v2-command" aria-label="战斗指令">
-          {!prepared && !postResult && (
-            <>
-              <h3>出战准备</h3>
-              <p>{intent.partySelection === 'locked' ? '本场阵容已经锁定。' : '选择 1—3 名我方角色同时上场。'}</p>
-              <button type="button" className="combat-v2-primary" onClick={beginCombat}>进入战斗</button>
-            </>
-          )}
           {prepared && engineState && !postResult && engineState.phase !== 'resolved' && (
             <>
-              <h3>{isPlayerTurn ? `${actorName(runtimeState, currentActor!.actorId)}行动` : '等待行动槽推进'}</h3>
+              <h3>{isPlayerTurn ? `${actorName(runtimeState, currentActor!.actorId, engineState.snapshot)}行动` : '等待行动槽推进'}</h3>
               <div className="combat-v2-command-grid">
                 <button type="button" disabled={!isPlayerTurn || !selectedEnemyTarget} onClick={() => selectedEnemyTarget && runAction({ type: 'normal_attack', actorId: currentActor!.actorId, targetId: selectedEnemyTarget })}>普通攻击</button>
                 <button type="button" disabled={!isPlayerTurn} onClick={() => runAction({ type: 'defend', actorId: currentActor!.actorId })}>防御</button>
-                {currentSnapshot?.uniqueArtProfiles.map((art) => (
+                {currentSnapshot?.uniqueArtProfiles.filter((art) => art.activation !== 'passive').map((art) => (
                   <button
                     key={art.sourceId}
                     type="button"
@@ -491,11 +579,22 @@ export function CombatEncounterScreen({
                     })}
                   >物品 · {item.sourceId}</button>
                 ))}
-                {engineState.combatants.filter((entry) => entry.side === 'player' && entry.hp === 0 && entry.downCount === 1 && !entry.revivedOnce).map((target) => (
-                  <button key={target.actorId} type="button" disabled={!isPlayerTurn} onClick={() => runAction({ type: 'stabilize', actorId: currentActor!.actorId, targetId: target.actorId })}>
-                    救援 · {actorName(runtimeState, target.actorId)}
-                  </button>
-                ))}
+                {engineState.combatants.filter((entry) => entry.side === 'player' && entry.hp === 0 && entry.downCount === 1 && !entry.revivedOnce).map((target) => {
+                  const canRescue = Boolean(currentActor && canStabilizeAlly(currentActor, target));
+                  return (
+                    <button
+                      key={target.actorId}
+                      type="button"
+                      disabled={!isPlayerTurn || !canRescue}
+                      title={canRescue
+                        ? `消耗 ${COMBAT_STABILIZE_HP_COST} 点生命，使同伴恢复 ${COMBAT_STABILIZE_HP_COST} 点生命`
+                        : `救援者生命须高于 ${COMBAT_STABILIZE_HP_COST} 点`}
+                      onClick={() => runAction({ type: 'stabilize', actorId: currentActor!.actorId, targetId: target.actorId })}
+                    >
+                      援护 · {actorName(runtimeState, target.actorId, engineState.snapshot)}（消耗{COMBAT_STABILIZE_HP_COST}生命）
+                    </button>
+                  );
+                })}
                 <button type="button" disabled={!isPlayerTurn || !intent.policy.allowRetreat} onClick={() => runAction({ type: 'retreat', actorId: currentActor!.actorId })}>撤退</button>
                 <button type="button" disabled={!isPlayerTurn || !intent.policy.allowSurrender} onClick={() => runAction({ type: 'surrender', actorId: currentActor!.actorId })}>投降</button>
                 <button type="button" className="combat-v2-secondary" onClick={() => {
@@ -529,27 +628,35 @@ export function CombatEncounterScreen({
             <div className="combat-v2-result">
               <small>封存战果 · {postResult.resultHash}</small>
               <h3>{outcomeLabel(postResult.outcome)}</h3>
-              <p>行动 {postResult.actionLog.length} 次 · 战斗耗时 {postResult.elapsedMinutes} 分钟 · 经验 {postResult.experienceAward}</p>
-              <button
-                type="button"
-                className="combat-v2-primary"
-                disabled={narrativeBusy}
-                onClick={() => void onRequestNarrative()}
-              >{narrativeBusy ? '战后正文生成中…' : '生成战后正文'}</button>
-              {narrativeBusy && onCancelNarrative && <button type="button" className="combat-v2-danger" onClick={onCancelNarrative}>中止生成</button>}
+              <p>行动 {postResult.actionLog.length} 次 · 战斗耗时 {postResult.elapsedMinutes} 分钟 · 阅历 +{postResult.experienceAward}</p>
+              {narrativeBusy ? (
+                <p className="combat-v2-result-progress">生成进度已显示在战场中央。</p>
+              ) : (
+                <button
+                  type="button"
+                  className="combat-v2-primary"
+                  onClick={() => void onRequestNarrative()}
+                >生成战后正文</button>
+              )}
             </div>
           )}
           {engineState?.phase === 'resolved' && !postResult && (
             <div className="combat-v2-result">
               <h3>{outcomeLabel(engineState.outcome)}</h3>
               <p>正在封存本地战果；完成前不会调用叙事 API。</p>
-              {resultSaveError && resolvedResultRef.current && (
-                <button type="button" className="combat-v2-danger" onClick={() => void persistResolvedResult(resolvedResultRef.current!)}>重试保存战果</button>
+              {resultSaveError && (
+                <button
+                  type="button"
+                  className="combat-v2-danger"
+                  data-testid="combat-v2-retry-result"
+                  disabled={resultSavePending}
+                  onClick={retryResolvedResult}
+                >{resultSavePending ? '正在重新封存…' : '重试保存战果'}</button>
               )}
             </div>
           )}
         </div>
-      </div>
+      </div>}
       {(statusMessage || localStatus || resultSaveError) && (
         <footer className="combat-v2-status" role={resultSaveError ? 'alert' : 'status'}>
           {resultSaveError || statusMessage || localStatus}

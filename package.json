@@ -1,7 +1,7 @@
 {
   "name": "chronicles-of-chaos",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.7.24",
   "type": "module",
   "scripts": {
     "dev": "vite",

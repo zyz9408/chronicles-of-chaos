@@ -296,8 +296,9 @@ describe('MemorySummaryProjection', () => {
     }));
     const task = buildRecentTurnMemorySummaryTask(state);
 
-    expect(task.sourceRecentTurnSummaries).toHaveLength(1);
+    expect(task.sourceRecentTurnSummaries).toHaveLength(0);
     expect(task.relatedNpcMemoryBlocks[0].memories).toHaveLength(20);
+    expect(task.activeScopes).toEqual(['npcRawToMid']);
 
     const application = applyMemorySummaryResult(state, {
       midTermSummaries: [{
@@ -338,6 +339,61 @@ describe('MemorySummaryProjection', () => {
       expect.stringContaining('玩家近期输入不足20条'),
       expect.stringContaining('没有合格玩家批次'),
     ]));
+  });
+
+  it('omits every below-threshold queue when another queue triggers maintenance', () => {
+    const state = makeState(3);
+    state.memoryArchive!.midTermSummaries = Array.from({ length: 9 }, (_, index) => ({
+      summaryId: `partial_mid_${index + 1}`,
+      title: `未达阈值阶段${index + 1}`,
+      fromCreatedAt: `day ${index + 1}`,
+      toCreatedAt: `day ${index + 1}`,
+      summary: `尚不足十条的中期摘要${index + 1}`,
+      updatedAt: `day ${index + 1}`,
+    }));
+    state.npcs![0].memories = Array.from({ length: 20 }, (_, index) => ({
+      memoryId: `npc_trigger_${index + 1}`,
+      source: '亲历',
+      content: `达到阈值的 NPC 记忆${index + 1}`,
+      createdAt: `day ${index + 1}`,
+    }));
+
+    const task = buildRecentTurnMemorySummaryTask(state);
+
+    expect(task.activeScopes).toEqual(['npcRawToMid']);
+    expect(task.sourceRecentTurnSummaries).toEqual([]);
+    expect(task.sourceTurnLogs).toEqual([]);
+    expect(task.keptRecentTurnIds).toEqual([]);
+    expect(task.sourceMidTermSummaries).toEqual([]);
+    expect(task.relatedNpcMemoryBlocks[0].memories).toHaveLength(20);
+    expect(task.existingLongTermFacts).toEqual([]);
+    expect(task.existingLocationMemorySummaries).toEqual([]);
+  });
+
+  it('combines only the queues that independently reach their thresholds', () => {
+    const state = makeState(20);
+    state.memoryArchive!.midTermSummaries = Array.from({ length: 9 }, (_, index) => ({
+      summaryId: `partial_player_mid_${index + 1}`,
+      title: `阶段${index + 1}`,
+      fromCreatedAt: `day ${index + 1}`,
+      toCreatedAt: `day ${index + 1}`,
+      summary: `中期摘要${index + 1}`,
+      updatedAt: `day ${index + 1}`,
+    }));
+    state.npcs![0].memories = Array.from({ length: 20 }, (_, index) => ({
+      memoryId: `combined_npc_${index + 1}`,
+      source: '亲历',
+      content: `NPC 记忆${index + 1}`,
+      createdAt: `day ${index + 1}`,
+    }));
+
+    const task = buildRecentTurnMemorySummaryTask(state);
+
+    expect(task.activeScopes).toEqual(['playerRecentToMid', 'npcRawToMid']);
+    expect(task.sourceRecentTurnSummaries).toHaveLength(20);
+    expect(task.sourceMidTermSummaries).toEqual([]);
+    expect(task.relatedNpcMemoryBlocks).toHaveLength(1);
+    expect(task.sourceNpcMidTermBlocks).toEqual([]);
   });
 
   it('accepts exactly one player mid-term summary and owns its batch id and complete sources locally', () => {

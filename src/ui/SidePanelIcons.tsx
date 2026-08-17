@@ -26,6 +26,9 @@ const BondsIcon = () => icon('M10 13a5 5 0 0 0 7.5.5l.5-.5M14 11a5 5 0 0 0-7.5-.
 /** 红颜 — Heart / 心形 */
 const HeroinesIcon = () => icon('M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.8 1-1a5.5 5.5 0 0 0 0-7.6z');
 
+/** 书信 — Letter / 封函 */
+const CorrespondenceIcon = () => icon('M3 6h18v12H3V6zm1 1 8 6 8-6M4 17l5-5M20 17l-5-5');
+
 /** 背包 — Backpack / 箱包 */
 const BackpackIcon = () => icon('M6 2h12l2 4v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6l2-4zm0 4h12M8 2v4M16 2v4M12 12v4');
 
@@ -56,6 +59,7 @@ export const sidePanelIconMap: Record<string, React.ReactElement> = {
   npcs:       <NpcsIcon />,
   bonds:      <BondsIcon />,
   heroines:   <HeroinesIcon />,
+  correspondence: <CorrespondenceIcon />,
   backpack:   <BackpackIcon />,
   uniqueArts: <UniqueArtsIcon />,
   factions:   <FactionsIcon />,

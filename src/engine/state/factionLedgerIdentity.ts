@@ -7,6 +7,7 @@ import type {
   RuntimeState,
   WorldTrendEntry,
 } from '../types';
+import { normalizeFactionRecentActionHistory } from './factionRecentActionHistory';
 
 export interface FactionLedgerIdentityNormalization {
   state: RuntimeState;
@@ -106,7 +107,7 @@ function mergeFactionEntries(
   canonical: FactionLedgerEntry,
   duplicate: FactionLedgerEntry,
 ): FactionLedgerEntry {
-  return {
+  return normalizeFactionRecentActionHistory({
     ...canonical,
     ...duplicate,
     factionId: canonical.factionId,
@@ -117,7 +118,11 @@ function mergeFactionEntries(
     knownMemberNpcIds: mergeStringLists(canonical.knownMemberNpcIds, duplicate.knownMemberNpcIds),
     relatedTroopIds: mergeStringLists(canonical.relatedTroopIds, duplicate.relatedTroopIds),
     recentActions: mergeStringLists(canonical.recentActions, duplicate.recentActions) ?? [],
-  };
+    recentActionRecords: [
+      ...(canonical.recentActionRecords ?? []),
+      ...(duplicate.recentActionRecords ?? []),
+    ],
+  });
 }
 
 function mergeStringLists(left?: string[], right?: string[]): string[] | undefined {
