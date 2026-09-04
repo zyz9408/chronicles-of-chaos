@@ -6,7 +6,7 @@
 
 An LLM-driven interactive narrative RPG where characters and the Three Kingdoms world persist and evolve through validated local state.
 
-[简体中文](README.md) · **v1.7.24** · [Play online](https://cocsg.pages.dev/)
+[简体中文](README.md) · **v1.8.4** · [Play online](https://cocsg.pages.dev/)
 
 </div>
 
@@ -32,12 +32,12 @@ The project does not lock play into a fixed quest tree. The LLM interprets actio
 - **Correspondence and off-screen lives** — Write and receive letters, keep conversation histories, and follow important characters as their circumstances and historical trajectories continue with game time.
 - **Desktop, mobile, and dual themes** — Situation, map, character, bond, romance, inventory, art, faction, holding, troop, conflict, combat, and memory panels reflow for the device, with dark and light themes.
 
-## Highlights in v1.7.24
+## Highlights in v1.8.4
 
-- Expanded personal combat, warfare, unit match-ups, command impact, and projected unique-art effects, with outcomes resolved by local rules and persisted into the save.
-- Expanded holdings, private estates, troops, correspondence, relationship-character evolution, character memory, cloud saves, and variable management.
-- Added separate narrative, personal-combat, and warfare difficulty controls, alongside opening, map, archive, inventory, and mobile-interface improvements.
-- Added presets for GLM Coding Plan and MiniMax domestic/international endpoints while preserving OpenAI, DeepSeek, Gemini, Claude, Qwen, and generic compatible routes.
+- Added an AVG presentation stage, stable speaker binding, local visual overrides, and verified external art packs.
+- Invalid state writeback is isolated by dependency domain and preserves verifiable recovery evidence without rewriting committed prose.
+- State writeback, NPC completion and simulation, world evolution, and memory summarisation can share one main request or use dedicated APIs.
+- Improved long-running matters, NPC recency, deterministic troop-fatigue recovery, memory traces, and NPC-roster diagnostics.
 
 ## Game interface
 

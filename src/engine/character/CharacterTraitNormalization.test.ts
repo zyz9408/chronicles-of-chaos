@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeCharacterTraits } from './CharacterTraitNormalization';
+import {
+  mergePlayerTraitsPreservingAuthority,
+  normalizeCharacterTraits,
+} from './CharacterTraitNormalization';
 
 describe('normalizeCharacterTraits', () => {
   it('deduplicates stable IDs and normalized labels while preserving the strongest complete record', () => {
@@ -65,5 +68,33 @@ describe('normalizeCharacterTraits', () => {
       source: 'legacy_migration',
       rarity: 'orange',
     })]);
+  });
+
+  it('preserves a confirmed player-authority trait when provider writeback omits it', () => {
+    const merged = mergePlayerTraitsPreservingAuthority([
+      {
+        id: 'custom_trait_perfect_learning',
+        label: '天生圣人',
+        description: '快速完美学习任何技能。',
+        source: 'custom',
+      },
+      {
+        id: 'trait_temporary',
+        label: '临时状态',
+        description: '普通非权威特质。',
+        source: 'event',
+      },
+    ], [{
+      id: 'trait_current',
+      label: '当前状态',
+      description: '本回合写回的普通特质。',
+      source: 'event',
+    }]);
+
+    expect(merged.map((trait) => trait.id)).toEqual([
+      'custom_trait_perfect_learning',
+      'trait_current',
+    ]);
+    expect(merged[0].mechanics).toMatchObject({ mode: 'authoritative', confirmedByPlayer: true });
   });
 });

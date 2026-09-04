@@ -62,6 +62,20 @@ export interface NpcIntentSimulationPackage {
   intents: NpcIntentSimulationIntent[];
 }
 
+export type NpcIntentSimulationContractDiagnosticCode =
+  | 'npc-trajectory-missing-target'
+  | 'npc-trajectory-duplicate-target'
+  | 'npc-trajectory-unknown-target'
+  | 'npc-trajectory-invalid-row'
+  | 'npc-trajectory-stale-contract'
+  | 'npc-trajectory-count-mismatch';
+
+export interface NpcIntentSimulationContractValidation {
+  valid: boolean;
+  package: NpcIntentSimulationPackage;
+  diagnosticCodes: NpcIntentSimulationContractDiagnosticCode[];
+}
+
 export type NpcIntentSimulationStatus = 'completed' | 'skipped' | 'failed';
 
 export interface NpcIntentSimulationResult {
@@ -73,6 +87,7 @@ export interface NpcIntentSimulationResult {
   model?: string;
   usage?: LlmTokenUsage;
   rawContent?: string;
+  diagnosticCodes?: NpcIntentSimulationContractDiagnosticCode[];
 }
 
 export interface SelectNpcIntentSimulationTargetsOptions {
@@ -164,6 +179,53 @@ export function parseNpcIntentSimulationResponse(
   };
 }
 
+export function validateNpcIntentSimulationResponse(
+  content: string,
+  frozenTargets: NpcIntentSimulationTarget[],
+): NpcIntentSimulationContractValidation {
+  const payload = parseJsonObject(content);
+  const diagnostics: NpcIntentSimulationContractDiagnosticCode[] = [];
+  if (payload.protocolVersion !== 'coc.v2.npcIntent.v1') {
+    diagnostics.push('npc-trajectory-stale-contract');
+  }
+  if (!Array.isArray(payload.intents)) {
+    diagnostics.push('npc-trajectory-invalid-row');
+  }
+  const rawIntents = Array.isArray(payload.intents) ? payload.intents : [];
+  const allowedIds = new Set(frozenTargets.map((target) => target.npcId));
+  const seenIds = new Set<string>();
+  rawIntents.forEach((row) => {
+    if (!isRecord(row)) {
+      diagnostics.push('npc-trajectory-invalid-row');
+      return;
+    }
+    const npcId = readString(row.npcId).trim();
+    const frozenTarget = frozenTargets.find((target) => target.npcId === npcId);
+    if (!allowedIds.has(npcId)) diagnostics.push('npc-trajectory-unknown-target');
+    if (seenIds.has(npcId)) diagnostics.push('npc-trajectory-duplicate-target');
+    seenIds.add(npcId);
+    if (!npcId
+      || !readString(row.npcName).trim()
+      || frozenTarget?.npcName !== readString(row.npcName).trim()
+      || typeof row.shouldAct !== 'boolean'
+      || !readString(row.intent).trim()
+      || !readString(row.trigger).trim()) {
+      diagnostics.push('npc-trajectory-invalid-row');
+      return;
+    }
+  });
+  if (rawIntents.length !== frozenTargets.length) diagnostics.push('npc-trajectory-count-mismatch');
+  if (frozenTargets.some((target) => !seenIds.has(target.npcId))) {
+    diagnostics.push('npc-trajectory-missing-target');
+  }
+  const uniqueDiagnostics = [...new Set(diagnostics)];
+  return {
+    valid: uniqueDiagnostics.length === 0,
+    package: parseNpcIntentSimulationResponse(content, frozenTargets),
+    diagnosticCodes: uniqueDiagnostics,
+  };
+}
+
 export async function executeNpcIntentSimulation(
   worldBook: WorldBook,
   state: RuntimeState,
@@ -200,7 +262,8 @@ export async function executeNpcIntentSimulation(
       timeoutMs: options.timeoutMs,
       timeoutErrorFactory: options.timeoutErrorFactory,
     });
-    const parsed = parseNpcIntentSimulationResponse(result.content, targets);
+    const validation = validateNpcIntentSimulationResponse(result.content, targets);
+    const parsed = validation.package;
     const intentPackage: NpcIntentSimulationPackage = {
       ...parsed,
       generatedAt: parsed.generatedAt || ensureLuanShiState(state).currentDate,
@@ -214,6 +277,7 @@ export async function executeNpcIntentSimulation(
       model: result.model,
       usage: result.usage,
       rawContent: result.content,
+      ...(validation.diagnosticCodes.length > 0 ? { diagnosticCodes: validation.diagnosticCodes } : {}),
     };
   } catch (error) {
     rethrowIfNpcSimulationCancelled(error, options.signal);

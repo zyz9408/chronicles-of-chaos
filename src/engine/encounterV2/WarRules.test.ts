@@ -11,6 +11,8 @@ import {
   normalizeWarReadiness,
   normalizeWarSupply,
   calculateWarShockMoralePenalty,
+  calculateWarIntelligenceTacticFactor,
+  calculateWarMartialPressureFactor,
   resolveWarEngagedStrengths,
   resolveWarTacticCoefficients,
   resolveWarRoundLimitOutcome,
@@ -99,6 +101,30 @@ describe('WarRules', () => {
     expect(compareWarTactics('flank', 'hold_position')).toEqual({ playerModifier: 1.15, enemyModifier: 0.85, winner: 'player' });
     expect(compareWarTactics('hold_position', 'all_out_assault')).toEqual({ playerModifier: 1.15, enemyModifier: 0.85, winner: 'player' });
     expect(compareWarTactics('steady_advance', 'all_out_assault')).toEqual({ playerModifier: 1, enemyModifier: 1 });
+  });
+
+  it('gives War V2.6 intelligence bounded tactical leverage', () => {
+    expect(calculateWarIntelligenceTacticFactor({
+      ownIntelligence: 70, enemyIntelligence: 50, tactic: 'flank',
+    })).toBe(1.08);
+    expect(calculateWarIntelligenceTacticFactor({
+      ownIntelligence: 90, enemyIntelligence: 50, tactic: 'steady_advance',
+    })).toBe(1.08);
+    expect(calculateWarIntelligenceTacticFactor({
+      ownIntelligence: 100, enemyIntelligence: 0, tactic: 'all_out_assault',
+    })).toBe(1.16);
+  });
+
+  it('gives War V2.6 martial pressure only to aggressive orders', () => {
+    expect(calculateWarMartialPressureFactor({
+      ownMartial: 90, enemyMartial: 50, tactic: 'all_out_assault',
+    })).toBe(1.10);
+    expect(calculateWarMartialPressureFactor({
+      ownMartial: 90, enemyMartial: 50, tactic: 'flank',
+    })).toBe(1.10);
+    expect(calculateWarMartialPressureFactor({
+      ownMartial: 90, enemyMartial: 50, tactic: 'hold_position',
+    })).toBe(1);
   });
 
   it('gives naval forces the water edge and cavalry the open-field edge from explicit profiles', () => {

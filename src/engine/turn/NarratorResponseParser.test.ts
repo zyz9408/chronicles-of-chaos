@@ -28,6 +28,27 @@ function makeNpcProfileSuggestion(loadout: Record<string, unknown>): Record<stri
 }
 
 describe('parseNarratorResponse', () => {
+  it('preserves only the current bundled-main transport envelope', () => {
+    const valid = parseNarratorResponse(JSON.stringify({
+      narrativeText: '正文', suggestedActions: [],
+      bundledFeatures: {
+        protocolVersion: 'coc.v2.bundledMain.v1',
+        npcSimulation: { protocolVersion: 'coc.v2.npcIntent.v1', intents: [] },
+        ignoredModule: { unsafe: true },
+      },
+    }));
+    expect(valid.bundledFeatures).toEqual({
+      protocolVersion: 'coc.v2.bundledMain.v1',
+      npcSimulation: { protocolVersion: 'coc.v2.npcIntent.v1', intents: [] },
+    });
+
+    const stale = parseNarratorResponse(JSON.stringify({
+      narrativeText: '正文', suggestedActions: [],
+      bundledFeatures: { protocolVersion: 'coc.v2.bundledMain.v0', memorySummary: {} },
+    }));
+    expect(stale.bundledFeatures).toBeUndefined();
+  });
+
   it('normalizes abbreviated correspondence replies against the stable local letter ledger', () => {
     const result = parseNarratorResponse(JSON.stringify({
       narrativeText: '驿卒带回蔡琰亲笔回信，她答应按期送粮。',
@@ -622,6 +643,39 @@ describe('parseNarratorResponse', () => {
     expect(result.writeback?.debugNotes).toContain(
       'Encounter V2 能力投影 art_zhao_yun_dragon_formation 已将 targetMode 结构别名 enemy_force 规范化为 all_enemies。 Encounter V2 能力投影 art_zhao_yun_dragon_formation 已将 heavy 绝艺的冲突字段 allowAutoUse 规范化为 false。',
     );
+  });
+
+  it('parses only structurally valid AVG presentation speaker facts', () => {
+    const result = parseNarratorResponse(JSON.stringify({
+      narrativeText: '【赵云】末将在。',
+      suggestedActions: [],
+      writeback: {
+        presentationSpeakerFacts: [
+          {
+            segmentIndex: 0,
+            speakerActorId: 'npc_zhao_yun',
+            speakerLabel: '赵云',
+            identitySource: 'full_npc',
+            sex: 'male',
+            ageBand: 'young_adult',
+            professionTags: [' 将领 ', 7],
+          },
+          { segmentIndex: -1, speakerActorId: 'bad', speakerLabel: '无效', identitySource: 'full_npc', sex: 'male' },
+          { segmentIndex: 1, speakerActorId: 'bad', speakerLabel: '无效', identitySource: 'guessed', sex: 'male' },
+        ],
+        debugNotes: [],
+      },
+    }));
+
+    expect(result.writeback?.presentationSpeakerFacts).toEqual([{
+      segmentIndex: 0,
+      speakerActorId: 'npc_zhao_yun',
+      speakerLabel: '赵云',
+      identitySource: 'full_npc',
+      sex: 'male',
+      ageBand: 'young_adult',
+      professionTags: ['将领'],
+    }]);
   });
 
   it('parses structured protagonist profile writeback separately from protagonist memory', () => {

@@ -5,6 +5,10 @@
 import type { DomesticReportResourceDelta } from './luanshi';
 import type { MemoryRecallTrace } from './memory';
 import type { RuntimeLocationWriteDiagnostic } from './map';
+import type {
+  StateWritebackDisposition,
+  StateWritebackRecoveryAnchor,
+} from './stateWritebackRecovery';
 
 export interface TurnTokenUsageMeta {
   promptTokens?: number;
@@ -99,6 +103,15 @@ export interface TurnProcessingStageEvent {
   model?: string;
   /** 仅当供应商返回 usage 时记录；不支持缓存统计的接口保持缺省。 */
   usage?: TurnTokenUsageMeta;
+  memoryRetrieval?: {
+    status: 'vector' | 'localFallback' | 'failedFallback';
+    totalHitCount: number;
+    vectorHitCount: number;
+    localHitCount: number;
+    candidateCount?: number;
+    indexDeltaCount?: number;
+    indexEmbeddedCount?: number;
+  };
 }
 
 export interface TurnPromptTokenLayerMeta {
@@ -202,6 +215,20 @@ export interface TurnDisplayMeta {
     routeErrors: string[];
     diagnostics: RuntimeLocationWriteDiagnostic[];
   };
+  stateWriteback?: StateWritebackDisposition;
+  stateWritebackRecoveryAnchor?: StateWritebackRecoveryAnchor;
+  /** Frozen structured identity evidence used only by AVG presentation. */
+  presentationSpeakerFacts?: Array<{
+    segmentIndex: number;
+    speakerActorId: string;
+    speakerLabel: string;
+    identitySource: 'player' | 'full_npc' | 'known_actor' | 'presentation_only';
+    sex: 'male' | 'female' | 'unknown' | 'other';
+    ageBand?: 'child' | 'teen' | 'young_adult' | 'adult' | 'middle_aged' | 'elderly' | 'unknown';
+    roleFamily?: string;
+    professionTags?: string[];
+    socialTierTags?: string[];
+  }>;
 }
 
 /** 回合日志条目 */
@@ -216,6 +243,42 @@ export interface TurnLogEntry {
   /** 当前回合完成后展示给玩家的下一步行动建议；旧存档可缺省。 */
   suggestedActions?: SuggestedAction[];
   displayMeta?: TurnDisplayMeta;
+  /** Frozen committed visual context used to replay AVG scenes without following later world movement. */
+  avgVisualSnapshot?: {
+    schemaVersion: 1;
+    runtimePlaceId?: string;
+    runtimeSceneId?: string;
+    timeText: string;
+    weatherText: string;
+    presentActorIds: string[];
+    source?: 'committed-structured';
+    explicitSceneAlias?: string;
+    structuredSceneAliases?: string[];
+    sceneSemantic?: {
+      environment?: 'indoor' | 'outdoor';
+      function?: string;
+      archetype?: string;
+      placeSignature?: string;
+      tags?: string[];
+    };
+  };
+  /** Presentation-only bindings frozen for this historical turn. */
+  avgPresentation?: {
+    sceneBinding?: { sceneResourceId: string; source: string };
+    sceneResolution?: Record<string, unknown>;
+    speakerFacts?: Array<NonNullable<TurnDisplayMeta['presentationSpeakerFacts']>[number] & {
+      validationStatus?: 'accepted';
+    }>;
+    speakerBindings?: Array<{
+      segmentIndex: number;
+      label: string;
+      status: 'frozen' | 'unbound';
+      actorId?: string;
+      identityKind?: 'player' | 'npc' | 'knownActor' | 'presentationActor';
+      diagnosticCode: 'frozen-speaker' | 'speaker-unbound';
+    }>;
+    speakerFactConflictSegmentIndexes?: number[];
+  };
 }
 
 /** 行动类型（粗略识别用） */

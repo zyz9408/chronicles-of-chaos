@@ -7,6 +7,10 @@ import {
   CHARACTER_TRAIT_RARITIES,
   normalizeCharacterTraitRarity,
 } from './TraitRarity';
+import {
+  compileTraitAbilityMechanics,
+  validateAbilityMechanics,
+} from '../abilities/AbilityMechanics';
 
 const rarityRank = new Map<CharacterTraitRarity, number>(
   CHARACTER_TRAIT_RARITIES.map((rarity, index) => [rarity, index]),
@@ -32,7 +36,7 @@ function cloneCheckHooks(hooks: readonly CharacterCheckHook[] | undefined): Char
 function cloneTrait(trait: CharacterTrait): CharacterTrait {
   const label = typeof trait.label === 'string' ? trait.label.trim() : '';
   const checkHooks = cloneCheckHooks(trait.checkHooks);
-  return {
+  const normalized: CharacterTrait = {
     ...trait,
     id: typeof trait.id === 'string' && trait.id.trim()
       ? trait.id.trim()
@@ -47,6 +51,9 @@ function cloneTrait(trait: CharacterTrait): CharacterTrait {
     ...(typeof trait.promptHint === 'string' ? { promptHint: trait.promptHint.trim() } : {}),
     ...(checkHooks ? { checkHooks } : {}),
   };
+  const mechanics = compileTraitAbilityMechanics(normalized);
+  const { mechanics: _staleMechanics, ...withoutMechanics } = normalized;
+  return mechanics ? { ...withoutMechanics, mechanics } : withoutMechanics;
 }
 
 function pickMoreCompleteText(existing: string | undefined, incoming: string | undefined): string | undefined {
@@ -102,7 +109,7 @@ function mergeDuplicateTraits(existing: CharacterTrait, incoming: CharacterTrait
   const promptHint = pickMoreCompleteText(existing.promptHint, incoming.promptHint);
   const checkHooks = mergeCheckHooks(existing.checkHooks, incoming.checkHooks);
   const rarity = pickStrongerRarity(existing.rarity, incoming.rarity);
-  return {
+  const merged: CharacterTrait = {
     ...cloneTrait(existing),
     description,
     source: normalizeIdentity(existing.source) ? existing.source.trim() : incoming.source.trim(),
@@ -110,6 +117,9 @@ function mergeDuplicateTraits(existing: CharacterTrait, incoming: CharacterTrait
     ...(promptHint ? { promptHint } : {}),
     ...(checkHooks ? { checkHooks } : {}),
   };
+  const mechanics = compileTraitAbilityMechanics(merged);
+  const { mechanics: _staleMechanics, ...withoutMechanics } = merged;
+  return mechanics ? { ...withoutMechanics, mechanics } : withoutMechanics;
 }
 
 /**
@@ -133,4 +143,27 @@ export function normalizeCharacterTraits(
     }
   }
   return normalized;
+}
+
+function hasConfirmedAuthoritativeMechanics(trait: CharacterTrait): boolean {
+  const mechanics = compileTraitAbilityMechanics(trait);
+  return validateAbilityMechanics(mechanics)
+    && mechanics.mode === 'authoritative'
+    && mechanics.status === 'executable'
+    && mechanics.confirmedByPlayer;
+}
+
+/**
+ * Provider trait updates are replacement snapshots, but a locally frozen player
+ * authority rule cannot be removed merely because a later response omitted it.
+ * An explicit player-side editor/delete flow may still remove it before this
+ * writeback layer is invoked.
+ */
+export function mergePlayerTraitsPreservingAuthority(
+  existingTraits: readonly CharacterTrait[] | undefined,
+  incomingTraits: readonly CharacterTrait[] | undefined,
+): CharacterTrait[] {
+  const protectedTraits = normalizeCharacterTraits(existingTraits)
+    .filter(hasConfirmedAuthoritativeMechanics);
+  return normalizeCharacterTraits([...protectedTraits, ...(incomingTraits ?? [])]);
 }

@@ -324,6 +324,8 @@ function createCombatantSnapshot(
     level: Math.max(1, Math.trunc(finiteOr(source.level, 1))),
     xp: Math.max(0, Math.trunc(finiteOr(source.xp, 0))),
     martial: clamp(finiteOr(source.abilityScores?.武力, 50), 0, 100),
+    intelligence: clamp(finiteOr(source.abilityScores?.智力, 50), 0, 100),
+    leadership: clamp(finiteOr(source.abilityScores?.统率, 50), 0, 100),
     luck: clamp(finiteOr(source.abilityScores?.机运, 50), 0, 100),
     hp,
     maxHp: 100,

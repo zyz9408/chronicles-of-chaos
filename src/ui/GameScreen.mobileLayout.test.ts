@@ -6,6 +6,7 @@ import {
   formatMobileTopBarDateLabel,
   getWeatherGlyph,
   MobileRegionSwitcher,
+  sanitizeAvgPreparingStageText,
 } from './GameScreen';
 import type { Actor } from '../engine/types';
 
@@ -63,5 +64,12 @@ describe('GameScreen mobile region switcher', () => {
     expect(derivePlayerSidebarAge(player, '公元184年04月02日 08:00（辰时）')).toBe(10);
     expect(derivePlayerSidebarAge(player, '公元186年04月02日 08:00（辰时）')).toBe(12);
     expect(player.age).toBe(10);
+  });
+
+  it('redacts credentials from the AVG preparation stage', () => {
+    const text = sanitizeAvgPreparingStageText('Authorization: Bearer sk-secret-value apiKey: "tp-hidden"');
+    expect(text).not.toContain('sk-secret-value');
+    expect(text).not.toContain('tp-hidden');
+    expect(text).toContain('已隐藏');
   });
 });

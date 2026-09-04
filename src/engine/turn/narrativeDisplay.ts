@@ -10,6 +10,8 @@ export interface NarrativeRenderEntry {
   playerInput: string;
   narrativeText: string;
   displayMeta?: TurnDisplayMeta;
+  avgVisualSnapshot?: TurnLogEntry['avgVisualSnapshot'];
+  avgPresentation?: TurnLogEntry['avgPresentation'];
   isLive: boolean;
 }
 
@@ -71,6 +73,8 @@ function toRenderEntry(log: TurnLogEntry): NarrativeRenderEntry | null {
     playerInput: displayPlayerInput(log.playerInput),
     narrativeText,
     displayMeta: log.displayMeta,
+    avgVisualSnapshot: log.avgVisualSnapshot,
+    avgPresentation: log.avgPresentation,
     isLive: false,
   };
 }

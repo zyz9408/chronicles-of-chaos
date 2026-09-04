@@ -18,6 +18,7 @@ export interface BuildTurnDisplayMetaInput {
   processingStages?: TurnDisplayMeta['processingStages'];
   memoryRecall?: TurnDisplayMeta['memoryRecall'];
   narrativeLength?: TurnDisplayMeta['narrativeLength'];
+  presentationSpeakerFacts?: TurnDisplayMeta['presentationSpeakerFacts'];
 }
 
 export function formatTokenCount(value?: number): string {
@@ -92,6 +93,7 @@ export function buildTurnDisplayMeta(input: BuildTurnDisplayMetaInput): TurnDisp
     processingStages: input.processingStages,
     memoryRecall: input.memoryRecall,
     narrativeLength: input.narrativeLength,
+    presentationSpeakerFacts: input.presentationSpeakerFacts,
   };
 }
 

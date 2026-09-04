@@ -79,6 +79,21 @@ describe('TurnProcessingTrace', () => {
     expect(html).toContain('不展示完整提示词、密钥或模型隐藏思维链');
   });
 
+  it('shows retrieval-specific usage without a misleading zero output count', () => {
+    const html = renderToStaticMarkup(<TurnProcessingTrace events={[{
+      stage: 'retrievingMemory', label: '检索相关记忆', status: 'finished',
+      usage: { promptTokens: 12, completionTokens: 0 },
+      memoryRetrieval: {
+        status: 'vector', totalHitCount: 3, vectorHitCount: 2, localHitCount: 1,
+        candidateCount: 9, indexDeltaCount: 2, indexEmbeddedCount: 2,
+      },
+    }]} />);
+    expect(html).toContain('向量输入 12 tokens');
+    expect(html).toContain('向量召回 · 总命中 3 · 向量命中 2 · 本地召回 1');
+    expect(html).toContain('候选 9 · 索引新增/更新 2');
+    expect(html).not.toContain('输出 0 tokens');
+  });
+
   it('redacts credentials from provider errors before rendering them', () => {
     const safe = sanitizeProcessingStageDetail(
       '401 Authorization: Bearer sk-secret-value apiKey: "tp-secret-value"',

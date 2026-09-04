@@ -130,6 +130,30 @@ describe('buildUniqueArtsPanelModel', () => {
     expect(model.selectedArt?.characterName).toBe('Chen Da');
   });
 
+  it('shows deterministic authored mechanics and their latest execution', () => {
+    const state = structuredClone(runtimeState);
+    const art = state.player.uniqueArts?.[0];
+    if (!art) throw new Error('fixture art missing');
+    art.name = '不灭回春';
+    art.description = '每次使用必定恢复所有生命。';
+    state.abilityRuleExecutions = [{
+      executionId: 'execution_1',
+      eventId: 'turn:1:art-use:art_cavalry_command',
+      ruleId: 'art_cavalry_command:full-heal-on-use',
+      sourceAbilityId: art.id,
+      sourceAbilityName: art.name,
+      trigger: 'on_unique_art_use',
+      status: 'applied',
+      summary: '不灭回春按玩家权威规则将生命恢复至上限',
+      occurredAt: '189-09-01 08:00',
+    }];
+
+    const model = buildUniqueArtsPanelModel(state);
+
+    expect(model.selectedArt?.mechanicsSummary).toContain('使用时生命恢复至上限');
+    expect(model.selectedArt?.lastExecutionSummary).toContain('按玩家权威规则');
+  });
+
   it('exposes the grouped roster through the user-facing unique-arts panel entry', () => {
     const model = buildUniqueArtsPanelModel(runtimeState);
 
@@ -146,6 +170,7 @@ describe('buildUniqueArtsPanelModel', () => {
 
     expect(source).toContain('<span>持有者</span>');
     expect(source).toContain('<h4>触发与承接</h4>');
+    expect(source).toContain('<h4>本地执行规则</h4>');
     expect(source).toContain('<h4>判定条件</h4>');
     expect(source).toContain('成长记录');
     expect(source).not.toContain('updateCharacterUniqueArts 写回');

@@ -143,6 +143,9 @@ describe('ApiSettingsPanel', () => {
     const displayMarkup = renderToStaticMarkup(
       <ApiSettingsPanel onClose={() => undefined} initialTab="display" runtimeState={runtimeState} />,
     );
+    const avgMarkup = renderToStaticMarkup(
+      <ApiSettingsPanel onClose={() => undefined} initialTab="avg" runtimeState={runtimeState} saveId="save_test" />,
+    );
 
     expect(gameMarkup).toContain('当前游戏难度');
     expect(gameMarkup).toContain('困难（普通判定难度 Y+5）');
@@ -160,6 +163,15 @@ describe('ApiSettingsPanel', () => {
     expect(displayMarkup).not.toContain('个人战斗难度');
     expect(displayMarkup).not.toContain('战争难度');
     expect(displayMarkup).not.toContain('本局叙事人称');
+    expect(displayMarkup).not.toContain('正文显示模式');
+    expect(avgMarkup).toContain('正文显示模式');
+    expect(avgMarkup).toContain('AVG 演出');
+    expect(avgMarkup).toContain('主角立绘');
+    expect(avgMarkup).toContain('https://pan.quark.cn/s/8f2ec2b76069');
+    expect(avgMarkup).toContain('noopener noreferrer');
+    expect(avgMarkup).toContain('no-referrer');
+    expect(avgMarkup).toContain('AI 候选图');
+    expect(avgMarkup).toContain('1122 项清单');
   });
 
   it('persists encounter difficulty to only the selected save field', async () => {

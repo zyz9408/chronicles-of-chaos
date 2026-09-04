@@ -1100,10 +1100,11 @@ describe('composePrompt', () => {
     expect(prompt.userPrompt).toContain('白腻、雪乳、红梅、蓓蕾、花心、花径、花穴、甬道、蜜壶、玉峰、肉刃、天鹅颈、弓起如满弓');
     expect(prompt.userPrompt).toContain('不做脱离上下文的全局禁词');
     expect(prompt.userPrompt).not.toContain('乳头、蜜液');
-    expect(prompt.userPrompt).toContain('摩擦、压力、力度、深浅、节奏、温度、湿润、呼吸、声音、肌肉紧张或放松');
-    expect(prompt.userPrompt).toContain('不要把这些项目写成逐项检查表');
-    expect(prompt.userPrompt).toContain('不用固定的景物、器物或身体轮廓意象代替实际部位与动作');
-    expect(prompt.userPrompt).toContain('同一身体部位在同一段动作中使用一个符合场景的稳定称谓');
+    expect(prompt.userPrompt).toContain('接触位置、摩擦、压力、力度、深浅、节奏、温度、湿润、呼吸、声音、肌肉变化');
+    expect(prompt.userPrompt).toContain('不做重复的感官检查表');
+    expect(prompt.userPrompt).toContain('用作实际部位与动作的替代称呼');
+    expect(prompt.userPrompt).toContain('每回合只推进一个有意义的亲密阶段');
+    expect(prompt.userPrompt).toContain('动作或试探—对方可观察的身体、言语或选择回应');
     expect(prompt.userPrompt).toContain('私密档案只提供事实连续性，不是文风范本');
     expect(prompt.userPrompt).toContain('updateNpcFemaleProfile');
     expect(prompt.userPrompt).toContain('既有红颜关系写回');

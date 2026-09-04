@@ -15,6 +15,7 @@ import type {
   NarratorNpcMemorySuggestion,
   NarratorNpcProfileSuggestion,
   NarratorPlotPlanSuggestion,
+  PresentationSpeakerFact,
   NarratorProtagonistMemoryWriteback,
   NarratorProtagonistProfileWriteback,
   NarratorQuestChangeSuggestion,
@@ -92,10 +93,23 @@ export function parseNarratorResponse(
     if (writeback) {
       response.writeback = writeback;
     }
+    const bundledFeatures = parseBundledFeatures(parsed.bundledFeatures);
+    if (bundledFeatures) response.bundledFeatures = bundledFeatures;
     return response;
   } catch {
     return plainTextResponse(trimmed);
   }
+}
+
+function parseBundledFeatures(value: unknown): NarratorResponse['bundledFeatures'] | undefined {
+  if (!isRecord(value) || value.protocolVersion !== 'coc.v2.bundledMain.v1') return undefined;
+  const result: NonNullable<NarratorResponse['bundledFeatures']> = {
+    protocolVersion: 'coc.v2.bundledMain.v1',
+  };
+  if (isRecord(value.npcSimulation)) result.npcSimulation = value.npcSimulation;
+  if (isRecord(value.worldEvolution)) result.worldEvolution = value.worldEvolution;
+  if (isRecord(value.memorySummary)) result.memorySummary = value.memorySummary;
+  return result;
 }
 
 function extractJsonText(content: string): string | null {
@@ -245,6 +259,7 @@ function parseWriteback(
     encounterIntent.value,
   );
   const semanticProjections = parseSemanticProjections(value.semanticProjections);
+  const presentationSpeakerFacts = parsePresentationSpeakerFacts(value.presentationSpeakerFacts);
 
   return {
     turnSummary: parseTurnSummary(value.turnSummary, options),
@@ -267,6 +282,7 @@ function parseWriteback(
     encounterTransitionDecision: encounterTransition.value,
     encounterStartIntent: encounterTransition.acceptIntent ? encounterIntent.value : null,
     semanticProjections: semanticProjections.values,
+    presentationSpeakerFacts,
     debugNotes: [
       ...parseStringArray(value.debugNotes),
       ...encounterIntent.diagnostics,
@@ -274,6 +290,48 @@ function parseWriteback(
       ...semanticProjections.diagnostics,
     ],
   };
+}
+
+function parsePresentationSpeakerFacts(value: unknown): PresentationSpeakerFact[] {
+  return parseArray(value, (item) => {
+    if (!isRecord(item)) return null;
+    if (!Number.isSafeInteger(item.segmentIndex) || Number(item.segmentIndex) < 0) return null;
+    const speakerActorId = parseOptionalTrimmedString(item.speakerActorId);
+    const speakerLabel = parseOptionalTrimmedString(item.speakerLabel);
+    if (!speakerActorId || !speakerLabel) return null;
+    const identitySource = item.identitySource;
+    if (identitySource !== 'player'
+      && identitySource !== 'full_npc'
+      && identitySource !== 'known_actor'
+      && identitySource !== 'presentation_only') return null;
+    const sex = item.sex;
+    if (sex !== 'male' && sex !== 'female' && sex !== 'unknown' && sex !== 'other') return null;
+    const ageBand = item.ageBand;
+    const validAgeBand = ageBand === 'child'
+      || ageBand === 'teen'
+      || ageBand === 'young_adult'
+      || ageBand === 'adult'
+      || ageBand === 'middle_aged'
+      || ageBand === 'elderly'
+      || ageBand === 'unknown';
+    return {
+      segmentIndex: Number(item.segmentIndex),
+      speakerActorId,
+      speakerLabel,
+      identitySource,
+      sex,
+      ...(validAgeBand ? { ageBand } : {}),
+      ...(parseOptionalTrimmedString(item.roleFamily)
+        ? { roleFamily: parseOptionalTrimmedString(item.roleFamily) }
+        : {}),
+      ...(Array.isArray(item.professionTags)
+        ? { professionTags: parseStringArray(item.professionTags).map((tag) => tag.trim()).filter(Boolean) }
+        : {}),
+      ...(Array.isArray(item.socialTierTags)
+        ? { socialTierTags: parseStringArray(item.socialTierTags).map((tag) => tag.trim()).filter(Boolean) }
+        : {}),
+    };
+  });
 }
 
 function parseEncounterTransitionDecision(

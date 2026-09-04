@@ -78,6 +78,30 @@ export function calculateHitChance(input: {
   );
 }
 
+export function calculateV21HitChance(input: {
+  attackerMartial: number;
+  defenderMartial: number;
+  attackerIntelligence: number;
+  defenderIntelligence: number;
+  weaponAccuracy: number;
+  attackerAccuracy: number;
+  defenderEvasion: number;
+  attackerLuck: number;
+  defenderLuck: number;
+}): number {
+  return clamp(
+    80
+      + (input.attackerMartial - input.defenderMartial) * 0.60
+      + (input.attackerIntelligence - input.defenderIntelligence) * 0.10
+      + input.weaponAccuracy
+      + input.attackerAccuracy
+      - input.defenderEvasion
+      + (input.attackerLuck - input.defenderLuck) * 0.1,
+    20,
+    98,
+  );
+}
+
 export function calculateBlockChance(input: {
   attackerMartial: number;
   defenderMartial: number;
@@ -89,6 +113,29 @@ export function calculateBlockChance(input: {
   return clamp(
     12
       + (input.defenderMartial - input.attackerMartial) * 0.30
+      + input.equipmentBlock
+      + input.defenderBlock
+      + input.defendActionBonus
+      - input.attackerPenetration,
+    0,
+    75,
+  );
+}
+
+export function calculateV21BlockChance(input: {
+  attackerMartial: number;
+  defenderMartial: number;
+  attackerIntelligence: number;
+  defenderIntelligence: number;
+  equipmentBlock: number;
+  defenderBlock: number;
+  defendActionBonus: number;
+  attackerPenetration: number;
+}): number {
+  return clamp(
+    12
+      + (input.defenderMartial - input.attackerMartial) * 0.35
+      + (input.defenderIntelligence - input.attackerIntelligence) * 0.08
       + input.equipmentBlock
       + input.defenderBlock
       + input.defendActionBonus
@@ -123,6 +170,34 @@ export function calculateNormalAttackDamage(input: {
   const armorReduction = ARMOR_REDUCTION_BY_TIER[clamp(Math.trunc(input.armorTier), 0, 5)] ?? 0;
   damage *= 1 - armorReduction;
   return Math.min(input.maxDamage ?? 35, Math.max(1, Math.round(damage)));
+}
+
+export function calculateV21NormalAttackDamage(input: {
+  weaponBaseDamage: number;
+  attackerMartial: number;
+  flatDamage: number;
+  randomVariance: number;
+  critical: boolean;
+  blocked: boolean;
+  defenderWasDefending: boolean;
+  armorTier: number;
+  maxDamage?: number;
+}): number {
+  let damage = input.weaponBaseDamage
+    + Math.floor(input.attackerMartial * 0.16)
+    + input.flatDamage
+    + input.randomVariance;
+  if (input.critical && !input.blocked) damage *= 1.5;
+  if (input.blocked) damage *= input.defenderWasDefending ? 0.2 : 0.4;
+  else if (input.defenderWasDefending) damage *= 0.8;
+  const armorReduction = ARMOR_REDUCTION_BY_TIER[clamp(Math.trunc(input.armorTier), 0, 5)] ?? 0;
+  damage *= 1 - armorReduction;
+  return Math.min(input.maxDamage ?? 35, Math.max(1, Math.round(damage)));
+}
+
+export function calculateV21ScopedDamageCap(baseCap: number, martial: number): number {
+  const adjustment = clamp(Math.trunc((clamp(martial, 0, 100) - 50) / 5), -10, 10);
+  return Math.max(1, baseCap + adjustment);
 }
 
 export function calculateRetreatChance(input: {

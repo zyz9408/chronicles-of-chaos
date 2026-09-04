@@ -37,7 +37,7 @@ describe('ApiConfigManager IndexedDB persistence', () => {
     const archive = await exportApiSettings();
     expect(archive).toMatchObject({
       schema: 'coc.v2.api-settings',
-      version: 2,
+      version: 3,
     });
     expect(archive.configs[0]).toMatchObject({ name: '主剧情接口', apiKey: 'sk-test' });
     expect(archive.routes.mainNarrative).toEqual({ configId: saved.id, model: 'test-model' });

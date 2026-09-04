@@ -69,6 +69,34 @@ describe('RuntimeStateMigration relationship invariant', () => {
     });
   });
 
+  it('upgrades legacy authored prose into executable ability rules without an API call', () => {
+    const state = makeState();
+    state.player.traits = [{
+      id: 'custom_trait_fast_learning',
+      label: '悟性无双',
+      description: '能够快速完美学习任何技能。',
+      source: 'custom',
+    }];
+    state.player.uniqueArts = [{
+      id: 'art_full_heal',
+      name: '万象回春',
+      rarity: 'red',
+      domain: 'personalCombat',
+      level: 1,
+      description: '每次使用必定恢复所有生命。',
+      effectSummary: '恢复所有生命。',
+      source: 'opening',
+    }];
+
+    const migrated = normalizeRuntimeStateForPersistence(state);
+
+    expect(migrated.player.traits?.[0].mechanics?.status).toBe('executable');
+    expect(migrated.player.uniqueArts?.[0].mechanics?.rules[0]).toMatchObject({
+      trigger: 'on_unique_art_use',
+      effects: [expect.objectContaining({ type: 'restore_to_max', resource: 'hp' })],
+    });
+  });
+
   it('deterministically derives civil scale for legacy holdings without an API call', () => {
     const state = makeState();
     state.holdings = [{

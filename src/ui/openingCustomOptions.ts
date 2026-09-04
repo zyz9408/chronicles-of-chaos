@@ -1,5 +1,6 @@
 import type { CharacterTrait, CharacterTraitRarity, OpeningCharacterOption } from '../engine/types';
 import { normalizeCharacterTraitRarity } from '../engine/character/TraitRarity';
+import { compileTraitAbilityMechanics } from '../engine/abilities/AbilityMechanics';
 
 export type CustomOpeningOptionKind = 'birth' | 'identity';
 
@@ -42,7 +43,7 @@ function normalizeCustomTrait(value: unknown): CharacterTrait | null {
   }
 
   const rarity = normalizeCharacterTraitRarity(record.rarity);
-  return {
+  const trait: CharacterTrait = {
     id: record.id,
     label: record.label,
     description: record.description,
@@ -50,6 +51,8 @@ function normalizeCustomTrait(value: unknown): CharacterTrait | null {
     ...(rarity ? { rarity } : {}),
     ...(typeof record.promptHint === 'string' ? { promptHint: record.promptHint } : {}),
   };
+  const mechanics = compileTraitAbilityMechanics(trait);
+  return mechanics ? { ...trait, mechanics } : trait;
 }
 
 export function normalizeCustomOpeningOptions(raw: unknown): PersistedCustomOpeningOptions {
@@ -161,13 +164,15 @@ export function createCustomOpeningTrait(
   now: number = Date.now(),
 ): CharacterTrait {
   const normalizedDescription = description.trim();
-  return {
+  const trait: CharacterTrait = {
     id: `custom_trait_${now}`,
     label: label.trim(),
     description: normalizedDescription || fallbackCustomTraitDescription,
     source: 'custom',
     promptHint: normalizedDescription || fallbackCustomTraitPromptHint,
   };
+  const mechanics = compileTraitAbilityMechanics(trait);
+  return mechanics ? { ...trait, mechanics } : trait;
 }
 
 export function updateCustomOpeningTrait(
@@ -176,13 +181,16 @@ export function updateCustomOpeningTrait(
   description: string,
 ): CharacterTrait {
   const normalizedDescription = description.trim();
-  return {
+  const updated: CharacterTrait = {
     ...trait,
     label: label.trim(),
     description: normalizedDescription || fallbackCustomTraitDescription,
     source: 'custom',
     promptHint: normalizedDescription || fallbackCustomTraitPromptHint,
   };
+  const mechanics = compileTraitAbilityMechanics({ ...updated, mechanics: undefined });
+  const { mechanics: _staleMechanics, ...withoutMechanics } = updated;
+  return mechanics ? { ...withoutMechanics, mechanics } : withoutMechanics;
 }
 
 export function isCustomOpeningTrait(trait: Pick<CharacterTrait, 'id' | 'source'>): boolean {

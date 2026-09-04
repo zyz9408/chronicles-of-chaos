@@ -47,6 +47,10 @@ import {
 } from './situationProjection';
 import { isOpenCurrentMatter } from './currentMatterLifecycle';
 import {
+  buildContinuityMatterProjection,
+  type ContinuityMatterProjection,
+} from './continuityMatterProjection';
+import {
   isWorldChronicleEligible,
   isWorldChronicleOngoing,
 } from './worldChroniclePolicy';
@@ -71,6 +75,7 @@ export interface SelectedPromptContext {
   recentTurnEvents: TurnEventRecord[];
   activeQuests: Quest[];
   relevantCurrentQuests: Quest[];
+  continuityMatterProjection: ContinuityMatterProjection;
   resolvedCurrentMatters: Quest[];
   relevantSignals: Rumor[];
   localSituationNotes: string[];
@@ -195,6 +200,12 @@ export function selectPromptContext(
   const currentLocationId = projectionState.currentLocationId;
   const baseLedgerRelevance = buildLedgerRelevanceContext(projectionState, relevantNpcIds, currentLocationId);
   const relevantCurrentQuests = selectRelevantCurrentQuests(projectionState.activeQuests, relevantNpcIds, currentLocationId, baseLedgerRelevance);
+  const continuityMatterProjection = buildContinuityMatterProjection(
+    projectionState.activeQuests,
+    projectionState.currentDate,
+  );
+  const continuityMatterIds = new Set(continuityMatterProjection.entries.map((entry) => entry.matterId));
+  const continuityMatters = projectionState.activeQuests.filter((quest) => continuityMatterIds.has(quest.id));
   const resolvedCurrentMatters = selectResolvedCurrentMatters(
     projectionState.activeQuests,
     [...presentNpcs, ...focusedNpcs],
@@ -207,7 +218,7 @@ export function selectPromptContext(
   const ledgerRelevance = extendLedgerRelevanceWithCurrentMatters(
     projectionState,
     baseLedgerRelevance,
-    relevantCurrentQuests,
+    [...new Map([...relevantCurrentQuests, ...continuityMatters].map((quest) => [quest.id, quest])).values()],
     relevantSignals,
     relevantWorldTrends,
   );
@@ -297,6 +308,7 @@ export function selectPromptContext(
     recentTurnEvents: projectionState.turnEvents.slice(-3),
     activeQuests: projectionState.activeQuests.filter(isOpenCurrentMatter),
     relevantCurrentQuests,
+    continuityMatterProjection,
     resolvedCurrentMatters,
     relevantSignals,
     localSituationNotes: projectionState.localSituationNotes,

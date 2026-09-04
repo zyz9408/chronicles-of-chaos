@@ -12,6 +12,7 @@ import { projectEquippedItems } from '../engine/character/loadoutIdentity';
 import { buildTraitTooltipTitle, buildUniqueArtTooltipTitle, formatKnownSourceLabel, formatUniqueArtDomainLabel, normalizeUniqueArtRarity } from './gameTooltipText';
 import { normalizeCharacterTraits } from '../engine/character/CharacterTraitNormalization';
 import { mergeStableCharacterUniqueArts } from '../engine/character/NpcUniqueArtPolicy';
+import { selectNpcRecentActivity, type NpcRecentActivitySource } from '../engine/npc/NpcRecentActivity';
 
 export interface NpcPanelRow {
   id?: string;
@@ -101,6 +102,7 @@ export interface NpcPresenceUpdatePreview {
   summary: string;
   meta: string;
   readByPlayer: boolean;
+  sourceKind?: NpcRecentActivitySource;
 }
 
 export type NpcMemoryLayerKey = 'recent' | 'mid' | 'long';
@@ -559,24 +561,25 @@ function hasUnreadPresenceUpdate(npc: LuanShiNpc): boolean {
   return (npc.presenceUpdates ?? []).some((update) => update.readByPlayer === false);
 }
 
-function buildPresenceUpdates(npc: LuanShiNpc): NpcPresenceUpdatePreview[] {
-  return [...(npc.presenceUpdates ?? [])]
-    .filter((update) => hasText(update.summary))
-    .slice(-5)
-    .reverse()
-    .map((update) => {
+function buildPresenceUpdates(state: RuntimeState, npc: LuanShiNpc): NpcPresenceUpdatePreview[] {
+  return selectNpcRecentActivity(state, npc).map((activity) => {
+      const update = activity.source === 'presenceUpdate'
+        ? npc.presenceUpdates?.find((item) => `presence-update:${item.id}` === activity.id)
+        : undefined;
       const meta = [
-        hasText(update.createdAt) ? update.createdAt.trim() : '',
-        hasText(update.kind) ? update.kind : '',
-        hasText(update.source) ? formatKnownSourceLabel(update.source) : '',
-        hasText(update.certainty) ? certaintyLabels[update.certainty] ?? update.certainty : '',
+        activity.occurredAt,
+        activity.sourceLabel,
+        hasText(update?.kind) ? update.kind : '',
+        hasText(update?.source) ? formatKnownSourceLabel(update.source) : '',
+        hasText(update?.certainty) ? certaintyLabels[update.certainty] ?? update.certainty : '',
       ].filter(hasText).join(' / ');
 
       return {
-        id: update.id,
-        summary: update.summary.trim(),
+        id: activity.id,
+        summary: activity.summary,
         meta,
-        readByPlayer: update.readByPlayer,
+        readByPlayer: activity.readByPlayer,
+        sourceKind: activity.source,
       };
     });
 }
@@ -714,7 +717,7 @@ function buildCard(state: RuntimeState, npc: LuanShiNpc, currentDate: string, is
     effectLabels: (npc.effects ?? []).map((effect) => effect.label).filter(hasText),
     memoryPreview: buildMemoryPreview(npc),
     memoryLayers: buildMemoryLayers(state, npc),
-    presenceUpdates: buildPresenceUpdates(npc),
+    presenceUpdates: buildPresenceUpdates(state, npc),
     ...(femaleProfile ? { femaleProfile } : {}),
     isPresent,
     isFocused: npc.isFocused,

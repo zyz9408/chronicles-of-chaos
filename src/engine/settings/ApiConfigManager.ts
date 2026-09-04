@@ -148,17 +148,38 @@ export type ApiTaskRouteInput = ApiTaskRoute | string | null;
 export type ApiTaskRoutes = Record<ApiTaskId, ApiTaskRoute | null>;
 export type ApiTaskRoutesArchive = Partial<Record<ApiTaskId, ApiTaskRouteInput>>;
 
+export const API_FEATURE_EXECUTION_TASK_IDS = [
+  'stateWriteback',
+  'npcCompletion',
+  'npcSimulation',
+  'worldEvolution',
+  'memorySummary',
+] as const;
+export type ApiFeatureExecutionTaskId = (typeof API_FEATURE_EXECUTION_TASK_IDS)[number];
+export type ApiFeatureExecutionMode = 'bundledMain' | 'dedicated';
+export interface ApiFeatureExecutionModes {
+  revision: 1;
+  stateWriteback: ApiFeatureExecutionMode;
+  npcCompletion: ApiFeatureExecutionMode;
+  npcSimulation: ApiFeatureExecutionMode;
+  worldEvolution: ApiFeatureExecutionMode;
+  memorySummary: ApiFeatureExecutionMode;
+}
+
 const API_CONFIGS_KEY = 'coc_v2_api_configs';
 const API_ROUTES_KEY = 'coc_v2_api_task_routes';
+export const API_FEATURE_EXECUTION_MODES_KEY = 'coc_v2_api_feature_execution_modes';
 const API_ROUTES_META_KEY = 'apiTaskRoutes';
+const API_FEATURE_EXECUTION_MODES_META_KEY = 'apiFeatureExecutionModes';
 const API_LEGACY_MIGRATION_META_KEY = 'legacyApiSettingsMigratedFromLocalStorage';
 
 export interface ApiSettingsArchive {
   schema: 'coc.v2.api-settings';
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   exportedAt: string;
   configs: ApiConfigArchive[];
   routes: ApiTaskRoutesArchive;
+  featureExecutionModes?: Partial<ApiFeatureExecutionModes>;
 }
 
 export interface ImportApiSettingsOptions {
@@ -215,6 +236,30 @@ const defaultRoutes = (): ApiTaskRoutes => ({
   worldEvolution: null,
   imagePrompt: null,
 });
+
+export const defaultApiFeatureExecutionModes = (): ApiFeatureExecutionModes => ({
+  revision: 1,
+  stateWriteback: 'bundledMain',
+  npcCompletion: 'bundledMain',
+  npcSimulation: 'bundledMain',
+  worldEvolution: 'bundledMain',
+  memorySummary: 'bundledMain',
+});
+
+export function normalizeApiFeatureExecutionModes(
+  value: Partial<ApiFeatureExecutionModes> | undefined,
+  routes: ApiTaskRoutes,
+): ApiFeatureExecutionModes {
+  const normalized = defaultApiFeatureExecutionModes();
+  const currentRevision = value?.revision === 1;
+  API_FEATURE_EXECUTION_TASK_IDS.forEach((taskId) => {
+    const requested = value?.[taskId];
+    normalized[taskId] = currentRevision && (requested === 'bundledMain' || requested === 'dedicated')
+      ? requested
+      : routes[taskId] ? 'dedicated' : 'bundledMain';
+  });
+  return normalized;
+}
 
 const getStorage = (storage?: Storage): Storage | null => {
   if (storage) return storage;
@@ -402,6 +447,36 @@ export function setApiTaskRoute(taskId: ApiTaskId, route: ApiTaskRouteInput, sto
   target.setItem(API_ROUTES_KEY, JSON.stringify(routes));
 }
 
+export function getApiFeatureExecutionModes(storage?: Storage): ApiFeatureExecutionModes {
+  const target = getStorage(storage);
+  if (!target) return defaultApiFeatureExecutionModes();
+  try {
+    const rawText = target.getItem(API_FEATURE_EXECUTION_MODES_KEY);
+    const raw = rawText ? JSON.parse(rawText) as Partial<ApiFeatureExecutionModes> : undefined;
+    const normalized = normalizeApiFeatureExecutionModes(raw, getApiTaskRoutes(target));
+    if (!rawText || JSON.stringify(raw) !== JSON.stringify(normalized)) {
+      target.setItem(API_FEATURE_EXECUTION_MODES_KEY, JSON.stringify(normalized));
+    }
+    return normalized;
+  } catch {
+    const normalized = normalizeApiFeatureExecutionModes(undefined, getApiTaskRoutes(target));
+    target.setItem(API_FEATURE_EXECUTION_MODES_KEY, JSON.stringify(normalized));
+    return normalized;
+  }
+}
+
+export function setApiFeatureExecutionMode(
+  taskId: ApiFeatureExecutionTaskId,
+  mode: ApiFeatureExecutionMode,
+  storage?: Storage,
+): void {
+  const target = getStorage(storage);
+  if (!target) return;
+  const modes = getApiFeatureExecutionModes(target);
+  modes[taskId] = mode;
+  target.setItem(API_FEATURE_EXECUTION_MODES_KEY, JSON.stringify(modes));
+}
+
 function materializeResolvedApiConfig(
   config: ApiConfigArchive,
   route?: ApiTaskRoute | null,
@@ -443,10 +518,12 @@ export async function listApiConfigsAsync(): Promise<ApiConfigArchive[]> {
 export async function clearAllApiSettingsAsync(storage?: Storage): Promise<void> {
   await idbClear('apiConfigs');
   await idbDeleteMeta(API_ROUTES_META_KEY);
+  await idbDeleteMeta(API_FEATURE_EXECUTION_MODES_META_KEY);
   const target = getStorage(storage);
   try {
     target?.removeItem(API_CONFIGS_KEY);
     target?.removeItem(API_ROUTES_KEY);
+    target?.removeItem(API_FEATURE_EXECUTION_MODES_KEY);
   } catch {
     // Legacy localStorage cleanup is best-effort.
   }
@@ -473,12 +550,17 @@ export async function deleteApiConfigAsync(configId: string): Promise<void> {
   await idbDelete('apiConfigs', configId);
 
   const routes = await getApiTaskRoutesAsync();
+  const modes = await getApiFeatureExecutionModesAsync();
   for (const task of API_TASKS) {
     if (routes[task.id]?.configId === configId) {
       routes[task.id] = null;
+      if (API_FEATURE_EXECUTION_TASK_IDS.includes(task.id as ApiFeatureExecutionTaskId)) {
+        modes[task.id as ApiFeatureExecutionTaskId] = 'bundledMain';
+      }
     }
   }
   await idbSetMeta(API_ROUTES_META_KEY, routes);
+  await idbSetMeta(API_FEATURE_EXECUTION_MODES_META_KEY, modes);
 }
 
 export async function getApiTaskRoutesAsync(): Promise<ApiTaskRoutes> {
@@ -497,6 +579,25 @@ export async function setApiTaskRouteAsync(taskId: ApiTaskId, route: ApiTaskRout
   const routes = await getApiTaskRoutesAsync();
   routes[taskId] = normalizeApiTaskRoute(route, await listApiConfigsAsync());
   await idbSetMeta(API_ROUTES_META_KEY, routes);
+}
+
+export async function getApiFeatureExecutionModesAsync(): Promise<ApiFeatureExecutionModes> {
+  await ensureLegacyApiSettingsMigrated();
+  const raw = await idbGetMeta<Partial<ApiFeatureExecutionModes>>(API_FEATURE_EXECUTION_MODES_META_KEY);
+  const normalized = normalizeApiFeatureExecutionModes(raw, await getApiTaskRoutesAsync());
+  if (!raw || JSON.stringify(raw) !== JSON.stringify(normalized)) {
+    await idbSetMeta(API_FEATURE_EXECUTION_MODES_META_KEY, normalized);
+  }
+  return normalized;
+}
+
+export async function setApiFeatureExecutionModeAsync(
+  taskId: ApiFeatureExecutionTaskId,
+  mode: ApiFeatureExecutionMode,
+): Promise<void> {
+  const modes = await getApiFeatureExecutionModesAsync();
+  modes[taskId] = mode;
+  await idbSetMeta(API_FEATURE_EXECUTION_MODES_META_KEY, modes);
 }
 
 export async function resolveApiConfigForTaskAsync(taskId: ApiTaskId): Promise<ApiConfigArchive | null> {
@@ -525,10 +626,11 @@ export async function exportApiSettings(): Promise<ApiSettingsArchive> {
   await ensureLegacyApiSettingsMigrated();
   return {
     schema: 'coc.v2.api-settings',
-    version: 2,
+    version: 3,
     exportedAt: new Date().toISOString(),
     configs: await listApiConfigsAsync(),
     routes: await getApiTaskRoutesAsync(),
+    featureExecutionModes: await getApiFeatureExecutionModesAsync(),
   };
 }
 
@@ -538,7 +640,7 @@ export async function importApiSettings(
 ): Promise<void> {
   if (
     archive.schema !== 'coc.v2.api-settings'
-    || (archive.version !== 1 && archive.version !== 2)
+    || (archive.version !== 1 && archive.version !== 2 && archive.version !== 3)
     || !Array.isArray(archive.configs)
   ) {
     throw new Error('API 设置文件格式不正确');
@@ -554,7 +656,12 @@ export async function importApiSettings(
     await idbPut('apiConfigs', normalizeStoredApiConfig(config));
   }
   const allConfigs = (await idbGetAll<ApiConfigArchive>('apiConfigs')).map(normalizeStoredApiConfig);
-  await idbSetMeta(API_ROUTES_META_KEY, normalizeApiTaskRoutes(archive.routes, allConfigs));
+  const routes = normalizeApiTaskRoutes(archive.routes, allConfigs);
+  await idbSetMeta(API_ROUTES_META_KEY, routes);
+  await idbSetMeta(
+    API_FEATURE_EXECUTION_MODES_META_KEY,
+    normalizeApiFeatureExecutionModes(archive.featureExecutionModes, routes),
+  );
   await idbSetMeta(API_LEGACY_MIGRATION_META_KEY, true);
 }
 
@@ -575,5 +682,6 @@ async function ensureLegacyApiSettingsMigrated(): Promise<void> {
     await idbPut('apiConfigs', normalizeStoredApiConfig(config));
   }
   await idbSetMeta(API_ROUTES_META_KEY, getApiTaskRoutes());
+  await idbSetMeta(API_FEATURE_EXECUTION_MODES_META_KEY, getApiFeatureExecutionModes());
   await idbSetMeta(API_LEGACY_MIGRATION_META_KEY, true);
 }

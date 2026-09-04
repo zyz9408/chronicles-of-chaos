@@ -9,7 +9,7 @@ import {
   type PregnancyModePreference,
 } from '../engine/settings/DisplaySettings';
 
-export type SettingsMainTab = 'game' | 'display' | 'api' | 'tavern' | 'promptRegistry' | 'promptTokenEstimate' | 'save' | 'variables' | 'data';
+export type SettingsMainTab = 'game' | 'display' | 'avg' | 'api' | 'tavern' | 'promptRegistry' | 'promptTokenEstimate' | 'save' | 'variables' | 'data';
 export type SettingsFunctionTab = 'memory' | 'vector' | 'npcProfile' | 'npcSimulation' | 'worldEvolution' | 'stateWriteback';
 export type SettingsTab = SettingsMainTab | SettingsFunctionTab;
 

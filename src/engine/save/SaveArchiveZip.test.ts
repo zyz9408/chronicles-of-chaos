@@ -6,6 +6,7 @@ import { startHoldingGovernanceProject } from '../holdings/HoldingGovernanceProj
 import {
   createPortableSaveZip,
   parsePortableSaveZip,
+  parsePortableSaveZipBundle,
   PORTABLE_SAVE_ZIP_FORMAT,
   readSaveArchiveFile,
 } from './SaveArchiveZip';
@@ -204,6 +205,30 @@ describe('SaveArchiveZip', () => {
       holdingId: 'holding_governance_test',
       host: { actorType: 'player', actorId: 'player' },
     });
+  });
+
+  it('archives only visual partitions referenced by saves and validates their outer summary', async () => {
+    const save = makeSave('manual-avg', 'manual', '刘平');
+    save.runtimeState.avgPresentation = { visualPartitionId: 'visual-partition-a', portraitBindings: [] };
+    const archive: SaveArchive = {
+      schema: 'coc.v2.saves', version: 2, exportedAt: '2026-08-24T00:00:00.000Z',
+      lastSaveId: save.id, saves: [save], turnSnapshots: [],
+    };
+    const visual = {
+      visualPartitionId: 'visual-partition-a',
+      archiveBytes: new Uint8Array([0x50, 0x4b, 0x03, 0x04]),
+      actorCount: 1, sceneCount: 2, outfitCount: 3, outfitOverrideCount: 1, assetCount: 4, imageBytes: 128,
+    };
+    const bytes = await createPortableSaveZip(archive, { avgVisualPartitions: [visual] });
+    const bundle = await parsePortableSaveZipBundle(bytes);
+
+    expect(bundle.visualCapability).toBe('portable-v2');
+    expect(bundle.avgVisualPartitions).toEqual([
+      expect.objectContaining({ visualPartitionId: 'visual-partition-a', actorCount: 1, archiveBytes: visual.archiveBytes }),
+    ]);
+    await expect(createPortableSaveZip(archive, {
+      avgVisualPartitions: [{ ...visual, visualPartitionId: 'unknown' }],
+    })).rejects.toThrow('未知视觉分区');
   });
 
   it('reads a desktop ZIP through FileReader when mobile File.arrayBuffer is unavailable', async () => {

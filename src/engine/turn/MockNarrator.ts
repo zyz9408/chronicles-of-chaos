@@ -442,6 +442,19 @@ export interface NarratorFactionRecentActionSuggestion {
   sourceNote?: string;
 }
 
+/** Display-only identity evidence for one final narrative segment. */
+export interface PresentationSpeakerFact {
+  segmentIndex: number;
+  speakerActorId: string;
+  speakerLabel: string;
+  identitySource: 'player' | 'full_npc' | 'known_actor' | 'presentation_only';
+  sex: 'male' | 'female' | 'unknown' | 'other';
+  ageBand?: 'child' | 'teen' | 'young_adult' | 'adult' | 'middle_aged' | 'elderly' | 'unknown';
+  roleFamily?: string;
+  professionTags?: string[];
+  socialTierTags?: string[];
+}
+
 export interface NarratorWritebackProtocol {
   turnSummary?: NarratorTurnSummaryWriteback | null;
   protagonistProfile?: NarratorProtagonistProfileWriteback | null;
@@ -467,6 +480,8 @@ export interface NarratorWritebackProtocol {
   encounterStartIntent?: EncounterStartIntent | null;
   /** Persisted, locally validated candidates keyed by the stable sourceId of a trait/art/item/equipment entry. */
   semanticProjections?: SemanticProjection[];
+  /** AVG-only facts. These must never create an NPC or another world-state fact. */
+  presentationSpeakerFacts?: PresentationSpeakerFact[];
   debugNotes: string[];
 }
 
@@ -478,6 +493,17 @@ export interface NarratorResponse {
   statePatches?: StatePatch[];
   statePatch: StatePatch | null;
   writeback?: NarratorWritebackProtocol;
+  /**
+   * Optional same-request auxiliary results introduced by coc.v2.bundledMain.v1.
+   * These values are only transport data; every module is validated against the
+   * locally frozen plan before it may mutate runtime state.
+   */
+  bundledFeatures?: {
+    protocolVersion: 'coc.v2.bundledMain.v1';
+    npcSimulation?: Record<string, unknown>;
+    worldEvolution?: Record<string, unknown>;
+    memorySummary?: Record<string, unknown>;
+  };
 }
 
 interface MockContext {

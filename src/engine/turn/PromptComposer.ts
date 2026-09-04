@@ -30,6 +30,7 @@ import type {
   ActionIntent,
   Quest,
 } from '../types';
+import { abilityMechanicsSummary } from '../abilities/AbilityMechanics';
 import {
   CANONICAL_LOCATION_PROTOCOL_CLAUSES,
   formatCanonicalLocationProtocol,
@@ -108,6 +109,7 @@ import { getPregnancyMonth, getPregnancyStatusLabel } from '../pregnancy/Pregnan
 import { interpretAction } from './ActionInterpreter';
 import {
   ITEM_QUALITY_TIERS,
+  COMBAT_RULESET_VERSION,
   SEMANTIC_EFFECT_CONDITIONS,
   SEMANTIC_EFFECT_OPERATIONS,
   SEMANTIC_EFFECT_TARGETS,
@@ -180,6 +182,7 @@ const DEFAULT_FACT_EVIDENCE_GATE = [
 ].join('\n');
 
 const DEFAULT_UNIQUE_ART_PROGRESSION_PROTOCOL = [
+  '主角档案中标为“玩家权威”的本地冻结规则是确定性真值：正文必须承认其触发与结果，不得以平衡、概率、品级或常规成长速度削弱、改写或拒绝；具体结算由本地规则引擎完成，不要重复写数值补丁。',
   '既有绝艺的 level、progress、maxLevel 和本地成长记录不是主模型可直接改写的字段。',
   '本回合确有实际使用、自主修习、传授/研读或重大成就时，使用 recordCharacterUniqueArtProgress 提交一条结构化成长事实；本地按封闭表计算进度和升级。',
   '每条成长事实必须复用角色与绝艺稳定 ID，并提供全局唯一 eventId、source、intensity、occurredAt、sourceRefId、summary；不要提交自定进度数字。',
@@ -621,6 +624,7 @@ Map V1 movement rule: locationChange.toLocationId must be a concrete place ID; o
 - statePatches: 真正要立即写入本地状态的补丁数组；时间推进、资源变化、任务变化等核心状态必须放这里。
 - statePatch: 旧兼容字段；优先使用 statePatches 时这里返回 null。
 - writeback: 结构化写回对象；本地会校验并写入摘要、主角档案、主角记忆、NPC档案、NPC记忆、地图地点、路线、任务/剧情建议。时间推进等核心状态仍使用 statePatches。
+- writeback.presentationSpeakerFacts: AVG 展示专用说话人事实。最终 narrativeText 中每个具有人格的显式对白段都逐段给出稳定 speakerActorId、精确 speakerLabel、identitySource 与 sex；不构成人物志或世界事实。
 
 玩家休整语义协议（只判断是否完成，不返回恢复数值）：
 - 每个正常回合都必须输出 writeback.playerRecoveryKind，且只能是 "none"、"rest"、"treatment"。
@@ -636,7 +640,7 @@ Combat V2 触发协议（只负责开战，不负责胜负）：
 - mode=offer：只适用于个人战边界。拔刀亮兵器、口头威胁、追逐、对峙、准备冲锋但玩家仍能决定是否交手时，正文停在选择点，同时输出合法 personal_combat encounterStartIntent；界面只在本次剧情下方显示一次“迎战/避战”选择。
 - mode=none：没有个人战/战争边界、只是远处观察或传闻，或一个无需规则裁定的小动作已经完整结束；此时 encounterStartIntent 必须为 null。
 - 触发回合不得裁定胜负、伤亡、俘虏、撤退、战利品或战后影响；不得输出 upsertCombatRecord。下一阶段由本地 Combat Engine 唯一裁定。
-- encounterStartIntent 必须严格使用：{"contractVersion":1,"encounterId":"combat_稳定ID","kind":"personal_combat","rulesetVersion":"combat-v2.0.0","sourceTurnNumber":0,"locationId":"当前稳定地点ID","reason":"冲突缘由","seed":"combat_seed_稳定ID","createdAt":"1970-01-01T00:00:00.000Z","policy":{"lethality":"nonlethal|standard|fatal","allowRetreat":true,"allowSurrender":true,"allowCapture":true,"lootPolicy":"actual_items_only|none"},"playerParty":{"actorIds":["稳定角色ID，1至3名"]},"enemyParty":{"actorIds":["稳定角色ID或本场临时ID，1至3名"]},"partySelection":"player_choice|locked","escortAvailability":"normal|explicitly_solo","scopedCombatants":[{"actorId":"combat_同一稳定ID:scoped:enemy_1","name":"溃卒","archetype":"rabble|militia|regular|veteran|elite","weaponClass":"unarmed|light|standard|polearm|heavy|ranged","armorClass":"none|light|medium|heavy"}]}。sourceTurnNumber 与 createdAt 使用示例占位值即可，本地解析器会以当前原子回合序号和请求时间覆盖，模型不得据此推断剧情时间。
+- encounterStartIntent 必须严格使用：{"contractVersion":1,"encounterId":"combat_稳定ID","kind":"personal_combat","rulesetVersion":"${COMBAT_RULESET_VERSION}","sourceTurnNumber":0,"locationId":"当前稳定地点ID","reason":"冲突缘由","seed":"combat_seed_稳定ID","createdAt":"1970-01-01T00:00:00.000Z","policy":{"lethality":"nonlethal|standard|fatal","allowRetreat":true,"allowSurrender":true,"allowCapture":true,"lootPolicy":"actual_items_only|none"},"playerParty":{"actorIds":["稳定角色ID，1至3名"]},"enemyParty":{"actorIds":["稳定角色ID或本场临时ID，1至3名"]},"partySelection":"player_choice|locked","escortAvailability":"normal|explicitly_solo","scopedCombatants":[{"actorId":"combat_同一稳定ID:scoped:enemy_1","name":"溃卒","archetype":"rabble|militia|regular|veteran|elite","weaponClass":"unarmed|light|standard|polearm|heavy|ranged","armorClass":"none|light|medium|heavy"}]}。sourceTurnNumber 与 createdAt 使用示例占位值即可，本地解析器会以当前原子回合序号和请求时间覆盖，模型不得据此推断剧情时间。
 - playerParty 必须包含且只包含一次当前状态中的 player.id；同伴先后顺序不影响玩家身份。playerParty / enemyParty 只能逐字复用当前状态中的 player.id / npcId / actor.id。已有姓名人物进入任一方时也必须复用现有稳定 ID，不得改成临时敌人。只有“溃卒、匪徒、刺客”等没有长期人物身份且不需要进入人物志的短时敌人才可声明 scopedCombatants；其 actorId 必须以同一 encounterId + ":scoped:" 开头、必须同时出现在 enemyParty.actorIds，最多 3 名。不得为临时参战者输出 npcProfileSuggestions、NPC 记忆、装备写回或战利品。
 - escortAvailability 只表达当前场景事实：正文明确主角独自潜入、甩开/遣散护卫、与随从失散或确实孤身时写 explicitly_solo；其余现场可正常随行时写 normal。它不代表主角长期身份或护卫资格。模型不得在 playerParty/scopedCombatants 中创建临时友军；本地只会在 escortAvailability=normal 且主角档案已有 personalEscortEntitlement.status=customary 时，按剩余席位派生最多两名非持久护卫。
 - scopedCombatants 的 archetype、weaponClass、armorClass 只选择上述闭集；模型只能声明敌方临时参战者，本地会把它们映射为固定战力与装备并标记 persistent=false，模型不得另写属性、等级或自由数值。双方 ID 不得重叠；允许玩家选同伴时用 player_choice，剧情锁定阵容时用 locked。
@@ -1015,6 +1019,9 @@ function generateNarrativeContext(
   );
   if (resolvedCurrentMatterContinuity) {
     parts.push(resolvedCurrentMatterContinuity);
+  }
+  if (selected.continuityMatterProjection.text) {
+    parts.push(selected.continuityMatterProjection.text);
   }
   const ledgerProjection = formatLedgerProjection(
     selected.resources,
@@ -1586,6 +1593,7 @@ function formatTroopLedgerLine(troop: TroopLedgerEntry): string {
     troop.specialDesignation ? `番号=${troop.specialDesignation}` : '',
     troop.quality ? `素质=${troop.quality}` : '',
     troop.fatigue ? `疲劳=${troop.fatigue}` : '',
+    troop.activityTempo ? `活动节奏=${troop.activityTempo}` : '',
     troop.readiness ? `整备=${troop.readiness}` : '',
     troop.lifecycleStatus ? `状态=${troop.lifecycleStatus}` : '',
     troop.statusTags && troop.statusTags.length > 0 ? `状态标记=${troop.statusTags.join('/')}` : '',
@@ -2092,7 +2100,8 @@ function formatUniqueArtForPrompt(art: CharacterUniqueArt): string {
   const hooks = art.checkHooks && art.checkHooks.length > 0
     ? `；checkHooks=${art.checkHooks.map((hook) => `${hook.scope}:${hook.modifier ?? 0}${hook.note ? `(${hook.note})` : ''}`).join('、')}`
     : '';
-  return `${art.name}（${art.id}${rarity}${domain}，${formatUniqueArtLevel(art)}，${art.effectSummary}${hint}${hooks}）`;
+  const mechanics = abilityMechanicsSummary(art.mechanics);
+  return `${art.name}（${art.id}${rarity}${domain}，${formatUniqueArtLevel(art)}，${art.effectSummary}${hint}${hooks}${mechanics ? `；本地已冻结规则=${mechanics}` : ''}）`;
 }
 
 function formatPlayerUniqueArts(player: RuntimeState['player']): string {
@@ -2206,7 +2215,8 @@ function formatPlayerTraits(player: RuntimeState['player']): string {
   if (!player.traits || player.traits.length === 0) return '';
   return `特质：${player.traits.map((trait) => {
     const hint = trait.promptHint ? `；${trait.promptHint}` : '';
-    return `${trait.label}（${trait.description}${hint}）`;
+    const mechanics = abilityMechanicsSummary(trait.mechanics);
+    return `${trait.label}（${trait.description}${hint}${mechanics ? `；本地已冻结规则=${mechanics}` : ''}）`;
   }).join('、')}`;
 }
 
@@ -2733,6 +2743,7 @@ function generateStateWriterContext(
   parts.push('- upsertTroopLedger.supplies: 可写 0-100 数值补给水平，或简短补给状态文本。若本回合明确清点粮草、军需或行军补给，优先写可比较的数值。');
   parts.push('- troopType 只能写具体兵种；upsertTroopLedger.troopType 应使用玩家可辨认的兵种，例如 步卒/轻骑兵/重骑兵/弓骑兵/弓弩兵/水军/斥候/辎重队/守军/民兵/混编/乱兵；已有事实足以区分轻骑、重骑或弓骑时不得退化成泛称“骑兵”，确实无法细分时才写“骑兵”。不得写“部队/军队/人马/队伍”等泛称。番号、营名、郡兵、亲兵、某某部写 specialDesignation，不要塞进 troopType。重骑兵仍必须同时遵守 logisticsClass=heavy_cavalry 及其组建/取得合同，不能只靠名称生成。');
   parts.push('- upsertTroopLedger.morale/training: 必须写 0-100 数字，不要写“低/中/高/极低”等文本；quality/fatigue/readiness 才使用枚举文本。');
+  parts.push('- upsertTroopLedger.activityTempo 是确定性非战争疲劳恢复的结构化依据，只能写 resting/stationary_duty/training/marching/combat/unknown。只有部队本回合确实进入连续休整才写 resting；驻防执勤、操练、行军、战斗必须分别写对应值，禁止根据 task 文本留给本地猜测。');
   parts.push('- upsertTroopLedger.leaderNpcId/deputyNpcIds/strategistNpcId: 分别表示实际带兵将领、最多两名副将和最多一名军师，只能逐字复用当前角色账本中的稳定 NPC ID；同一人物不得在同一部队重复任职，不得按姓名猜 ID。没有实际任命就保持缺省。');
   parts.push('- upsertTroopLedger.strengthTrend 只能写 increased/decreased/stable/unknown，分别表示兵力增强、减弱、稳定、未知；不要写“大幅增强/缓慢上升/减员中”等自然语言，变化细节写入 lastChangeReason 或 sourceNote。');
   parts.push('- upsertTroopLedger.upkeepSource 是内部军需来源字段，不在 UI 作为常规字段展示；只能写 player_resources/superior_provision/mixed/unknown。只有主角自立势力或玩家/主角自己的府库、私产、领地明确承担时写 player_resources；主公、州府、朝廷、军府以及曹操、黄巾等其他人物或势力自己的府库/自筹军需都写 superior_provision；上级拨付不足且主角明确用自家资源补足才写 mixed；不确定才写 unknown。友军、敌军、中立军的府库绝不等于玩家府库。');
@@ -2787,8 +2798,11 @@ function generateStateWriterContext(
   parts.push('- 注意：所有 LuanShiCommand 写回必须使用 {type:"luanshiCommand", payload:{command:{action:"..."}}}；payload.command.action 不得遗漏。recordTurnEvent、pushNpcMemory、updateCharacterIdentity、updateNpcRelationship、updateNpcBackgroundActivity、updatePlayerLoadout、upsertTroopLedger、upsertHeroineThread、upsertBondThread 不是顶层 statePatch.type；不得把 recordTurnEvent、upsertTroopLedger、upsertHeroineThread、upsertBondThread 等 action 名写成顶层 type；updateNpcRelationship 与 updateNpcBackgroundActivity 同样必须放在 type=luanshiCommand 的 payload.command 内。');
   parts.push('- payload.command.action=recordTurnEvent: 记录客观发生的回合事件，必须包含 locationId、summary、visibility；recordTurnEvent.visibility 必须且只能单选 私密/在场可知/传闻扩散/公开，不得输出斜杠组合值；presentNpcIds 若无明确在场 NPC 写 []。');
   parts.push('- payload.command.action=pushNpcMemory: 写入 NPC 记忆，必须包含 npcId、npcName、source、value；亲历记忆只能写给在场 NPC。普通 NPC 记忆默认使用 writeback.npcMemorySuggestions；pushNpcMemory 仅用于需要立即强制写入的特殊情况。若使用 pushNpcMemory 写入某条 NPC 记忆，不得再在 writeback.npcMemorySuggestions 写入同一 NPC、同一事件、同一内容的记忆。');
-  parts.push('- payload.type=questAdded: 新增“当前事项/玩家牵连”，用于记录玩家承诺、委托、牵挂、期限、风险或可行动目标。payload 必须包含 title，可包含 questId、description、source、currentStep、stakes、deadlineAt、priority(low/medium/high)、relatedNpcIds、relatedLocationIds、relatedFactionIds、threadId、outcomeSummary、consequenceTags、affectedNpcIds、affectedFactionIds、affectedPlaceIds、affectedForceIds、affectedHoldingIds、followUpHooks、severity(minor/moderate/major/critical)。不要把远方天下大势本身写成任务；只有玩家被卷入、承诺、受托、被追责或有明确可行动牵连时才写。');
+  parts.push('- payload.type=questAdded: 新增“当前事项/玩家牵连”，用于记录玩家承诺、委托、牵挂、期限、风险、可行动目标，以及 NPC/势力与玩家之间仍在履行的双边或多边协议、外部供应、待处置结果和已约定行动。payload 必须包含 title，可包含 questId、description、source、currentStep、stakes、deadlineAt、priority(low/medium/high)、relatedNpcIds、relatedLocationIds、relatedFactionIds、threadId、outcomeSummary、consequenceTags、affectedNpcIds、affectedFactionIds、affectedPlaceIds、affectedForceIds、affectedHoldingIds、followUpHooks、severity(minor/moderate/major/critical)。不要把与玩家无关的远方天下大势本身写成事项。');
+  parts.push('- 持续事项标签必须使用稳定精确值：continuity:ongoing_agreement（持续协议）、continuity:external_supply（外部供应）、continuity:unresolved_disposition（待处置结果）、continuity:scheduled_agreed_action（已约定行动）。不得用标题或描述近义词替代标签。');
   parts.push('- 交易/供应事项写回：玩家与 NPC 已达成包含具体数量、交付日期或验收标准的采购、供应、交割承诺时，本回合必须用 questAdded 建立可追踪事项，不能只留在正文或 NPC 记忆；后续交付、验收、违约或取消必须复用同一 questId 用 questUpdated/questChanges 收口，不得让同一批货反复送达。');
+  parts.push('- 持续军事供应同步：新成立或实质变化的 ongoing/external supply 协议若已有明确关联部队，必须在同一写回中复用 affectedForceIds 的稳定 troopId 并输出 upsertTroopLedger。上级/势力承担全部军需时 upkeepSource=superior_provision；玩家资源明确补足缺口时 upkeepSource=mixed。不得只改事项而让部队军需来源仍错误。若没有已关联部队或供应范围确实未知，只保留持续事项，不得猜测或虚构 troopId。军需数值仍以既有部队/领地确定性结算与投影为真。');
+  parts.push('- 持续协议的辅助记忆：适用时在同一响应的既有 NPC memory suggestion 或 faction recent-action 写回中保留一条紧凑协议摘要；不得为此增加额外调用。当前事项与具体实体账本是事实真值，压缩或检索记忆仅作辅助回忆。');
   parts.push('- payload.type=questUpdated: 更新当前事项，必须包含 questId；可更新 status(active/completed/failed/invalidated)、description、currentStep、stakes、deadlineAt、priority、后果锚点和关联 ID。若前提被玩家行动或世界事实破坏，使用 status=invalidated，而不是强行延续旧路线。');
   parts.push('- 当前事项生命周期审阅：openCurrentMatterLifecycleLedger 是全量未结事项，不受正文相关性前四条裁剪。每回合逐项审阅全部未结事项；只有本回合已经成立的结构化事实明确证明事项完成、失败或前提失效时，才复用 questId 输出 complete/fail/invalidate。未变化的事项不输出命令；不得按标题关键词、存续时长或期限到达自动结案。');
   parts.push('- 当前事项终态合同：complete/fail/invalidate 都是终态，完成、失败、失效后同回合进入历史归档并由本地写 archivedAt，同时保留 completed/failed/invalidated 结果标签。writeback.questChanges action=archive 只用于没有成功/失败结论但已不再属于当前游玩牵连的旧事项，必须复用已有 questId，并写明 summary/archiveReason。归档不会改变 NPC、地点、势力、部队或领地实体状态。');

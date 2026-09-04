@@ -80,6 +80,10 @@ export interface CombatantSnapshot {
   level: number;
   xp: number;
   martial: number;
+  /** Combat V2.1; legacy V2.0 snapshots default to 50. */
+  intelligence?: number;
+  /** Combat V2.1; legacy V2.0 snapshots default to 50. */
+  leadership?: number;
   luck: number;
   hp: number;
   maxHp: number;

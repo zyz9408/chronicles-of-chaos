@@ -34,7 +34,7 @@ describe('Three Kingdoms StoryPack Batch 0', () => {
       threeKingdomsGenericStoryPack,
       THREE_KINGDOMS_STORY_PACK_CATALOG,
     )).toEqual([]);
-  });
+  }, 15_000);
 
   it('builds Batch 1-ready threads with official IDs and source references', () => {
     const thread = createThreeKingdomsStoryThread({

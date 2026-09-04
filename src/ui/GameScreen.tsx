@@ -37,8 +37,24 @@ import {
   deleteHoldingSafely,
   type HoldingDeletionAnalysis,
 } from '../engine/state/HoldingDeletion';
+import {
+  commitPreparedStateWritebackRecovery,
+  createStateWritebackRecoveryVerification,
+  prepareStateWritebackRecovery,
+  type StateWritebackRecoveryPreparationResult,
+} from '../engine/state/StateWritebackRecoveryService';
+import { finalizePendingStateWritebackRecoveryHead } from '../engine/state/StateWritebackRecovery';
 import { formatNarrativeWordCountLabel } from './narrativeWordCount';
 import { NarrativeTextView } from './NarrativeTextView';
+import { AvgNarrativeStage } from './AvgNarrativeStage';
+import { StateWritebackRecoveryPanel } from './StateWritebackRecoveryPanel';
+import {
+  AVG_RESOURCE_PACK_CHANGED_EVENT,
+  AvgResourcePackManager,
+} from '../engine/avg/AvgResourcePackManager';
+import { materializeAvgPresentation } from '../engine/avg/AvgPresentationMaterializer';
+import { preflightAvgPlayback } from '../engine/avg/AvgPlaybackPreflight';
+import { AVG_VISUAL_OVERRIDES_CHANGED_EVENT } from '../engine/avg/AvgVisualOverrideRepository';
 import { MobileActionEditor } from './MobileActionEditor';
 import { DesktopWeatherAtmosphere } from './DesktopWeatherAtmosphere';
 import { StoryExportPanel } from './StoryExportPanel';
@@ -64,7 +80,11 @@ import {
 } from '../engine/save/SaveManager';
 import { getStartBookmark } from '../engine/worldbook/StartBookmarkResolver';
 import { getCrisisTemplate } from '../engine/worldbook/OpeningCrisisResolver';
-import { resolveApiConfigForTaskAsync, resolveExplicitApiConfigForTaskAsync } from '../engine/settings/ApiConfigManager';
+import {
+  getApiFeatureExecutionModesAsync,
+  resolveApiConfigForTaskAsync,
+  resolveExplicitApiConfigForTaskAsync,
+} from '../engine/settings/ApiConfigManager';
 import { BrowserLlmClient } from '../engine/llm/LlmClient';
 import {
   appendMemorySummaryExecutionSummary,
@@ -96,7 +116,18 @@ import {
 import { ensureGameClock, formatGameDateLabelForStatusBar } from '../engine/time/gameClock';
 import { deriveActorCurrentAge } from '../engine/time/npcAge';
 import { deriveCurrentWeather } from '../engine/time/weather';
-import { loadNpcPresenceHintsEnabledFromStorage, loadRenderDepthFromStorage, loadSnapshotDepthFromStorage } from '../engine/settings/DisplaySettings';
+import {
+  AVG_PLAYER_PORTRAIT_MODE_CHANGED_EVENT,
+  NARRATIVE_PRESENTATION_CHANGED_EVENT,
+  loadAvgPlayerPortraitModeFromStorage,
+  loadNarrativePresentationFromStorage,
+  loadNpcPresenceHintsEnabledFromStorage,
+  loadRenderDepthFromStorage,
+  loadSnapshotDepthFromStorage,
+  saveNarrativePresentationToStorage,
+  type AvgPlayerPortraitMode,
+  type NarrativePresentationPreference,
+} from '../engine/settings/DisplaySettings';
 import {
   loadAutoSaveIntervalTurnsFromStorage,
   loadAutoSaveLimitFromStorage,
@@ -248,6 +279,10 @@ export function buildTurnCompletionMessage(
     return '本回合已自动保存，但部分状态写回未通过校验；相关变更已隔离，地图与其余合法状态已保留。';
   }
   return '';
+}
+
+export function isDismissibleTurnCompletionMessage(message: string): boolean {
+  return message.startsWith('本回合已自动保存，但');
 }
 
 export function getLatestSuggestedActions(
@@ -497,6 +532,15 @@ export function derivePlayerSidebarAge(
   currentDate: string,
 ): number | undefined {
   return deriveActorCurrentAge(player, currentDate);
+}
+
+export function sanitizeAvgPreparingStageText(value: string): string {
+  return value
+    .replace(/\bAuthorization\s*:\s*Bearer\s+[^"',\s}]+/giu, '[已隐藏鉴权信息]')
+    .replace(/\bBearer\s+[^"',\s}]+/giu, '[已隐藏鉴权信息]')
+    .replace(/\b(?:sk|tp)-[A-Za-z0-9._-]+/giu, '[已隐藏密钥]')
+    .replace(/"?(?:x-api-key|apiKey)"?\s*:\s*"[^"]*"/giu, '[已隐藏密钥字段]')
+    .slice(0, 500);
 }
 
 export type FactionRecentActionDisplayLimit = 10 | 20 | 30 | 'all';
@@ -818,10 +862,47 @@ export const GameScreen: React.FC<Props> = ({
   const [processingStageEvents, setProcessingStageEvents] = useState<TurnProcessingStageEvent[]>([]);
   const [failedProcessingAttempt, setFailedProcessingAttempt] = useState<FailedTurnProcessingAttempt | null>(null);
   const [message, setMessage] = useState('');
+  const [stateWritebackRecoveryPreview, setStateWritebackRecoveryPreview] = useState<
+    Extract<StateWritebackRecoveryPreparationResult, { status: 'ready' }> | null
+  >(null);
+  const [isPreparingStateWritebackRecovery, setIsPreparingStateWritebackRecovery] = useState(false);
+  const [isApplyingStateWritebackRecovery, setIsApplyingStateWritebackRecovery] = useState(false);
   const [isMemorySummaryProcessing, setIsMemorySummaryProcessing] = useState(false);
   const [isMemorySummaryRecoveryOpen, setIsMemorySummaryRecoveryOpen] = useState(false);
   const [activeSystemPanel, setActiveSystemPanel] = useState<ActiveSystemPanel | null>(null);
   const [mobileGameRegion, setMobileGameRegion] = useState<MobileGameRegion>('narrative');
+  const [narrativePresentation, setNarrativePresentation] = useState<NarrativePresentationPreference>(
+    loadNarrativePresentationFromStorage,
+  );
+  const [avgPlayerPortraitMode, setAvgPlayerPortraitMode] = useState<AvgPlayerPortraitMode>(
+    loadAvgPlayerPortraitModeFromStorage,
+  );
+  const avgResourcePackManager = useMemo(() => new AvgResourcePackManager(), []);
+  const [avgResourcePackStatus, setAvgResourcePackStatus] = useState<'loading' | 'empty' | 'ready' | 'warning'>('loading');
+  const avgResourcePackReady = avgResourcePackStatus === 'ready';
+  const [avgVisualRevision, setAvgVisualRevision] = useState(0);
+  const [isAvgImmersive, setIsAvgImmersive] = useState(false);
+  const [isAvgImmersiveChoiceOpen, setIsAvgImmersiveChoiceOpen] = useState(false);
+  const [avgImmersiveNotice, setAvgImmersiveNotice] = useState('');
+  const [avgImmersiveHoveredRail, setAvgImmersiveHoveredRail] = useState<'left' | 'right' | null>(null);
+  const [avgImmersivePinnedRail, setAvgImmersivePinnedRail] = useState<'left' | 'right' | null>(null);
+  useEffect(() => {
+    let active = true;
+    const refresh = () => {
+      setAvgResourcePackStatus('loading');
+      void avgResourcePackManager.getActive(runtimeState.worldBookId)
+        .then((pack) => { if (active) setAvgResourcePackStatus(pack ? 'ready' : 'empty'); })
+        .catch(() => { if (active) setAvgResourcePackStatus('warning'); });
+    };
+    refresh();
+    window.addEventListener(AVG_RESOURCE_PACK_CHANGED_EVENT, refresh);
+    return () => { active = false; window.removeEventListener(AVG_RESOURCE_PACK_CHANGED_EVENT, refresh); };
+  }, [avgResourcePackManager, runtimeState.worldBookId]);
+  useEffect(() => {
+    const refresh = () => setAvgVisualRevision((value) => value + 1);
+    window.addEventListener(AVG_VISUAL_OVERRIDES_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(AVG_VISUAL_OVERRIDES_CHANGED_EVENT, refresh);
+  }, []);
 
   const [activeBackpackCategory, setActiveBackpackCategory] = useState<BackpackCategoryKey>('all');
   const [selectedBackpackItemId, setSelectedBackpackItemId] = useState<string | null>(null);
@@ -892,6 +973,7 @@ export const GameScreen: React.FC<Props> = ({
   const activeExecutionRef = useRef<TurnExecutionContext | null>(null);
   const processingStageEventsRef = useRef<TurnProcessingStageEvent[]>([]);
   const runtimeStateRef = useRef(runtimeState);
+  const avgMaterializationKeysRef = useRef(new Set<string>());
   const sessionIdentityRef = useRef(`${saveId}:${sessionGeneration}`);
   runtimeStateRef.current = runtimeState;
   sessionIdentityRef.current = `${saveId}:${sessionGeneration}`;
@@ -1021,12 +1103,16 @@ export const GameScreen: React.FC<Props> = ({
     setRuntimeState(initial);
     runtimeStateRef.current = initial;
     setSuggestedActions(getLatestSuggestedActions(initial));
+    setStateWritebackRecoveryPreview(null);
   }, [initial]);
 
   useEffect(() => {
     setIsResolvingEncounterOffer(false);
     setIsMemorySummaryProcessing(false);
     setIsMemorySummaryRecoveryOpen(false);
+    setIsPreparingStateWritebackRecovery(false);
+    setIsApplyingStateWritebackRecovery(false);
+    setStateWritebackRecoveryPreview(null);
     setPendingNpcDeletion(null);
     setIsDeletingNpc(false);
     setPendingHoldingDeletion(null);
@@ -1126,13 +1212,23 @@ export const GameScreen: React.FC<Props> = ({
     try {
       const apiConfig = await resolveApiConfigForTaskAsync('mainNarrative');
       assertExecutionCurrent(execution);
-      const stateWritebackApiConfig = await resolveExplicitApiConfigForTaskAsync('stateWriteback');
+      const featureExecutionModes = await getApiFeatureExecutionModesAsync();
       assertExecutionCurrent(execution);
-      const stateWritebackFallbackApiConfig = await resolveExplicitApiConfigForTaskAsync('stateWritebackFallback');
+      const stateWritebackApiConfig = featureExecutionModes.stateWriteback === 'dedicated'
+        ? await resolveExplicitApiConfigForTaskAsync('stateWriteback')
+        : null;
       assertExecutionCurrent(execution);
-      const npcCompletionApiConfig = await resolveExplicitApiConfigForTaskAsync('npcCompletion');
+      const stateWritebackFallbackApiConfig = featureExecutionModes.stateWriteback === 'dedicated'
+        ? await resolveExplicitApiConfigForTaskAsync('stateWritebackFallback')
+        : null;
       assertExecutionCurrent(execution);
-      const npcCompletionFallbackApiConfig = await resolveExplicitApiConfigForTaskAsync('npcCompletionFallback');
+      const npcCompletionApiConfig = featureExecutionModes.npcCompletion === 'dedicated'
+        ? await resolveExplicitApiConfigForTaskAsync('npcCompletion')
+        : null;
+      assertExecutionCurrent(execution);
+      const npcCompletionFallbackApiConfig = featureExecutionModes.npcCompletion === 'dedicated'
+        ? await resolveExplicitApiConfigForTaskAsync('npcCompletionFallback')
+        : null;
       assertExecutionCurrent(execution);
       if (!apiConfig) {
         throw new Error('开局前请先配置主剧情 API。');
@@ -1141,6 +1237,7 @@ export const GameScreen: React.FC<Props> = ({
       let streamedContent = '';
       const result = await generateTrueOpening(worldBook, runtimeState, {
         apiConfig,
+        featureExecutionModes,
         stateWritebackApiConfig,
         stateWritebackFallbackApiConfig,
         npcCompletionApiConfig,
@@ -1359,28 +1456,44 @@ export const GameScreen: React.FC<Props> = ({
     try {
       const apiConfig = await resolveApiConfigForTaskAsync('mainNarrative');
       assertExecutionCurrent(execution);
-      const stateWritebackApiConfig = await resolveExplicitApiConfigForTaskAsync('stateWriteback');
+      const featureExecutionModes = await getApiFeatureExecutionModesAsync();
       assertExecutionCurrent(execution);
-      const stateWritebackFallbackApiConfig = await resolveExplicitApiConfigForTaskAsync('stateWritebackFallback');
+      const stateWritebackApiConfig = featureExecutionModes.stateWriteback === 'dedicated'
+        ? await resolveExplicitApiConfigForTaskAsync('stateWriteback')
+        : null;
       assertExecutionCurrent(execution);
-      const npcCompletionApiConfig = await resolveExplicitApiConfigForTaskAsync('npcCompletion');
+      const stateWritebackFallbackApiConfig = featureExecutionModes.stateWriteback === 'dedicated'
+        ? await resolveExplicitApiConfigForTaskAsync('stateWritebackFallback')
+        : null;
       assertExecutionCurrent(execution);
-      const npcCompletionFallbackApiConfig = await resolveExplicitApiConfigForTaskAsync('npcCompletionFallback');
+      const npcCompletionApiConfig = featureExecutionModes.npcCompletion === 'dedicated'
+        ? await resolveExplicitApiConfigForTaskAsync('npcCompletion')
+        : null;
       assertExecutionCurrent(execution);
-      const memorySummaryApi = await getConfiguredMemorySummaryApiConfig(baseState);
+      const npcCompletionFallbackApiConfig = featureExecutionModes.npcCompletion === 'dedicated'
+        ? await resolveExplicitApiConfigForTaskAsync('npcCompletionFallback')
+        : null;
+      assertExecutionCurrent(execution);
+      const memorySummaryApi = featureExecutionModes.memorySummary === 'dedicated'
+        ? await getConfiguredMemorySummaryApiConfig(baseState)
+        : { config: null, apiTaskId: undefined };
       assertExecutionCurrent(execution);
       const embeddingApiConfig = await getConfiguredEmbeddingApiConfig();
       assertExecutionCurrent(execution);
       const npcSimulationSettings = loadNpcSimulationSettings();
       const npcSimulationApiConfig = npcSimulationSettings.enabled
+        && featureExecutionModes.npcSimulation === 'dedicated'
         ? await getConfiguredNpcSimulationApiConfig()
         : null;
       assertExecutionCurrent(execution);
-      const worldEvolutionApiConfig = await resolveApiConfigForTaskAsync('worldEvolution');
+      const worldEvolutionApiConfig = featureExecutionModes.worldEvolution === 'dedicated'
+        ? await resolveApiConfigForTaskAsync('worldEvolution')
+        : null;
       assertExecutionCurrent(execution);
       let streamedContent = '';
       const result: TurnResult = await executeTurn(worldBook, baseState, actionText, {
         apiConfig,
+        featureExecutionModes,
         stateWritebackApiConfig,
         stateWritebackFallbackApiConfig,
         npcCompletionApiConfig,
@@ -1473,13 +1586,19 @@ export const GameScreen: React.FC<Props> = ({
       }
 
       const shouldRunAutomaticMemorySummary =
-        shouldRunAutomaticMemorySummaryMaintenance(committedRuntimeState);
+        featureExecutionModes.memorySummary === 'dedicated'
+        && shouldRunAutomaticMemorySummaryMaintenance(committedRuntimeState);
       if (shouldRunAutomaticMemorySummary) {
         committedRuntimeState = queueMemorySummaryMaintenance(committedRuntimeState, {
           queuedAt: new Date().toISOString(),
           triggerTurnNumber: snapshotTurnNumber,
         });
       }
+
+      committedRuntimeState = finalizePendingStateWritebackRecoveryHead(
+        committedRuntimeState,
+        createStateWritebackRecoveryVerification(worldBook),
+      );
 
       const saveStage = startUiProcessingStage('saving', '保存回合与快照');
       assertExecutionCurrent(execution);
@@ -2123,7 +2242,7 @@ export const GameScreen: React.FC<Props> = ({
   ]);
 
   const handleSubmit = useCallback(async () => {
-    if (!playerInput.trim() || isProcessing || runtimeState.encounterV2?.pendingOffer) return;
+    if (!playerInput.trim() || isProcessing || stateWritebackRecoveryPreview || runtimeState.encounterV2?.pendingOffer) return;
 
     const actionText = playerInput.trim();
     const developerCommand = parseDeveloperCommandInput(actionText);
@@ -2136,7 +2255,106 @@ export const GameScreen: React.FC<Props> = ({
       ? await executeDeveloperCommand(runtimeState, developerCommand.fact, actionText)
       : await executeActionFromState(runtimeState, actionText);
     if (outcome === 'failed') setPlayerInput(actionText);
-  }, [executeActionFromState, executeDeveloperCommand, isProcessing, playerInput, runtimeState]);
+  }, [executeActionFromState, executeDeveloperCommand, isProcessing, playerInput, runtimeState, stateWritebackRecoveryPreview]);
+
+  const handlePrepareStateWritebackRecovery = useCallback(async () => {
+    if (isProcessing || isPreparingStateWritebackRecovery || stateWritebackRecoveryPreview) return;
+    const execution = beginExecution();
+    setIsPreparingStateWritebackRecovery(true);
+    setIsProcessing(true);
+    setMessage('正在重新整理本回合状态写回…');
+    try {
+      const apiConfig = await resolveApiConfigForTaskAsync('stateWriteback');
+      assertExecutionCurrent(execution);
+      if (!apiConfig) {
+        setMessage('没有可用于状态写回重整的 API，请先检查主叙事或状态写回 API 设置。');
+        return;
+      }
+      const result = await prepareStateWritebackRecovery({
+        currentState: runtimeStateRef.current,
+        worldBook,
+        apiConfig,
+        llmClient: mainNarrativeLlmClient,
+        signal: execution.signal,
+      });
+      assertExecutionCurrent(execution);
+      if (result.status === 'ready') {
+        setStateWritebackRecoveryPreview(result);
+        setMessage('状态写回重整候选已通过严格校验，请确认后应用。');
+      } else {
+        setMessage(result.message);
+      }
+    } catch (error) {
+      if (!isTurnExecutionCancelled(error) && isExecutionCurrent(execution)) {
+        setMessage(`状态写回重整失败，未应用任何状态：${error instanceof Error ? error.message : '未知错误'}`);
+      }
+    } finally {
+      setIsPreparingStateWritebackRecovery(false);
+      settleExecutionUi(execution);
+      executionOwner.finish(execution);
+    }
+  }, [
+    assertExecutionCurrent,
+    beginExecution,
+    executionOwner,
+    isExecutionCurrent,
+    isPreparingStateWritebackRecovery,
+    isProcessing,
+    settleExecutionUi,
+    stateWritebackRecoveryPreview,
+    worldBook,
+  ]);
+
+  const handleApplyStateWritebackRecovery = useCallback(async () => {
+    if (!stateWritebackRecoveryPreview || isApplyingStateWritebackRecovery || isProcessing) return;
+    const execution = beginExecution();
+    setIsApplyingStateWritebackRecovery(true);
+    setIsProcessing(true);
+    setMessage('正在保存状态写回重整结果…');
+    try {
+      const applied = commitPreparedStateWritebackRecovery({
+        currentState: runtimeStateRef.current,
+        preview: stateWritebackRecoveryPreview.preview,
+        worldBook,
+      });
+      assertExecutionCurrent(execution);
+      if (applied.status === 'stale_lineage') {
+        setStateWritebackRecoveryPreview(null);
+        setMessage('存档已变化，状态写回重整预览失效，未应用任何状态。');
+        return;
+      }
+      const saved = await saveCurrentState(saveId, applied.state, { signal: execution.signal });
+      assertExecutionCurrent(execution);
+      if (!saved) throw new Error('当前存档不存在，无法保存状态写回重整结果。');
+      runtimeStateRef.current = applied.state;
+      setRuntimeState(applied.state);
+      setLastPatch(applied.state.lastStatePatch ?? null);
+      setPatchValidation(applied.state.lastPatchValidation ?? null);
+      setStateWritebackRecoveryPreview(null);
+      setMessage(applied.status === 'already_applied'
+        ? '本回合状态写回已经重整，无需重复应用。'
+        : '本回合状态写回重整已保存；正文、回合时间、地点与地图均未改变。');
+    } catch (error) {
+      if (!isTurnExecutionCancelled(error) && isExecutionCurrent(execution)) {
+        setMessage(`状态写回重整保存失败：${error instanceof Error ? error.message : '未知错误'}`);
+      }
+    } finally {
+      setIsApplyingStateWritebackRecovery(false);
+      settleExecutionUi(execution);
+      executionOwner.finish(execution);
+    }
+  }, [
+    assertExecutionCurrent,
+    beginExecution,
+    executionOwner,
+    isApplyingStateWritebackRecovery,
+    isExecutionCurrent,
+    isProcessing,
+    saveId,
+    settleExecutionUi,
+    stateWritebackRecoveryPreview,
+    worldBook,
+  ]);
 
   const handleUndoDeveloperOverride = useCallback(async () => {
     if (!canUndoDeveloperOverride || isProcessing) return;
@@ -2687,6 +2905,85 @@ export const GameScreen: React.FC<Props> = ({
     currentTitle: isProcessing ? '生成中' : turnDisplayTitle,
     includeLiveEntry: isProcessing,
   });
+  const avgPlaybackEntry = !isProcessing
+    ? [...renderedNarrativeEntries].reverse().find((entry) => !entry.isLive && entry.narrativeText.trim())
+    : undefined;
+  const avgDecisionMode = narrativePresentation === 'classic'
+    ? 'classic'
+    : narrativePresentation === 'avg' || avgResourcePackReady ? 'avg' : 'classic';
+  const showAvgPreparing = isProcessing && avgResourcePackReady && avgDecisionMode === 'avg';
+  const canAttemptAvgPlayback = !isProcessing && avgResourcePackReady && avgDecisionMode === 'avg' && Boolean(avgPlaybackEntry);
+  const avgPlaybackTurn = avgPlaybackEntry?.turnNumber
+    ? runtimeState.turnLog.find((turn) => turn.turnNumber === avgPlaybackEntry.turnNumber)
+    : undefined;
+  const [avgPlaybackResourceStatus, setAvgPlaybackResourceStatus] = useState<'idle' | 'loading' | 'ready' | 'warning'>('idle');
+  useEffect(() => {
+    let active = true;
+    if (!canAttemptAvgPlayback || !avgPlaybackTurn?.avgVisualSnapshot) {
+      setAvgPlaybackResourceStatus(canAttemptAvgPlayback ? 'loading' : 'idle');
+      return () => { active = false; };
+    }
+    setAvgPlaybackResourceStatus('loading');
+    void preflightAvgPlayback(runtimeState, saveId, avgPlaybackTurn, avgPlayerPortraitMode, { packs: avgResourcePackManager })
+      .then((result) => { if (active) setAvgPlaybackResourceStatus(result.status); })
+      .catch(() => { if (active) setAvgPlaybackResourceStatus('warning'); });
+    return () => { active = false; };
+  }, [avgPlaybackEntry?.key, avgPlaybackTurn, avgPlayerPortraitMode, avgResourcePackManager, avgVisualRevision, canAttemptAvgPlayback, runtimeState, saveId]);
+  const showAvgStage = canAttemptAvgPlayback && avgPlaybackResourceStatus === 'ready';
+  useEffect(() => {
+    const turnNumber = avgPlaybackEntry?.turnNumber;
+    if (!canAttemptAvgPlayback || !turnNumber) return;
+    const key = `${saveId}:${avgPlaybackEntry.key}`;
+    if (avgMaterializationKeysRef.current.has(key)) return;
+    const sourceState = runtimeStateRef.current;
+    const materialized = materializeAvgPresentation(sourceState, { saveId, turnNumber, playerPortraitMode: avgPlayerPortraitMode });
+    if (!materialized.changed) return;
+    avgMaterializationKeysRef.current.add(key);
+    runtimeStateRef.current = materialized.state;
+    setRuntimeState(materialized.state);
+    void saveCurrentState(saveId, materialized.state).then((saved) => {
+      if (!saved) throw new Error('当前存档不存在');
+    }).catch((error) => {
+      avgMaterializationKeysRef.current.delete(key);
+      setMessage(`AVG 演出绑定保存失败：${error instanceof Error ? error.message : '未知错误'}`);
+    });
+  }, [avgPlaybackEntry?.key, avgPlaybackEntry?.turnNumber, avgPlayerPortraitMode, canAttemptAvgPlayback, saveId]);
+  useEffect(() => {
+    if (!showAvgStage) setIsAvgImmersive(false);
+  }, [showAvgStage]);
+  const dismissAvgImmersiveRail = useCallback(() => {
+    setAvgImmersivePinnedRail(null);
+    setAvgImmersiveHoveredRail(null);
+  }, []);
+  const exitAvgImmersive = useCallback(() => {
+    dismissAvgImmersiveRail();
+    setIsAvgImmersiveChoiceOpen(false);
+    setIsAvgImmersive(false);
+    setAvgImmersiveNotice('');
+    if (typeof document !== 'undefined' && document.fullscreenElement && document.exitFullscreen) void document.exitFullscreen().catch(() => undefined);
+  }, [dismissAvgImmersiveRail]);
+  const requestAvgImmersive = useCallback(() => {
+    setAvgImmersiveNotice('');
+    if (typeof window !== 'undefined' && window.matchMedia?.('(max-width: 760px)').matches) setIsAvgImmersive(true);
+    else setIsAvgImmersiveChoiceOpen(true);
+  }, []);
+  const enterAvgBrowserFullscreen = useCallback(async () => {
+    setIsAvgImmersiveChoiceOpen(false); setAvgImmersiveNotice(''); setIsAvgImmersive(true);
+    if (!modalScopeRef.current?.requestFullscreen) { setAvgImmersiveNotice('当前浏览器不支持全屏，已保留页面沉浸模式。'); return; }
+    try { await modalScopeRef.current.requestFullscreen(); } catch { setAvgImmersiveNotice('浏览器未能进入全屏，已保留页面沉浸模式。'); }
+  }, []);
+  useEffect(() => {
+    if (!isAvgImmersive) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (avgImmersivePinnedRail || avgImmersiveHoveredRail) { event.preventDefault(); dismissAvgImmersiveRail(); }
+        else exitAvgImmersive();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [avgImmersiveHoveredRail, avgImmersivePinnedRail, dismissAvgImmersiveRail, exitAvgImmersive, isAvgImmersive]);
+  const avgImmersiveOpenRail = avgImmersivePinnedRail ?? avgImmersiveHoveredRail;
   const latestRenderedNarrativeText = renderedNarrativeEntries[renderedNarrativeEntries.length - 1]?.narrativeText ?? '';
   const activeTurnEntry = activeTurnPanel
     ? renderedNarrativeEntries.find((entry) => entry.key === activeTurnPanel.entryKey)
@@ -2741,6 +3038,25 @@ export const GameScreen: React.FC<Props> = ({
       setDiagnosticCopyStatus('复制失败，请手动选中文本复制');
     }
   }, [diagnosticExportText]);
+
+  useEffect(() => {
+    const onPresentationChanged = (event: Event) => {
+      setNarrativePresentation(
+        (event as CustomEvent<NarrativePresentationPreference>).detail ?? loadNarrativePresentationFromStorage(),
+      );
+    };
+    const onPlayerPortraitChanged = (event: Event) => {
+      setAvgPlayerPortraitMode(
+        (event as CustomEvent<AvgPlayerPortraitMode>).detail ?? loadAvgPlayerPortraitModeFromStorage(),
+      );
+    };
+    window.addEventListener(NARRATIVE_PRESENTATION_CHANGED_EVENT, onPresentationChanged);
+    window.addEventListener(AVG_PLAYER_PORTRAIT_MODE_CHANGED_EVENT, onPlayerPortraitChanged);
+    return () => {
+      window.removeEventListener(NARRATIVE_PRESENTATION_CHANGED_EVENT, onPresentationChanged);
+      window.removeEventListener(AVG_PLAYER_PORTRAIT_MODE_CHANGED_EVENT, onPlayerPortraitChanged);
+    };
+  }, []);
 
   useEffect(() => {
     const scrollElement = narrativeScrollRef.current;
@@ -3259,9 +3575,11 @@ export const GameScreen: React.FC<Props> = ({
     ? sanitizeCombatReportText(activeCombatReport.reportText ?? activeCombatReport.briefText ?? activeCombatReport.summary ?? activeCombatReport.outcome)
     : '';
   const memorySummaryMaintenance = getMemorySummaryMaintenance(runtimeState);
-  const gameModalKey = isMemorySummaryRecoveryOpen
-    ? 'memory-summary-recovery'
-    : activeTurnPanel
+  const gameModalKey = stateWritebackRecoveryPreview
+    ? 'state-writeback-recovery-preview'
+    : isMemorySummaryRecoveryOpen
+      ? 'memory-summary-recovery'
+      : activeTurnPanel
       ? `turn:${activeTurnPanel.entryKey}`
       : activeBattleBriefing
         ? `briefing:${activeBattleBriefing.title}`
@@ -3282,7 +3600,9 @@ export const GameScreen: React.FC<Props> = ({
     modalKey: gameModalKey,
     scopeRef: modalScopeRef,
     onClose: () => {
-      if (isMemorySummaryRecoveryOpen) {
+      if (stateWritebackRecoveryPreview) {
+        if (!isApplyingStateWritebackRecovery) setStateWritebackRecoveryPreview(null);
+      } else if (isMemorySummaryRecoveryOpen) {
         setIsMemorySummaryRecoveryOpen(false);
       } else if (activeTurnPanel) {
         setActiveTurnPanel(null);
@@ -3312,7 +3632,10 @@ export const GameScreen: React.FC<Props> = ({
   const growthPointsAvailable = Math.max(0, Math.floor(p.growthPoints ?? 0));
   const allocatableAbilityKeys = new Set<string>([...CORE_PLAYER_ATTRIBUTE_KEYS]);
   const turnSubmitButton = buildTurnSubmitButtonModel({
-    hasInput: Boolean(playerInput.trim()) && !pendingEncounterOffer && !isResolvingEncounterOffer,
+    hasInput: Boolean(playerInput.trim())
+      && !pendingEncounterOffer
+      && !isResolvingEncounterOffer
+      && !stateWritebackRecoveryPreview,
     isProcessing,
     isCancelling,
     onSubmit: () => {
@@ -3329,7 +3652,7 @@ export const GameScreen: React.FC<Props> = ({
   };
 
   return (
-    <div ref={modalScopeRef} className="start-shell game-screen-shell">
+    <div ref={modalScopeRef} className={`start-shell game-screen-shell${isAvgImmersive ? ' avg-immersive' : ''}`} data-avg-immersive={isAvgImmersive}>
       <CombatEncounterScreen
         runtimeState={runtimeState}
         locationLabel={currentLocationDisplayPath}
@@ -3405,16 +3728,28 @@ export const GameScreen: React.FC<Props> = ({
           </div>
         </div>
 
+        {isAvgImmersive && <button type="button" className="avg-immersive-exit-handle" data-testid="avg-immersive-exit-handle" onClick={exitAvgImmersive} aria-label="退出 AVG 沉浸模式"><span aria-hidden="true">⌄</span><strong>退出沉浸</strong></button>}
+
         <MobileRegionSwitcher activeRegion={mobileGameRegion} onSelect={setMobileGameRegion} />
 
         {/* ========== 三栏主体 ========== */}
         <div className="game-body">
+          {isAvgImmersive && <>
+            <button id="avg-immersive-left-trigger" type="button" className="avg-immersive-rail-trigger avg-immersive-rail-trigger--left" data-testid="avg-immersive-left-trigger" aria-label="打开人物状态栏" aria-controls="game-region-profile" aria-expanded={avgImmersiveOpenRail === 'left'} data-avg-rail-pinned={avgImmersivePinnedRail === 'left'} onMouseEnter={() => setAvgImmersiveHoveredRail('left')} onMouseLeave={() => setAvgImmersiveHoveredRail(null)} onFocus={() => setAvgImmersiveHoveredRail('left')} onBlur={() => { if (avgImmersivePinnedRail !== 'left') setAvgImmersiveHoveredRail(null); }} onClick={() => setAvgImmersivePinnedRail((rail) => rail === 'left' ? null : 'left')}><span aria-hidden="true">›</span></button>
+            <button id="avg-immersive-right-trigger" type="button" className="avg-immersive-rail-trigger avg-immersive-rail-trigger--right" data-testid="avg-immersive-right-trigger" aria-label="打开功能面板" aria-controls="game-region-systems" aria-expanded={avgImmersiveOpenRail === 'right'} data-avg-rail-pinned={avgImmersivePinnedRail === 'right'} onMouseEnter={() => setAvgImmersiveHoveredRail('right')} onMouseLeave={() => setAvgImmersiveHoveredRail(null)} onFocus={() => setAvgImmersiveHoveredRail('right')} onBlur={() => { if (avgImmersivePinnedRail !== 'right') setAvgImmersiveHoveredRail(null); }} onClick={() => setAvgImmersivePinnedRail((rail) => rail === 'right' ? null : 'right')}><span aria-hidden="true">‹</span></button>
+            {avgImmersivePinnedRail && <button type="button" className="avg-immersive-rail-backdrop" data-testid="avg-immersive-rail-backdrop" aria-label="关闭沉浸侧栏" onClick={dismissAvgImmersiveRail} />}
+          </>}
           {/* ---- 左侧：玩家简档 ---- */}
           <aside
             id="game-region-profile"
-            className="game-panel-left"
+            className={`game-panel-left${isAvgImmersive ? ' avg-immersive-rail avg-immersive-rail--left' : ''}`}
             data-mobile-active={mobileGameRegion === 'profile'}
+            data-avg-rail-open={isAvgImmersive && avgImmersiveOpenRail === 'left'}
+            data-avg-rail-pinned={isAvgImmersive && avgImmersivePinnedRail === 'left'}
+            onMouseEnter={isAvgImmersive ? () => setAvgImmersiveHoveredRail('left') : undefined}
+            onMouseLeave={isAvgImmersive ? () => { if (avgImmersivePinnedRail !== 'left') setAvgImmersiveHoveredRail(null); } : undefined}
           >
+            {isAvgImmersive && <button type="button" className="avg-immersive-rail-close" aria-label="关闭人物状态栏" onClick={dismissAvgImmersiveRail}>×</button>}
             <div className="profile-card">
               <div className="profile-header">
                 <button
@@ -3608,6 +3943,68 @@ export const GameScreen: React.FC<Props> = ({
               {renderedNarrativeEntries.length > 0 && (
                 <div className="narrative-box narrative-stream-box" data-testid="narrative-stream-box">
                   <h3>{narrativeTurnDisplayLabels.sectionTitle}</h3>
+                  <div className="narrative-presentation-toolbar" role="group" aria-label="正文呈现模式">
+                    <span className="narrative-presentation-toolbar-title">正文呈现</span>
+                    <div className="narrative-presentation-controls">
+                      <button
+                        type="button"
+                        className={`narrative-presentation-button${showAvgStage || showAvgPreparing ? '' : ' active'}`}
+                        onClick={() => setNarrativePresentation(saveNarrativePresentationToStorage('classic'))}
+                      >
+                        原正文
+                      </button>
+                      <button
+                        type="button"
+                        className={`narrative-presentation-button${showAvgStage || showAvgPreparing ? ' active' : ''}`}
+                        onClick={() => setNarrativePresentation(saveNarrativePresentationToStorage('avg'))}
+                      >
+                        AVG 演出
+                      </button>
+                      <button type="button" className="narrative-presentation-button narrative-visual-status-button" onClick={() => onOpenSettings('avg')}>视觉状态</button>
+                      <button type="button" className="narrative-presentation-button avg-immersive-toggle" data-testid="avg-immersive-toggle" disabled={!showAvgStage} onClick={requestAvgImmersive}>
+                        沉浸式
+                      </button>
+                    </div>
+                    <span className="narrative-presentation-status" role="status" aria-live="polite">
+                      {showAvgPreparing
+                        ? 'AVG 舞台正在准备；流式正文将在提交完成后形成安全演出帧。'
+                        : showAvgStage
+                          ? narrativePresentation === 'auto' ? '自动：外置资源包与当前演出均已就绪。' : '手动：当前采用 AVG 演出。'
+                          : avgResourcePackStatus === 'loading' && narrativePresentation !== 'classic'
+                            ? '正在读取本机外置 AVG 美术包；当前完整显示原正文。'
+                            : avgResourcePackStatus === 'empty' && narrativePresentation !== 'classic'
+                              ? '尚未安装外置 AVG 美术包，当前完整显示原正文。'
+                              : avgResourcePackStatus === 'warning' && narrativePresentation !== 'classic'
+                                ? '本机 AVG 美术包暂时无法读取，当前完整显示原正文。'
+                                : avgPlaybackResourceStatus === 'loading' && canAttemptAvgPlayback
+                                  ? '正在按需读取当前 AVG 画面；当前完整显示原正文。'
+                                  : avgPlaybackResourceStatus === 'warning' && canAttemptAvgPlayback
+                                    ? '当前 AVG 图片缺失或读取失败，已完整回退原正文。'
+                                    : '当前完整显示原正文。'}
+                    </span>
+                  </div>
+                  {isAvgImmersiveChoiceOpen && <div className="avg-immersive-choice-backdrop" role="presentation" onClick={() => setIsAvgImmersiveChoiceOpen(false)}><section className="avg-immersive-choice" role="dialog" aria-modal="true" aria-label="选择沉浸方式" onClick={(event) => event.stopPropagation()}><h4>选择沉浸方式</h4><p>页面沉浸始终可用；浏览器全屏需要浏览器授权，拒绝时仍会保留页面沉浸。</p><div><button type="button" onClick={() => { setIsAvgImmersiveChoiceOpen(false); setAvgImmersiveNotice(''); setIsAvgImmersive(true); }}>页面沉浸</button><button type="button" onClick={() => void enterAvgBrowserFullscreen()}>浏览器全屏</button><button type="button" onClick={() => setIsAvgImmersiveChoiceOpen(false)}>取消</button></div></section></div>}
+                  {avgImmersiveNotice && <p className="avg-immersive-notice" role="status">{avgImmersiveNotice}</p>}
+                  {showAvgPreparing ? (
+                    <section className="avg-preparing-stage" data-testid="avg-preparing-stage" role="status" aria-live="polite" aria-atomic="true">
+                      <div className="avg-preparing-stage-visual" aria-hidden="true"><span className="avg-preparing-stage-orbit" /><span className="avg-preparing-stage-core" /></div>
+                      <div className="avg-preparing-stage-copy"><strong>AVG 舞台正在准备</strong><span>AI 正在处理</span><small data-testid="avg-preparing-stage-phase">{sanitizeAvgPreparingStageText(processingStageText.trim()) || '正在建立安全演出帧'}</small></div>
+                    </section>
+                  ) : showAvgStage && avgPlaybackEntry ? (
+                    <AvgNarrativeStage
+                      entryKey={avgPlaybackEntry.key}
+                      narrativeText={avgPlaybackEntry.narrativeText}
+                      displayMeta={avgPlaybackEntry.displayMeta}
+                      visualSnapshot={avgPlaybackEntry.avgVisualSnapshot}
+                      avgPresentation={avgPlaybackEntry.avgPresentation}
+                      runtimeState={runtimeState}
+                      saveId={saveId}
+                      worldBookId={runtimeState.worldBookId}
+                      playerPortraitMode={avgPlayerPortraitMode}
+                      onOpenAvgSettings={() => onOpenSettings('avg')}
+                      onReturnClassic={() => setNarrativePresentation(saveNarrativePresentationToStorage('classic'))}
+                    />
+                  ) : (
                   <div className="narrative-stream" data-testid="narrative-stream">
                     {renderedNarrativeEntries.map((entry, index) => (
                       <article
@@ -3755,6 +4152,7 @@ export const GameScreen: React.FC<Props> = ({
                       </article>
                     ))}
                   </div>
+                  )}
                 </div>
               )}
             </div>
@@ -3801,6 +4199,17 @@ export const GameScreen: React.FC<Props> = ({
                 </section>
               )}
 
+              <StateWritebackRecoveryPanel
+                runtimeState={runtimeState}
+                worldBook={worldBook}
+                preview={stateWritebackRecoveryPreview}
+                isPreparing={isPreparingStateWritebackRecovery}
+                isApplying={isApplyingStateWritebackRecovery}
+                onPrepare={() => { void handlePrepareStateWritebackRecovery(); }}
+                onCancelPreview={() => setStateWritebackRecoveryPreview(null)}
+                onApplyPreview={() => { void handleApplyStateWritebackRecovery(); }}
+              />
+
               {memorySummaryMaintenance && !isMemorySummaryRecoveryOpen && (
                 <div
                   className="memory-summary-pending-notice"
@@ -3843,7 +4252,7 @@ export const GameScreen: React.FC<Props> = ({
 
               {message && (
                 <div
-                  className={`message-box message-box-${messageTone} ${showTrueOpeningRetry ? 'message-box-with-action' : ''}`}
+                  className={`message-box message-box-${messageTone} ${(showTrueOpeningRetry || isDismissibleTurnCompletionMessage(message)) ? 'message-box-with-action' : ''}`}
                   role={messageTone === 'error' ? 'alert' : 'status'}
                   aria-live={messageTone === 'error' ? 'assertive' : 'polite'}
                 >
@@ -3857,6 +4266,16 @@ export const GameScreen: React.FC<Props> = ({
                       aria-label="重试开场剧情"
                     >
                       重试开局
+                    </button>
+                  )}
+                  {isDismissibleTurnCompletionMessage(message) && (
+                    <button
+                      type="button"
+                      className="message-retry-btn"
+                      onClick={() => setMessage('')}
+                      aria-label="关闭本回合提示"
+                    >
+                      关闭
                     </button>
                   )}
                 </div>
@@ -4026,9 +4445,14 @@ export const GameScreen: React.FC<Props> = ({
           {/* ---- 右侧：功能模块 ---- */}
           <aside
             id="game-region-systems"
-            className="game-panel-right"
+            className={`game-panel-right${isAvgImmersive ? ' avg-immersive-rail avg-immersive-rail--right' : ''}`}
             data-mobile-active={mobileGameRegion === 'systems'}
+            data-avg-rail-open={isAvgImmersive && avgImmersiveOpenRail === 'right'}
+            data-avg-rail-pinned={isAvgImmersive && avgImmersivePinnedRail === 'right'}
+            onMouseEnter={isAvgImmersive ? () => setAvgImmersiveHoveredRail('right') : undefined}
+            onMouseLeave={isAvgImmersive ? () => { if (avgImmersivePinnedRail !== 'right') setAvgImmersiveHoveredRail(null); } : undefined}
           >
+            {isAvgImmersive && <button type="button" className="avg-immersive-rail-close" aria-label="关闭功能面板" onClick={dismissAvgImmersiveRail}>×</button>}
             <div className="right-scroll">
               <div className="system-menu-panel">
                 <div className="system-menu-buttons">
@@ -7315,6 +7739,14 @@ export const GameScreen: React.FC<Props> = ({
                         <span>效果</span>
                         <p>{selectedUniqueArt.effectSummary}</p>
                       </div>
+
+                      {selectedUniqueArt.mechanicsSummary && (
+                        <div className="unique-art-detail-block unique-art-trigger-block" data-testid="unique-art-mechanics">
+                          <h4>本地执行规则</h4>
+                          <p>{selectedUniqueArt.mechanicsSummary}</p>
+                          {selectedUniqueArt.lastExecutionSummary && <small>最近执行：{selectedUniqueArt.lastExecutionSummary}</small>}
+                        </div>
+                      )}
 
                       <div className="unique-art-progress-block">
                         <div>

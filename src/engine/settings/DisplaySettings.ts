@@ -40,6 +40,16 @@ export const GAME_COLOR_THEME_KEY = 'coc_v2_color_theme';
 export const COLOR_THEME_OPTIONS = ['dark', 'light'] as const;
 export type ColorThemePreference = (typeof COLOR_THEME_OPTIONS)[number];
 export const DEFAULT_COLOR_THEME: ColorThemePreference = 'dark';
+export const GAME_NARRATIVE_PRESENTATION_KEY = 'coc_v2_narrative_presentation';
+export const NARRATIVE_PRESENTATION_OPTIONS = ['auto', 'classic', 'avg'] as const;
+export type NarrativePresentationPreference = (typeof NARRATIVE_PRESENTATION_OPTIONS)[number];
+export const DEFAULT_NARRATIVE_PRESENTATION: NarrativePresentationPreference = 'auto';
+export const NARRATIVE_PRESENTATION_CHANGED_EVENT = 'coc:narrative-presentation-changed';
+export const GAME_AVG_PLAYER_PORTRAIT_MODE_KEY = 'coc_v2_avg_player_portrait_mode';
+export const AVG_PLAYER_PORTRAIT_MODE_OPTIONS = ['hidden', 'show'] as const;
+export type AvgPlayerPortraitMode = (typeof AVG_PLAYER_PORTRAIT_MODE_OPTIONS)[number];
+export const DEFAULT_AVG_PLAYER_PORTRAIT_MODE: AvgPlayerPortraitMode = 'hidden';
+export const AVG_PLAYER_PORTRAIT_MODE_CHANGED_EVENT = 'coc:avg-player-portrait-mode-changed';
 
 type RenderDepthStorage = Pick<Storage, 'getItem' | 'setItem'>;
 
@@ -344,6 +354,78 @@ export function saveColorThemeToStorage(value: unknown, storage?: RenderDepthSto
     // Theme preferences are local-only and non-critical.
   }
   applyDisplayPreferencesToDocument();
+  return normalized;
+}
+
+export function normalizeNarrativePresentation(value: unknown): NarrativePresentationPreference {
+  return typeof value === 'string'
+    && NARRATIVE_PRESENTATION_OPTIONS.includes(value as NarrativePresentationPreference)
+    ? value as NarrativePresentationPreference
+    : DEFAULT_NARRATIVE_PRESENTATION;
+}
+
+export function loadNarrativePresentationFromStorage(
+  storage?: RenderDepthStorage,
+): NarrativePresentationPreference {
+  const target = getDisplaySettingsStorage(storage);
+  if (!target) return DEFAULT_NARRATIVE_PRESENTATION;
+  try {
+    return normalizeNarrativePresentation(target.getItem(GAME_NARRATIVE_PRESENTATION_KEY));
+  } catch {
+    return DEFAULT_NARRATIVE_PRESENTATION;
+  }
+}
+
+export function saveNarrativePresentationToStorage(
+  value: unknown,
+  storage?: RenderDepthStorage,
+): NarrativePresentationPreference {
+  const normalized = normalizeNarrativePresentation(value);
+  const target = getDisplaySettingsStorage(storage);
+  try {
+    target?.setItem(GAME_NARRATIVE_PRESENTATION_KEY, normalized);
+  } catch {
+    // Presentation preferences are local-only and non-critical.
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(NARRATIVE_PRESENTATION_CHANGED_EVENT, { detail: normalized }));
+  }
+  return normalized;
+}
+
+export function normalizeAvgPlayerPortraitMode(value: unknown): AvgPlayerPortraitMode {
+  return typeof value === 'string'
+    && AVG_PLAYER_PORTRAIT_MODE_OPTIONS.includes(value as AvgPlayerPortraitMode)
+    ? value as AvgPlayerPortraitMode
+    : DEFAULT_AVG_PLAYER_PORTRAIT_MODE;
+}
+
+export function loadAvgPlayerPortraitModeFromStorage(
+  storage?: RenderDepthStorage,
+): AvgPlayerPortraitMode {
+  const target = getDisplaySettingsStorage(storage);
+  if (!target) return DEFAULT_AVG_PLAYER_PORTRAIT_MODE;
+  try {
+    return normalizeAvgPlayerPortraitMode(target.getItem(GAME_AVG_PLAYER_PORTRAIT_MODE_KEY));
+  } catch {
+    return DEFAULT_AVG_PLAYER_PORTRAIT_MODE;
+  }
+}
+
+export function saveAvgPlayerPortraitModeToStorage(
+  value: unknown,
+  storage?: RenderDepthStorage,
+): AvgPlayerPortraitMode {
+  const normalized = normalizeAvgPlayerPortraitMode(value);
+  const target = getDisplaySettingsStorage(storage);
+  try {
+    target?.setItem(GAME_AVG_PLAYER_PORTRAIT_MODE_KEY, normalized);
+  } catch {
+    // Presentation preferences are local-only and non-critical.
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(AVG_PLAYER_PORTRAIT_MODE_CHANGED_EVENT, { detail: normalized }));
+  }
   return normalized;
 }
 

@@ -33,10 +33,12 @@ import type {
 import type { StatePatch } from './statePatch';
 import type { TurnLogEntry } from './turn';
 import type { MemoryArchive } from './memory';
+import type { AbilityRuleExecutionTrace } from './ability';
 import type { GameClock } from '../time/gameClock';
 import type { MapNode, MapRouteEdgeV1 } from './map';
 import type { HistoricalAnchorStateEntry, WorldlineRuntimeSettings } from './worldline';
 import type { EncounterRuntimeLedger } from '../encounterV2/EncounterContracts';
+import type { StateWritebackRecoveryCapsule } from './stateWritebackRecovery';
 
 export type GameDifficultyLevel = 'story' | 'easy' | 'standard' | 'hard' | 'brutal';
 export type NarrativePerspective = 'first_person' | 'second_person' | 'third_person';
@@ -128,4 +130,35 @@ export interface RuntimeState {
   encounterV2?: EncounterRuntimeLedger;
   /** Latest normal-turn passive unique-art settlement. Older saves may omit it. */
   passiveUniqueArtTurnSettlement?: PassiveUniqueArtTurnSettlement;
+  /** Recent deterministic executions of player-authored ability rules. */
+  abilityRuleExecutions?: AbilityRuleExecutionTrace[];
+  /** v1.8 recovery evidence for a committed turn whose writeback was quarantined. */
+  stateWritebackRecovery?: StateWritebackRecoveryCapsule;
+  /** Stable AVG presentation identities and the local visual partition owned by this save. */
+  avgPresentation?: {
+    visualPartitionId?: string;
+    portraitBindings?: Array<{
+      bindingKey: string;
+      saveId: string;
+      worldBookId: string;
+      actorId: string;
+      portraitSetId: string;
+      profileSnapshot: Record<string, unknown>;
+      [key: string]: unknown;
+    }>;
+    speakerActors?: Array<{
+      actorId: string;
+      identitySource: 'presentation_only';
+      labels: string[];
+      profileSnapshot: {
+        sex: 'male' | 'female';
+        ageBand?: string;
+        roleFamily?: string;
+        professionTags?: string[];
+        socialTierTags?: string[];
+      };
+      firstSeenTurnNumber: number;
+      lastSeenTurnNumber: number;
+    }>;
+  };
 }

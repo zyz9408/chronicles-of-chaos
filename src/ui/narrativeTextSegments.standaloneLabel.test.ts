@@ -16,7 +16,12 @@ describe('parseNarrativeTextSegments standalone labels', () => {
 
     expect(segments).toEqual([
       { type: 'narration', text: 'Liu Gou did not remain at the camp gate.' },
-      { type: 'dialogue', speaker: 'LiuGou', text: '"Polish the blades and tighten the armor straps."' },
+      {
+        type: 'dialogue',
+        speaker: 'LiuGou',
+        speakerSource: 'explicit',
+        text: '"Polish the blades and tighten the armor straps."',
+      },
       { type: 'narration', text: 'The order quieted the soldiers.' },
     ]);
   });

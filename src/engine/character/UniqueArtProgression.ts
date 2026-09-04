@@ -25,6 +25,12 @@ export interface ApplyUniqueArtProgressResult {
   levelledUp: boolean;
 }
 
+export interface UniqueArtProgressPolicy {
+  multiplier?: number;
+  minimumProgress?: number;
+  setToMaxLevel?: boolean;
+}
+
 export function buildUniqueArtProgressTurnKey(
   turnLogLength: number,
   currentDate: string,
@@ -61,6 +67,7 @@ export function applyUniqueArtProgressEvidence(
   sourceArt: CharacterUniqueArt,
   evidence: CharacterUniqueArtProgressEvidence,
   appliedTurnKey: string,
+  policy: UniqueArtProgressPolicy = {},
 ): ApplyUniqueArtProgressResult {
   const history = sourceArt.progressHistory ?? [];
   if (history.some((entry) => entry.eventId.trim() === evidence.eventId.trim())) {
@@ -79,7 +86,11 @@ export function applyUniqueArtProgressEvidence(
     entry.appliedTurnKey === appliedTurnKey && entry.levelledUp
   ));
   const configuredAward = UNIQUE_ART_PROGRESS_AWARDS[evidence.source][evidence.intensity];
-  const awardedProgress = levelBefore >= maxLevel ? 0 : configuredAward;
+  const multipliedAward = Math.round(configuredAward * clampNumber(policy.multiplier ?? 1, 0, 1000));
+  const minimumAward = clampNumber(policy.minimumProgress ?? 0, 0, 1_000_000);
+  const awardedProgress = levelBefore >= maxLevel ? 0 : policy.setToMaxLevel
+    ? Math.max(0, (maxLevel - levelBefore) * UNIQUE_ART_PROGRESS_PER_LEVEL - progressBefore - bankedBefore)
+    : Math.max(multipliedAward, minimumAward);
   const totalProgress = progressBefore + bankedBefore + awardedProgress;
 
   let levelAfter = levelBefore;
@@ -90,6 +101,11 @@ export function applyUniqueArtProgressEvidence(
   if (levelBefore >= maxLevel) {
     progressAfter = 0;
     bankedProgress = 0;
+  } else if (policy.setToMaxLevel) {
+    levelAfter = maxLevel;
+    progressAfter = 0;
+    bankedProgress = 0;
+    levelledUp = levelAfter > levelBefore;
   } else if (totalProgress >= UNIQUE_ART_PROGRESS_PER_LEVEL && !alreadyLevelledThisTurn) {
     levelAfter = Math.min(maxLevel, levelBefore + 1);
     levelledUp = levelAfter > levelBefore;

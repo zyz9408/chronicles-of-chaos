@@ -40,6 +40,13 @@ describe('turnDisplay', () => {
         strong: [],
         weak: [],
       },
+      presentationSpeakerFacts: [{
+        segmentIndex: 1,
+        speakerActorId: 'npc_guan_yu',
+        speakerLabel: '关羽',
+        identitySource: 'full_npc',
+        sex: 'male',
+      }],
     });
 
     expect(meta.title).toBe('第 1 回合');
@@ -55,6 +62,9 @@ describe('turnDisplay', () => {
       actualCharacters: 1120,
       meetsMinimum: true,
     });
+    expect(meta.presentationSpeakerFacts).toEqual([
+      expect.objectContaining({ segmentIndex: 1, speakerActorId: 'npc_guan_yu' }),
+    ]);
   });
 
   it('uses an explicit title before falling back to the turn number', () => {

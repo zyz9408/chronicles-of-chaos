@@ -4,6 +4,7 @@ import type {
   CharacterUniqueArtRarity,
   LuanShiNpc,
 } from '../types';
+import { compileUniqueArtAbilityMechanics } from '../abilities/AbilityMechanics';
 
 export const NPC_UNIQUE_ART_ABILITY_NAMES = ['武力', '统率', '智力', '政治', '魅力', '机运'] as const;
 export type NpcUniqueArtAbilityName = typeof NPC_UNIQUE_ART_ABILITY_NAMES[number];
@@ -285,7 +286,7 @@ function normalizeArtIdentity(value: string): string {
 }
 
 function cloneUniqueArt(art: CharacterUniqueArt): CharacterUniqueArt {
-  return {
+  const cloned: CharacterUniqueArt = {
     ...art,
     ...(art.acquisition ? { acquisition: { ...art.acquisition } } : {}),
     ...(art.checkHooks ? { checkHooks: art.checkHooks.map((hook) => ({ ...hook })) } : {}),
@@ -294,6 +295,9 @@ function cloneUniqueArt(art: CharacterUniqueArt): CharacterUniqueArt {
     ...(art.relatedFactionIds ? { relatedFactionIds: [...art.relatedFactionIds] } : {}),
     ...(art.progressHistory ? { progressHistory: art.progressHistory.map((entry) => ({ ...entry })) } : {}),
   };
+  const mechanics = compileUniqueArtAbilityMechanics(cloned);
+  const { mechanics: _staleMechanics, ...withoutMechanics } = cloned;
+  return mechanics ? { ...withoutMechanics, mechanics } : withoutMechanics;
 }
 
 export function findStableCharacterUniqueArtIndex(
@@ -313,7 +317,9 @@ function mergeExistingArt(existing: CharacterUniqueArt, incoming: CharacterUniqu
   const rarity = compareUniqueArtRarity(incoming.rarity, existing.rarity) >= 0
     ? normalizeUniqueArtRarity(incoming.rarity)
     : existing.rarity;
-  return {
+  const mechanics = compileUniqueArtAbilityMechanics(existing)
+    ?? compileUniqueArtAbilityMechanics(incoming);
+  const merged: CharacterUniqueArt = {
     ...cloneUniqueArt(existing),
     ...cloneUniqueArt(incoming),
     id: existing.id,
@@ -331,6 +337,8 @@ function mergeExistingArt(existing: CharacterUniqueArt, incoming: CharacterUniqu
       ? { maxLevel: existing.maxLevel }
       : {}),
   };
+  const { mechanics: _incomingMechanics, ...withoutMechanics } = merged;
+  return mechanics ? { ...withoutMechanics, mechanics } : withoutMechanics;
 }
 
 function mergeStringLists(

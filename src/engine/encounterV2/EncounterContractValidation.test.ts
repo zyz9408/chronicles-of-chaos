@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   COMBAT_RULESET_VERSION,
   ENCOUNTER_CONTRACT_VERSION,
+  LEGACY_COMBAT_RULESET_VERSION,
+  REBALANCED_WAR_RULESET_VERSION,
   SEMANTIC_PROJECTION_VERSION,
   THEATER_WAR_RULESET_VERSION,
   WAR_RULESET_VERSION,
@@ -251,6 +253,14 @@ describe('EncounterContractValidation', () => {
     if (theaterIntent.kind !== 'war') throw new Error('unexpected intent kind');
     theaterIntent.rulesetVersion = THEATER_WAR_RULESET_VERSION;
     expect(validateEncounterStartIntent(theaterIntent)).toEqual({ valid: true, errors: [] });
+    const legacyCombatIntent = createPersonalIntent();
+    if (legacyCombatIntent.kind !== 'personal_combat') throw new Error('unexpected intent kind');
+    legacyCombatIntent.rulesetVersion = LEGACY_COMBAT_RULESET_VERSION;
+    expect(validateEncounterStartIntent(legacyCombatIntent)).toEqual({ valid: true, errors: [] });
+    const rebalancedWarIntent = createWarIntent();
+    if (rebalancedWarIntent.kind !== 'war') throw new Error('unexpected intent kind');
+    rebalancedWarIntent.rulesetVersion = REBALANCED_WAR_RULESET_VERSION;
+    expect(validateEncounterStartIntent(rebalancedWarIntent)).toEqual({ valid: true, errors: [] });
   });
 
   it('rejects personal combat with more than three actors on a side', () => {

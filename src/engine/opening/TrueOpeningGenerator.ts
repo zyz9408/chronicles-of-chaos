@@ -1,4 +1,4 @@
-import type { ApiConfigArchive } from '../settings/ApiConfigManager';
+import type { ApiConfigArchive, ApiFeatureExecutionModes } from '../settings/ApiConfigManager';
 import type { LlmClient } from '../llm/LlmClient';
 import type { RuntimeState, TurnDisplayMeta, TurnProcessingStageEvent, WorldBook } from '../types';
 import type { LlmTokenUsage } from '../llm/LlmClient';
@@ -10,6 +10,7 @@ import { reconcileOpeningTraitCompliance } from './OpeningTraitCompliance';
 
 export interface GenerateTrueOpeningOptions {
   apiConfig: ApiConfigArchive | null;
+  featureExecutionModes?: ApiFeatureExecutionModes;
   stateWritebackApiConfig?: ApiConfigArchive | null;
   stateWritebackFallbackApiConfig?: ApiConfigArchive | null;
   npcCompletionApiConfig?: ApiConfigArchive | null;
@@ -38,6 +39,7 @@ export async function generateTrueOpening(
 
   const result = await executeTurn(worldBook, runtimeState, buildOpeningPlayerInput(runtimeState), {
     apiConfig: options.apiConfig,
+    featureExecutionModes: options.featureExecutionModes,
     stateWritebackApiConfig: options.stateWritebackApiConfig,
     stateWritebackFallbackApiConfig: options.stateWritebackFallbackApiConfig,
     npcCompletionApiConfig: options.npcCompletionApiConfig,
@@ -59,31 +61,35 @@ export async function generateTrueOpening(
   });
   options.signal?.throwIfAborted();
 
-  const traitCompliance = await reconcileOpeningTraitCompliance({
-    worldBook,
-    initialState: runtimeState,
-    openingState: result.newRuntimeState,
-    openingNarrativeText: result.narrativeText,
-    openingStatePatches: result.statePatches ?? [],
-    mainApiConfig: options.apiConfig,
-    mainLlmClient: options.llmClient,
-    stateWritebackApiConfig: options.stateWritebackApiConfig,
-    stateWritebackLlmClient: options.stateWritebackLlmClient,
-    stateWritebackFallbackApiConfig: options.stateWritebackFallbackApiConfig,
-    stateWritebackFallbackLlmClient: options.stateWritebackFallbackLlmClient,
-    signal: options.signal,
-  });
+  const traitCompliance = options.featureExecutionModes?.stateWriteback === 'bundledMain'
+    ? { state: result.newRuntimeState, notes: [], rawContent: '', usage: undefined, appliedPatches: [] }
+    : await reconcileOpeningTraitCompliance({
+        worldBook,
+        initialState: runtimeState,
+        openingState: result.newRuntimeState,
+        openingNarrativeText: result.narrativeText,
+        openingStatePatches: result.statePatches ?? [],
+        mainApiConfig: options.apiConfig,
+        mainLlmClient: options.llmClient,
+        stateWritebackApiConfig: options.stateWritebackApiConfig,
+        stateWritebackLlmClient: options.stateWritebackLlmClient,
+        stateWritebackFallbackApiConfig: options.stateWritebackFallbackApiConfig,
+        stateWritebackFallbackLlmClient: options.stateWritebackFallbackLlmClient,
+        signal: options.signal,
+      });
   options.signal?.throwIfAborted();
 
-  const ledgerCompliance = await reconcileOpeningLedgerCompliance({
-    worldBook,
-    initialState: runtimeState,
-    openingState: traitCompliance.state,
-    openingNarrativeText: result.narrativeText,
-    apiConfig: options.apiConfig,
-    llmClient: options.llmClient,
-    signal: options.signal,
-  });
+  const ledgerCompliance = options.featureExecutionModes?.stateWriteback === 'bundledMain'
+    ? { state: traitCompliance.state, notes: [], rawContent: '', usage: undefined, appliedPatches: [] }
+    : await reconcileOpeningLedgerCompliance({
+        worldBook,
+        initialState: runtimeState,
+        openingState: traitCompliance.state,
+        openingNarrativeText: result.narrativeText,
+        apiConfig: options.apiConfig,
+        llmClient: options.llmClient,
+        signal: options.signal,
+      });
   options.signal?.throwIfAborted();
 
   const newRuntimeState = JSON.parse(JSON.stringify(ledgerCompliance.state)) as RuntimeState;

@@ -7,6 +7,10 @@ import type {
   RuntimeState,
 } from '../engine/types';
 import {
+  abilityMechanicsSummary,
+  compileUniqueArtAbilityMechanics,
+} from '../engine/abilities/AbilityMechanics';
+import {
   UNIQUE_ART_RARITY_LABELS,
   buildUniqueArtTooltipTitle,
   formatKnownSourceLabel,
@@ -63,6 +67,8 @@ export interface UniqueArtPanelDetail extends UniqueArtPanelRosterItem {
   checkHookRows: UniqueArtPanelCheckHookRow[];
   tags: string[];
   tooltip: string;
+  mechanicsSummary?: string;
+  lastExecutionSummary?: string;
 }
 
 export interface UniqueArtPanelProgressHistoryRow {
@@ -183,6 +189,10 @@ function buildDetail(
   const instructorName = acquisition?.instructorNpcId
     ? state.npcs?.find((npc) => npc.npcId === acquisition.instructorNpcId)?.name
     : undefined;
+  const mechanicsSummary = abilityMechanicsSummary(compileUniqueArtAbilityMechanics(art));
+  const lastExecution = [...(state.abilityRuleExecutions ?? [])]
+    .reverse()
+    .find((entry) => entry.sourceAbilityId === art.id);
   return {
     ...item,
     description: hasText(art.description) ? art.description.trim() : '暂无说明。',
@@ -209,6 +219,8 @@ function buildDetail(
     })),
     tags: (art.tags ?? []).filter(hasText).map((tag) => tag.trim()),
     tooltip: buildUniqueArtTooltipTitle(art),
+    ...(mechanicsSummary ? { mechanicsSummary } : {}),
+    ...(lastExecution ? { lastExecutionSummary: `${lastExecution.occurredAt} · ${lastExecution.summary}` } : {}),
   };
 }
 

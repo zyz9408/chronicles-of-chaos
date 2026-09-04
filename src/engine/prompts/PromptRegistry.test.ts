@@ -180,9 +180,9 @@ describe('PromptRegistry', () => {
   it('documents structured troop fatigue recovery instead of prose inference', () => {
     const entry = getPromptRegistry().find((item) => item.id === 'main.stateWriterProtocol');
 
-    expect(entry?.defaultContentTemplate).toContain('复用稳定 troopId 更新 fatigue');
-    expect(entry?.defaultContentTemplate).toContain('真实经过的休整时间且补给可用');
-    expect(entry?.defaultContentTemplate).toContain('不得直接编造 warFatiguePercent');
+    expect(entry?.defaultContentTemplate).toContain('复用稳定 troopId 更新 activityTempo');
+    expect(entry?.defaultContentTemplate).toContain('只有确实进入连续休整才写 resting');
+    expect(entry?.defaultContentTemplate).toContain('不得直接编造或降低 fatigue/warFatiguePercent');
   });
 
   it('keeps female profile protocol explicit about long-term private anchors', () => {
@@ -481,13 +481,14 @@ describe('PromptRegistry', () => {
     expect(commonProtocol?.defaultContentTemplate).toContain('未进入成人场景时完全忽略本协议');
     expect(commonProtocol?.defaultContentTemplate).toContain('乳房、乳头、阴茎、龟头、阴蒂、阴唇、阴道、肛门、精液');
     expect(commonProtocol?.defaultContentTemplate).toContain('只有人物对白、身份和现场语气确实粗俗时');
-    expect(commonProtocol?.defaultContentTemplate).toContain('奶子、小穴、逼、鸡巴、屁眼');
+    expect(commonProtocol?.defaultContentTemplate).toContain('才使用相应口语');
     expect(commonProtocol?.defaultContentTemplate).not.toContain('蜜液');
-    expect(commonProtocol?.defaultContentTemplate).toContain('不要把这些项目写成逐项检查表');
-    expect(commonProtocol?.defaultContentTemplate).toContain('不用固定的景物、器物或身体轮廓意象代替实际部位与动作');
+    expect(commonProtocol?.defaultContentTemplate).toContain('不做重复的感官检查表');
+    expect(commonProtocol?.defaultContentTemplate).toContain('用作实际部位与动作的替代称呼');
     expect(commonProtocol?.defaultContentTemplate).toContain('白腻、雪乳、红梅、蓓蕾、花心、花径、花穴、甬道、蜜壶、玉峰、肉刃、天鹅颈、弓起如满弓');
     expect(commonProtocol?.defaultContentTemplate).toContain('不做脱离上下文的全局禁词');
-    expect(commonProtocol?.defaultContentTemplate).toContain('同一身体部位在同一段动作中使用一个符合场景的稳定称谓');
+    expect(commonProtocol?.defaultContentTemplate).toContain('每回合只推进一个有意义的亲密阶段');
+    expect(commonProtocol?.defaultContentTemplate).toContain('动作或试探—对方可观察的身体、言语或选择回应');
     expect(commonProtocol?.defaultContentTemplate).toContain('私密档案只提供事实连续性，不是文风范本');
     expect(commonProtocol?.defaultContentTemplate).toContain('当前剧情事实 > 当前人物状态 > 私密档案事实锚点 > 本协议');
     expect(commonProtocol?.defaultContentTemplate).not.toContain('动作—接触变化—可观察反馈—顺势调整—关系或局面变化');

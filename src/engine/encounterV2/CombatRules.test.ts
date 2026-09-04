@@ -7,6 +7,10 @@ import {
   calculateDerivedSpeed,
   calculateHitChance,
   calculateNormalAttackDamage,
+  calculateV21BlockChance,
+  calculateV21HitChance,
+  calculateV21NormalAttackDamage,
+  calculateV21ScopedDamageCap,
   calculateRetreatChance,
   canStabilizeAlly,
 } from './CombatRules';
@@ -27,6 +31,35 @@ describe('CombatRules', () => {
       attackerMartial: 1, defenderMartial: 100, weaponAccuracy: -50,
       attackerAccuracy: -50, defenderEvasion: 50, attackerLuck: 1, defenderLuck: 100,
     })).toBe(25);
+  });
+
+  it('gives Combat V2.1 martial and intelligence separate bounded hit contributions', () => {
+    expect(calculateV21HitChance({
+      attackerMartial: 80, defenderMartial: 60,
+      attackerIntelligence: 70, defenderIntelligence: 50,
+      weaponAccuracy: 0, attackerAccuracy: 0, defenderEvasion: 0,
+      attackerLuck: 50, defenderLuck: 50,
+    })).toBe(94);
+    expect(calculateV21HitChance({
+      attackerMartial: 0, defenderMartial: 100,
+      attackerIntelligence: 0, defenderIntelligence: 100,
+      weaponAccuracy: -50, attackerAccuracy: -50, defenderEvasion: 50,
+      attackerLuck: 0, defenderLuck: 100,
+    })).toBe(20);
+  });
+
+  it('gives Combat V2.1 intelligence a defensive read and lets martial raise scoped damage caps', () => {
+    expect(calculateV21BlockChance({
+      attackerMartial: 70, defenderMartial: 70,
+      attackerIntelligence: 50, defenderIntelligence: 75,
+      equipmentBlock: 0, defenderBlock: 0, defendActionBonus: 0, attackerPenetration: 0,
+    })).toBe(14);
+    expect(calculateV21NormalAttackDamage({
+      weaponBaseDamage: 20, attackerMartial: 80, flatDamage: 0, randomVariance: 1,
+      critical: false, blocked: true, defenderWasDefending: false, armorTier: 0,
+    })).toBe(13);
+    expect(calculateV21ScopedDamageCap(SCOPED_NORMAL_ATTACK_DAMAGE_CAP.rabble, 100)).toBe(24);
+    expect(calculateV21ScopedDamageCap(SCOPED_NORMAL_ATTACK_DAMAGE_CAP.elite, 0)).toBe(22);
   });
 
   it('calculates block and critical boundaries exactly', () => {

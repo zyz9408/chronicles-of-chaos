@@ -1,4 +1,5 @@
 import type { CharacterUniqueArt, RuntimeState } from '../types';
+import { augmentUniqueArtProjectionWithAuthoredRules } from '../abilities/AbilityRuleEngine';
 import { normalizeUniqueArtRarity } from '../character/NpcUniqueArtPolicy';
 import {
   SEMANTIC_PROJECTION_VERSION,
@@ -403,7 +404,7 @@ export function materializeLevelledUniqueArtProjection(
   const staminaDiscount = Math.min(0.14, (level - 1) * 0.015);
   const accuracyBonus = Math.floor((level - 1) / 2) + Math.floor(artRarityRank(art) / 2);
 
-  return {
+  const materialized: UniqueArtSemanticProfile = {
     ...clone(profile),
     powerClass: useAggressiveWarScaling
       ? aggressivePowerClass
@@ -428,4 +429,5 @@ export function materializeLevelledUniqueArtProjection(
       useAggressiveWarScaling ? warEffectFactor : factor,
     )),
   };
+  return augmentUniqueArtProjectionWithAuthoredRules(art as CharacterUniqueArt, materialized);
 }

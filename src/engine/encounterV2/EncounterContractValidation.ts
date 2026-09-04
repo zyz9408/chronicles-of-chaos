@@ -1,6 +1,6 @@
 import {
   AGGRESSIVE_WAR_RULESET_VERSION,
-  COMBAT_RULESET_VERSION,
+  SUPPORTED_COMBAT_RULESET_VERSIONS,
   ENCOUNTER_CONTRACT_VERSION,
   ENCOUNTER_ENVIRONMENT_TAGS,
   ENCOUNTER_SCOPED_ARMOR_CLASSES,
@@ -299,8 +299,8 @@ export function validateEncounterStartIntent(value: unknown): EncounterValidatio
   validateEncounterPolicy(value.policy, errors);
 
   if (value.kind === 'personal_combat') {
-    if (value.rulesetVersion !== COMBAT_RULESET_VERSION) {
-      errors.push(`personal_combat.rulesetVersion 必须为 ${COMBAT_RULESET_VERSION}。`);
+    if (!(SUPPORTED_COMBAT_RULESET_VERSIONS as readonly unknown[]).includes(value.rulesetVersion)) {
+      errors.push(`personal_combat.rulesetVersion 必须为 ${SUPPORTED_COMBAT_RULESET_VERSIONS.join(' / ')}。`);
     }
     const playerParty = isRecord(value.playerParty) ? value.playerParty : undefined;
     const enemyParty = isRecord(value.enemyParty) ? value.enemyParty : undefined;
@@ -768,8 +768,8 @@ function validateDeltas(value: unknown, errors: string[]): void {
 }
 
 function validateCombatResult(value: Record<string, unknown>, errors: string[]): void {
-  if (value.rulesetVersion !== COMBAT_RULESET_VERSION) {
-    errors.push(`personal_combat.rulesetVersion 必须为 ${COMBAT_RULESET_VERSION}。`);
+  if (!(SUPPORTED_COMBAT_RULESET_VERSIONS as readonly unknown[]).includes(value.rulesetVersion)) {
+    errors.push(`personal_combat.rulesetVersion 必须为 ${SUPPORTED_COMBAT_RULESET_VERSIONS.join(' / ')}。`);
   }
   if (!Array.isArray(value.combatants)) {
     errors.push('combatants 必须是数组。');

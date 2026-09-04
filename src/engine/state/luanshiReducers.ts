@@ -26,7 +26,10 @@ import { claimsReservedSystemDomesticReportIdentity } from '../domesticReports';
 import { normalizeConflictJudgement } from '../conflict/WarJudgementScore';
 import { clampReputationScore } from '../character/reputation';
 import { mergeStableCharacterUniqueArts } from '../character/NpcUniqueArtPolicy';
-import { normalizeCharacterTraits } from '../character/CharacterTraitNormalization';
+import {
+  mergePlayerTraitsPreservingAuthority,
+  normalizeCharacterTraits,
+} from '../character/CharacterTraitNormalization';
 import { optionalSanitizedCombatReportField } from '../combat/combatReportText';
 import { calculateInitialSiegeEnduranceTurns } from '../holdings/HoldingSiegeSupply';
 import {
@@ -106,6 +109,7 @@ import {
   characterHasConsumedUniqueArtProgressSource,
   characterHasUniqueArtProgressEvent,
 } from '../character/UniqueArtProgression';
+import { resolveLearningProgressPolicy } from '../abilities/AbilityRuleEngine';
 import { findHeroineThreadByIdentity } from './HeroineThreadIdentity';
 import { isCanonicalLedgerShadowResourceKey } from './resourceLedgerIdentity';
 import {
@@ -577,6 +581,7 @@ function applyTroopLedgerUpsert(
     ...optionalEnumField('quality', normalizeTroopQuality(command.quality)),
     ...optionalEnumField('fatigue', normalizedFatigue),
     ...(normalizedFatigue ? { warFatiguePercent: troopFatiguePercentFromBand(normalizedFatigue) } : {}),
+    ...optionalEnumField('activityTempo', command.activityTempo),
     ...optionalEnumField('readiness', normalizeTroopReadiness(command.readiness)),
     ...optionalEnumField('lifecycleStatus', command.lifecycleStatus),
     ...(command.statusTags && command.statusTags.length > 0 ? { statusTags: cleanStringList(command.statusTags) } : {}),
@@ -2077,7 +2082,8 @@ function applyPlayerTraitsUpdate(
   state: NormalizedLuanShiState,
   command: PlayerTraitsUpdateCommand,
 ): NormalizedLuanShiState {
-  const traits = normalizeCharacterTraits(command.traits).map(clonePlayerTrait);
+  const traits = mergePlayerTraitsPreservingAuthority(state.player.traits, command.traits)
+    .map(clonePlayerTrait);
   const openingTraitDetails = traits.map((trait) => ({
     id: trait.id,
     label: trait.label,
@@ -2171,7 +2177,10 @@ function applyCharacterUniqueArtProgressRecord(
     }
     const artIndex = arts.findIndex((art) => art.id === command.artId.trim());
     if (artIndex < 0) return { arts, applied: false };
-    const result = applyUniqueArtProgressEvidence(arts[artIndex], command, turnKey);
+    const learningPolicy = command.characterType === 'player'
+      ? resolveLearningProgressPolicy(state.player.traits)
+      : undefined;
+    const result = applyUniqueArtProgressEvidence(arts[artIndex], command, turnKey, learningPolicy);
     if (!result.applied) return { arts, applied: false };
     arts[artIndex] = result.art;
     return { arts, applied: true };

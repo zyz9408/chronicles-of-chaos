@@ -10,6 +10,7 @@ import {
   AGGRESSIVE_WAR_RULESET_VERSION,
   BALANCED_WAR_RULESET_VERSION,
   LEGACY_WAR_RULESET_VERSION,
+  REBALANCED_WAR_RULESET_VERSION,
   THEATER_WAR_RULESET_VERSION,
   WAR_RULESET_VERSION,
   type EncounterActionLogEntry,
@@ -29,6 +30,8 @@ import {
   calculateWarEffectiveStrength,
   calculateWarRetreatChance,
   calculateWarShockMoralePenalty,
+  calculateWarIntelligenceTacticFactor,
+  calculateWarMartialPressureFactor,
   clampWarValue,
   compareWarTactics,
   resolveWarEngagedStrengths,
@@ -161,15 +164,22 @@ function usesWarV22(state: WarEngineState): boolean {
   return state.snapshot.intent.rulesetVersion === BALANCED_WAR_RULESET_VERSION
     || state.snapshot.intent.rulesetVersion === THEATER_WAR_RULESET_VERSION
     || state.snapshot.intent.rulesetVersion === AGGRESSIVE_WAR_RULESET_VERSION
+    || state.snapshot.intent.rulesetVersion === REBALANCED_WAR_RULESET_VERSION
     || state.snapshot.intent.rulesetVersion === WAR_RULESET_VERSION;
 }
 
 function usesAggressiveCommandModel(state: WarEngineState): boolean {
   return state.snapshot.intent.rulesetVersion === AGGRESSIVE_WAR_RULESET_VERSION
+    || state.snapshot.intent.rulesetVersion === REBALANCED_WAR_RULESET_VERSION
     || state.snapshot.intent.rulesetVersion === WAR_RULESET_VERSION;
 }
 
 function usesRebalancedCommandModel(state: WarEngineState): boolean {
+  return state.snapshot.intent.rulesetVersion === REBALANCED_WAR_RULESET_VERSION
+    || state.snapshot.intent.rulesetVersion === WAR_RULESET_VERSION;
+}
+
+function usesAttributeCommandModel(state: WarEngineState): boolean {
   return state.snapshot.intent.rulesetVersion === WAR_RULESET_VERSION;
 }
 
@@ -208,6 +218,45 @@ function commanderMoraleDelta(state: WarEngineState, side: EncounterSide): numbe
   const coefficient = usesRebalancedCommandModel(state) ? 1.2 : 1.5;
   const limit = usesRebalancedCommandModel(state) ? 3 : 4;
   return Math.round(clampWarValue(advantage * coefficient, -limit, limit));
+}
+
+function intelligenceTacticFactor(
+  state: WarEngineState,
+  side: EncounterSide,
+  order: WarRoundOrder,
+): number {
+  if (!usesAttributeCommandModel(state)) return 1;
+  const own = state.snapshot.commanders[side]?.intelligence ?? 50;
+  const enemy = state.snapshot.commanders[otherSide(side)]?.intelligence ?? 50;
+  return calculateWarIntelligenceTacticFactor({
+    ownIntelligence: own,
+    enemyIntelligence: enemy,
+    tactic: coefficientTactic(order),
+  });
+}
+
+function martialPressureFactor(
+  state: WarEngineState,
+  side: EncounterSide,
+  order: WarRoundOrder,
+): number {
+  if (!usesAttributeCommandModel(state)) return 1;
+  const own = state.snapshot.commanders[side]?.martial ?? 50;
+  const enemy = state.snapshot.commanders[otherSide(side)]?.martial ?? 50;
+  return calculateWarMartialPressureFactor({
+    ownMartial: own,
+    enemyMartial: enemy,
+    tactic: coefficientTactic(order),
+  });
+}
+
+function martialMoralePressure(
+  state: WarEngineState,
+  attackingSide: EncounterSide,
+  order: WarRoundOrder,
+): number {
+  const factor = martialPressureFactor(state, attackingSide, order);
+  return factor <= 1 ? 0 : Math.round(clampWarValue((factor - 1) * 50, 0, 5));
 }
 
 function sideCommandSources(state: WarEngineState, side: EncounterSide) {
@@ -556,6 +605,14 @@ function sideCoordination(state: WarEngineState, side: EncounterSide): number {
         ? 10
         : commander.leadershipKnown ? commander.leadership : 25;
       if (usesRebalancedCommandModel(state)) {
+        if (usesAttributeCommandModel(state)) {
+          const intelligence = commander?.intelligence ?? 50;
+          return snapshot.training * 0.25
+            + snapshot.readiness * 0.15
+            + force.morale * 0.15
+            + leadership * 0.30
+            + intelligence * 0.15;
+        }
         return snapshot.training * 0.29
           + snapshot.readiness * 0.18
           + force.morale * 0.17
@@ -633,7 +690,7 @@ function engagedStrengths(
     'player',
     orders.player,
     orders.enemy,
-    counters.playerModifier,
+    counters.playerModifier * intelligenceTacticFactor(state, 'player', orders.player),
     semanticModifiers.player,
   );
   const enemyRawStrength = sideRawEffectiveStrength(
@@ -641,7 +698,7 @@ function engagedStrengths(
     'enemy',
     orders.enemy,
     orders.player,
-    counters.enemyModifier,
+    counters.enemyModifier * intelligenceTacticFactor(state, 'enemy', orders.enemy),
     semanticModifiers.enemy,
   );
   if (!usesWarV22(state)) {
@@ -864,6 +921,10 @@ export function executeWarRound(input: WarEngineState, orders: WarRoundOrders): 
   const playerCoefficients = sideTacticCoefficients(state, 'player', orders.player);
   const enemyCoefficients = sideTacticCoefficients(state, 'enemy', orders.enemy);
   const counters = compareWarTactics(orderTactic(orders.player), orderTactic(orders.enemy));
+  const playerIntelligenceFactor = intelligenceTacticFactor(state, 'player', orders.player);
+  const enemyIntelligenceFactor = intelligenceTacticFactor(state, 'enemy', orders.enemy);
+  const playerMartialPressure = martialPressureFactor(state, 'player', orders.player);
+  const enemyMartialPressure = martialPressureFactor(state, 'enemy', orders.enemy);
   const effective = engagedStrengths(state, orders, counters, preEffects.effectiveStrength);
   const warDifficultyProfile = getEncounterDifficultyProfile('war', state.snapshot.warDifficulty);
   const playerEffective = effective.player * warDifficultyProfile.playerPowerMultiplier;
@@ -877,7 +938,8 @@ export function executeWarRound(input: WarEngineState, orders: WarRoundOrders): 
     ownExposure: playerCoefficients.exposure,
     perturbation: playerPerturbation,
     semanticModifierPercent: preEffects.casualtyRate.player,
-    commanderModifierPercent: commanderCasualtyModifierPercent(state, 'player'),
+    commanderModifierPercent: commanderCasualtyModifierPercent(state, 'player')
+      + (enemyMartialPressure - 1) * 100,
   });
   const enemyCasualtyRate = calculateWarCasualtyRate({
     enemyEffectiveStrength: playerEffective,
@@ -886,7 +948,8 @@ export function executeWarRound(input: WarEngineState, orders: WarRoundOrders): 
     ownExposure: enemyCoefficients.exposure,
     perturbation: enemyPerturbation,
     semanticModifierPercent: preEffects.casualtyRate.enemy,
-    commanderModifierPercent: commanderCasualtyModifierPercent(state, 'enemy'),
+    commanderModifierPercent: commanderCasualtyModifierPercent(state, 'enemy')
+      + (playerMartialPressure - 1) * 100,
   });
   const roundWinner: EncounterSide | undefined = playerEffective > enemyEffective * 1.02
     ? 'player'
@@ -960,6 +1023,9 @@ export function executeWarRound(input: WarEngineState, orders: WarRoundOrders): 
     if (counters.winner && counters.winner !== force.side) moraleDelta -= v22 ? 3 : 2;
     if (force.supply < 25) moraleDelta -= 2;
     moraleDelta += commanderMoraleDelta(state, force.side);
+    moraleDelta -= force.side === 'player'
+      ? martialMoralePressure(state, 'enemy', orders.enemy)
+      : martialMoralePressure(state, 'player', orders.player);
     force.morale = Math.round(clampWarValue(force.morale + moraleDelta, 0, 100));
   }
 
@@ -981,6 +1047,10 @@ export function executeWarRound(input: WarEngineState, orders: WarRoundOrders): 
       enemyOrder: orderKey(orders.enemy),
       playerCommanderFactor: commanderFactor(state, 'player'),
       enemyCommanderFactor: commanderFactor(state, 'enemy'),
+      playerIntelligenceTacticFactorBps: Math.round(playerIntelligenceFactor * 10_000),
+      enemyIntelligenceTacticFactorBps: Math.round(enemyIntelligenceFactor * 10_000),
+      playerMartialPressureBps: Math.round(playerMartialPressure * 10_000),
+      enemyMartialPressureBps: Math.round(enemyMartialPressure * 10_000),
       playerEffective: Math.round(playerEffective),
       enemyEffective: Math.round(enemyEffective),
       warDifficulty: warDifficultyProfile.id,

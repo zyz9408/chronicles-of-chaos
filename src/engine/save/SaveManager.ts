@@ -910,6 +910,7 @@ const OPTIONAL_RUNTIME_ARRAY_FIELDS = [
   'bondThreads',
   'correspondence',
   'correspondenceCommitments',
+  'abilityRuleExecutions',
 ] as const;
 
 const OPTIONAL_RUNTIME_RECORD_FIELDS = [
@@ -1578,10 +1579,16 @@ async function ensureSaveSummaryIndexReady(): Promise<void> {
 
 function buildSave(runtimeState: RuntimeState, label: string | undefined, saveKind: SaveKind): SaveData {
   const now = new Date().toISOString();
+  const id = uuidv4();
   const migration = migrateRuntimeStateForPersistence(runtimeState);
   const normalizedState = compactRuntimeStateForPersistence(migration.state);
+  normalizedState.avgPresentation = {
+    ...normalizedState.avgPresentation,
+    visualPartitionId: normalizedState.avgPresentation?.visualPartitionId?.trim() || id,
+    portraitBindings: normalizedState.avgPresentation?.portraitBindings ?? [],
+  };
   return {
-    id: uuidv4(),
+    id,
     label: label ?? `存档 ${new Date().toLocaleString('zh-CN')}`,
     saveKind,
     createdAt: now,
@@ -1602,6 +1609,11 @@ function buildSave(runtimeState: RuntimeState, label: string | undefined, saveKi
 function buildUpdatedSave(existing: SaveData, runtimeState: RuntimeState): SaveData {
   const migration = migrateRuntimeStateForPersistence(runtimeState);
   const normalizedState = compactRuntimeStateForPersistence(migration.state);
+  normalizedState.avgPresentation = {
+    ...normalizedState.avgPresentation,
+    visualPartitionId: normalizedState.avgPresentation?.visualPartitionId?.trim() || existing.id,
+    portraitBindings: normalizedState.avgPresentation?.portraitBindings ?? [],
+  };
   return buildNormalizedSaveData({
     ...existing,
     engineVersion: CURRENT_RUNTIME_STATE_VERSION,

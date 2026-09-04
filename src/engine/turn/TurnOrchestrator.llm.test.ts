@@ -16,6 +16,8 @@ import type { NarratorNpcProfileSuggestion, NarratorWritebackProtocol } from './
 import { stageWarEncounter } from '../encounterV2/WarRuntimeIntegration';
 import { makeWarTroop } from '../encounterV2/WarTestFixtures';
 import type { WarStartIntent } from '../encounterV2/EncounterContracts';
+import { inspectStateWritebackRecovery } from '../state/StateWritebackRecovery';
+import { createStateWritebackRecoveryVerification } from '../state/StateWritebackRecoveryService';
 
 const worldBook: WorldBook = {
   manifest: {
@@ -641,6 +643,13 @@ describe('executeTurn LLM integration', () => {
     expect(result.memoryVectorRetrieval?.retrievedMemories.map((memory) => `${memory.retrievalMode}:${memory.sourceId}`))
       .toContain('vector:mem_vector_only');
     expect(result.memoryVectorRetrieval?.status).toBe('vector');
+    expect(result.turnDisplayMeta.processingStages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'retrievingMemory',
+        status: 'finished',
+        memoryRetrieval: expect.objectContaining({ status: 'vector', vectorHitCount: 1 }),
+      }),
+    ]));
     expect(sentMessages).toContain('VECTOR_TURN_RETRIEVAL_SENTINEL');
     expect(result.memoryContextPackage.retrievedMemories.map((memory) => `${memory.retrievalMode}:${memory.sourceId}`))
       .toContain('vector:mem_vector_only');
@@ -6872,5 +6881,93 @@ describe('executeTurn LLM integration', () => {
 
     expect(result.memorySummary?.apiTaskId).toBe('mainNarrative');
     expect(result.newRuntimeState.turnLog[35].statePatchSummary).toContain('memorySummary[mainNarrative]');
+  });
+
+  it('keeps bundled-main features inside the single narrative request', async () => {
+    const llmClient = {
+      generate: vi.fn().mockResolvedValue({
+        content: JSON.stringify({
+          protocolVersion: 'lsfy.turn.v1',
+          narrativeText: '你在城门前问清道路，随即整束衣冠，准备继续赶路。',
+          suggestedActions: [],
+          statePatches: [{
+            type: 'timeAdvance',
+            payload: { minutesAdvanced: 15, reason: '问路', category: 'conversation' },
+            reason: '问路耗时',
+          }],
+          statePatch: null,
+          writeback: { presentationSpeakerFacts: [] },
+          bundledFeatures: { protocolVersion: 'coc.v2.bundledMain.v1' },
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'main-model',
+      }),
+    };
+    const result = await executeTurn(worldBook, makeState(), '向门候问路', {
+      apiConfig,
+      llmClient,
+      deferMemorySummaryCompression: true,
+      featureExecutionModes: {
+        revision: 1,
+        stateWriteback: 'bundledMain',
+        npcCompletion: 'bundledMain',
+        npcSimulation: 'bundledMain',
+        worldEvolution: 'bundledMain',
+        memorySummary: 'bundledMain',
+      },
+    });
+
+    expect(llmClient.generate).toHaveBeenCalledTimes(1);
+    const request = llmClient.generate.mock.calls[0]?.[0] as LlmGenerateRequest;
+    expect(request.messages.map((message) => message.content).join('\n')).toContain('coc.v2.bundledMain.v1');
+    expect(result.newRuntimeState.turnLog).toHaveLength(1);
+  });
+
+  it('persists ready tamper-evident recovery evidence when one bundled domain is quarantined', async () => {
+    const llmClient = {
+      generate: vi.fn().mockResolvedValue({
+        content: JSON.stringify({
+          narrativeText: '你等候通报，正文已经完成，但状态候选含有旧协议字段。',
+          suggestedActions: [],
+          statePatches: [
+            { type: 'timeAdvance', payload: { minutesAdvanced: 30, reason: '等候', category: 'waiting' }, reason: '等候耗时' },
+            {
+              type: 'resourceChanged',
+              payload: { resource: 'supplyCredit', mode: 'delta', change: -2, newValue: 8 },
+              reason: '模型同时给出增量与绝对值',
+            },
+          ],
+          bundledFeatures: { protocolVersion: 'coc.v2.bundledMain.v1' },
+        }),
+        provider: 'openai_compatible' as const,
+        model: 'main-model',
+      }),
+    };
+    const result = await executeTurn(worldBook, makeState(), '等候通报', {
+      apiConfig,
+      llmClient,
+      featureExecutionModes: {
+        revision: 1,
+        stateWriteback: 'bundledMain', npcCompletion: 'bundledMain', npcSimulation: 'bundledMain',
+        worldEvolution: 'bundledMain', memorySummary: 'bundledMain',
+      },
+    });
+
+    expect(llmClient.generate).toHaveBeenCalledTimes(1);
+    expect(result.patchValidation).toMatchObject({ valid: true, errors: [] });
+    expect(result.statePatches).toHaveLength(1);
+    expect(result.statePatches?.[0]?.type).toBe('timeAdvance');
+    expect(result.newRuntimeState.stateWritebackRecovery).toMatchObject({
+      schemaVersion: 2,
+      status: 'pending',
+      frozenNarrativeText: '你等候通报，正文已经完成，但状态候选含有旧协议字段。',
+      quarantinedPatchIndexes: [1],
+    });
+    expect(result.newRuntimeState.turnLog[0].displayMeta?.stateWritebackRecoveryAnchor?.capsuleId)
+      .toBe(result.newRuntimeState.stateWritebackRecovery?.capsuleId);
+    expect(inspectStateWritebackRecovery(
+      result.newRuntimeState,
+      createStateWritebackRecoveryVerification(worldBook),
+    ).status).toBe('ready');
   });
 });

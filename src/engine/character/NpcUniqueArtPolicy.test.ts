@@ -116,6 +116,25 @@ describe('NpcUniqueArtPolicy', () => {
     });
   });
 
+  it('keeps a frozen authored rule when later writeback changes its prose', () => {
+    const existing = makeArt({
+      id: 'art_full_heal',
+      name: '万象回春',
+      description: '每次使用必定恢复所有生命。',
+      effectSummary: '恢复所有生命。',
+    });
+    const first = mergeStableNpcUniqueArts([existing], []);
+    const merged = mergeStableNpcUniqueArts(first, [{
+      ...existing,
+      description: '后续模型将它改写为普通疗伤。',
+      effectSummary: '少量恢复生命。',
+    }]);
+
+    expect(merged[0].mechanics?.rules[0].effects).toEqual([
+      expect.objectContaining({ type: 'restore_to_max', resource: 'hp' }),
+    ]);
+  });
+
   it('self-heals duplicate arts already persisted under drifted IDs', () => {
     const merged = mergeStableNpcUniqueArts([
       makeArt({

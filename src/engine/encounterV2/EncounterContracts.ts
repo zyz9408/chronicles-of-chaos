@@ -1,19 +1,26 @@
 export const ENCOUNTER_CONTRACT_VERSION = 1 as const;
 export const SEMANTIC_PROJECTION_VERSION = 1 as const;
 
-export const COMBAT_RULESET_VERSION = 'combat-v2.0.0' as const;
+export const LEGACY_COMBAT_RULESET_VERSION = 'combat-v2.0.0' as const;
+export const COMBAT_RULESET_VERSION = 'combat-v2.1.0' as const;
+export const SUPPORTED_COMBAT_RULESET_VERSIONS = [
+  LEGACY_COMBAT_RULESET_VERSION,
+  COMBAT_RULESET_VERSION,
+] as const;
 export const LEGACY_WAR_RULESET_VERSION = 'war-v2.0.0' as const;
 export const COMMAND_WAR_RULESET_VERSION = 'war-v2.1.0' as const;
 export const BALANCED_WAR_RULESET_VERSION = 'war-v2.2.0' as const;
 export const THEATER_WAR_RULESET_VERSION = 'war-v2.3.0' as const;
 export const AGGRESSIVE_WAR_RULESET_VERSION = 'war-v2.4.0' as const;
-export const WAR_RULESET_VERSION = 'war-v2.5.0' as const;
+export const REBALANCED_WAR_RULESET_VERSION = 'war-v2.5.0' as const;
+export const WAR_RULESET_VERSION = 'war-v2.6.0' as const;
 export const SUPPORTED_WAR_RULESET_VERSIONS = [
   LEGACY_WAR_RULESET_VERSION,
   COMMAND_WAR_RULESET_VERSION,
   BALANCED_WAR_RULESET_VERSION,
   THEATER_WAR_RULESET_VERSION,
   AGGRESSIVE_WAR_RULESET_VERSION,
+  REBALANCED_WAR_RULESET_VERSION,
   WAR_RULESET_VERSION,
 ] as const;
 
@@ -36,6 +43,7 @@ export const ENCOUNTER_ENVIRONMENT_TAGS = [
 ] as const;
 
 export const SEMANTIC_EFFECT_TRIGGERS = [
+  'on_unique_art_use',
   'after_runtime_turn',
   'battle_start',
   'round_start',
@@ -83,6 +91,8 @@ export const SEMANTIC_EFFECT_OPERATIONS = [
   'modify_stamina_cost',
   'restore_hp',
   'restore_stamina',
+  'restore_hp_to_max',
+  'restore_stamina_to_max',
   'apply_status',
   'remove_status',
   'extra_attack',
@@ -145,8 +155,9 @@ export type EncounterKind = 'personal_combat' | 'war';
  * depend on prose matching or on opening an encounter first.
  */
 export type EncounterRulesetScope = EncounterKind | 'runtime_turn';
+export type CombatRulesetVersion = typeof SUPPORTED_COMBAT_RULESET_VERSIONS[number];
 export type WarRulesetVersion = typeof SUPPORTED_WAR_RULESET_VERSIONS[number];
-export type EncounterRulesetVersion = typeof COMBAT_RULESET_VERSION | WarRulesetVersion;
+export type EncounterRulesetVersion = CombatRulesetVersion | WarRulesetVersion;
 export type EncounterSide = 'player' | 'enemy';
 export type EncounterOutcome = 'player_victory' | 'enemy_victory' | 'draw' | 'player_retreat' | 'enemy_retreat' | 'surrender';
 export type EncounterEnvironmentTag = typeof ENCOUNTER_ENVIRONMENT_TAGS[number];
@@ -214,7 +225,7 @@ interface EncounterStartIntentBase {
 
 export interface PersonalCombatStartIntent extends EncounterStartIntentBase {
   kind: 'personal_combat';
-  rulesetVersion: typeof COMBAT_RULESET_VERSION;
+  rulesetVersion: CombatRulesetVersion;
   playerParty: { actorIds: string[] };
   enemyParty: { actorIds: string[] };
   partySelection: 'player_choice' | 'locked';
@@ -438,7 +449,7 @@ interface EncounterResultBase {
 
 export interface UnsealedCombatResult extends EncounterResultBase {
   kind: 'personal_combat';
-  rulesetVersion: typeof COMBAT_RULESET_VERSION;
+  rulesetVersion: CombatRulesetVersion;
   combatants: CombatantResultState[];
   experienceAward: number;
   lootItemIds: string[];

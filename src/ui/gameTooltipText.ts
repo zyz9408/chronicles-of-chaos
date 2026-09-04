@@ -11,6 +11,7 @@ import {
   normalizeUniqueArtRarity,
 } from '../engine/character/NpcUniqueArtPolicy';
 import { normalizeCharacterTraitRarity } from '../engine/character/TraitRarity';
+import { abilityMechanicsSummary } from '../engine/abilities/AbilityMechanics';
 
 function hasText(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -172,6 +173,8 @@ export function buildTraitTooltipTitle(trait: CharacterTrait): string {
   if (trait.checkHooks?.length) {
     lines.push(`判定倾向：${trait.checkHooks.map(formatCheckHook).join('；')}`);
   }
+  const mechanics = abilityMechanicsSummary(trait.mechanics);
+  lines.push(mechanics ? `实际规则：${mechanics}` : '实际规则：仅叙事（没有可执行机械效果）');
   return lines.join('\n');
 }
 
@@ -196,6 +199,8 @@ export function buildUniqueArtTooltipTitle(art: CharacterUniqueArt): string {
   if (art.checkHooks?.length) {
     lines.push(`判定倾向：${art.checkHooks.map(formatCheckHook).join('；')}`);
   }
+  const mechanics = abilityMechanicsSummary(art.mechanics);
+  lines.push(mechanics ? `实际规则：${mechanics}` : '实际规则：使用现有标准投影或仅叙事');
   if (art.tags?.length) {
     lines.push(`标签：${art.tags.filter(hasText).map((value) => value.trim()).join('；')}`);
   }

@@ -21,7 +21,20 @@ function getMessageBuilder(): BuildTurnCompletionMessage | undefined {
   return candidate as BuildTurnCompletionMessage | undefined;
 }
 
+function getDismissibleClassifier(): ((message: string) => boolean) | undefined {
+  return (gameScreenModule as Record<string, unknown>).isDismissibleTurnCompletionMessage as
+    | ((message: string) => boolean)
+    | undefined;
+}
+
 describe('GameScreen turn completion message', () => {
+  it('makes only per-turn completion warnings dismissible', () => {
+    const classify = getDismissibleClassifier();
+    expect(classify).toBeTypeOf('function');
+    expect(classify?.('本回合已自动保存，但部分状态写回未通过校验。')).toBe(true);
+    expect(classify?.('错误：回合生成失败')).toBe(false);
+  });
+
   it('clears the status message after a clean LLM turn completes', () => {
     const buildMessage = getMessageBuilder();
     expect(buildMessage).toBeTypeOf('function');

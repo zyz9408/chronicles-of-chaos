@@ -14,8 +14,14 @@ import type {
 import { initWorldBookRegistry, listWorldBooks, getWorldBook } from '../engine/worldbook/WorldBookLoader';
 import { listStartBookmarks, getStartBookmark } from '../engine/worldbook/StartBookmarkResolver';
 import { listWorldlineKnowledgeBasesForWorldBook } from '../engine/worldline/WorldlineKnowledgeRegistry';
-import { clearAllSaves, continueLastSave, createManualSave, createSave, deleteSave, exportSaves, importSaves, loadSave, listSaves } from '../engine/save/SaveManager';
-import { createPortableSaveZip, readSaveArchiveFile } from '../engine/save/SaveArchiveZip';
+import { clearAllSaves, continueLastSave, createManualSave, createSave, deleteSave, exportSaves, loadSave, listSaves } from '../engine/save/SaveManager';
+import { createPortableSaveZip, readSaveArchiveBundleFile } from '../engine/save/SaveArchiveZip';
+import {
+  deleteUnreferencedSaveVisualPartitions,
+  exportSaveVisualPartitions,
+  importPortableSaveBundleAtomically,
+} from '../engine/avg/AvgVisualSaveIntegration';
+import { IndexedDbAvgVisualOverrideRepository } from '../engine/avg/AvgVisualOverrideRepository';
 import {
   CloudSaveApiError,
   deleteCloudSave,
@@ -975,9 +981,12 @@ export const StartScreen: React.FC = () => {
     }
 
     if (deleteConfirm.type === 'single') {
+      const previousArchive = await exportSaves();
       await deleteSave(deleteConfirm.saveId);
+      await deleteUnreferencedSaveVisualPartitions(previousArchive, await exportSaves());
     } else {
       await clearAllSaves();
+      await new IndexedDbAvgVisualOverrideRepository().clear();
     }
     setDeleteConfirm(null);
     await refreshSaveItems();
@@ -1079,12 +1088,13 @@ export const StartScreen: React.FC = () => {
   const handleExportSaves = async () => {
     try {
       const archive = await exportSaves();
-      const zipBytes = await createPortableSaveZip(archive);
+      const avgVisualPartitions = await exportSaveVisualPartitions(archive);
+      const zipBytes = await createPortableSaveZip(archive, { avgVisualPartitions });
       downloadBlobFile(
         `coc-v2-saves-${dateStamp()}.zip`,
         new Blob([copyUint8ArrayToArrayBuffer(zipBytes)], { type: 'application/zip' }),
       );
-      setSaveStatus('存档已导出为 ZIP 分包。');
+      setSaveStatus(`存档已导出为 ZIP 分包，并包含 ${avgVisualPartitions.length} 个本地 AVG 视觉分区。`);
     } catch (error) {
       setSaveStatus(`存档导出失败：${error instanceof Error ? error.message : '未知错误'}`);
     }
@@ -1096,9 +1106,9 @@ export const StartScreen: React.FC = () => {
       const file = await pickSaveArchiveFile();
       if (!isCurrentSession(generation)) return;
       if (!file) return;
-      const archive = await readSaveArchiveFile(file);
+      const bundle = await readSaveArchiveBundleFile(file);
       if (!isCurrentSession(generation)) return;
-      await importSaves(archive, { mode: 'merge' });
+      await importPortableSaveBundleAtomically(bundle);
       if (!isCurrentSession(generation)) return;
       await refreshSaveItems();
       if (!isCurrentSession(generation)) return;

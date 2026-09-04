@@ -31,6 +31,8 @@ import {
   loadNarrativeLineHeightFromStorage,
   loadNarrativeLengthFromStorage,
   loadNarrativeLengthRetryEnabledFromStorage,
+  loadNarrativePresentationFromStorage,
+  loadAvgPlayerPortraitModeFromStorage,
   loadRenderDepthFromStorage,
   loadNpcPresenceHintsEnabledFromStorage,
   loadPregnancyModeFromStorage,
@@ -41,6 +43,8 @@ import {
   saveNarrativeLineHeightToStorage,
   saveNarrativeLengthToStorage,
   saveNarrativeLengthRetryEnabledToStorage,
+  saveNarrativePresentationToStorage,
+  saveAvgPlayerPortraitModeToStorage,
   saveNpcPresenceHintsEnabledToStorage,
   savePregnancyModeToStorage,
   saveRenderDepthToStorage,
@@ -81,6 +85,7 @@ import {
 } from '../engine/settings/NarrativePerspective';
 import { NarrativePerspectiveDialog } from './NarrativePerspectiveDialog';
 import { NarrativeRegexSettingsPanel } from './NarrativeRegexSettingsPanel';
+import { AvgSettingsPanel } from './AvgSettingsPanel';
 
 const PromptRegistryPanel = React.lazy(async () => {
   const module = await import('./PromptRegistryPanel');
@@ -280,6 +285,8 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
   const [narrativeLineHeight, setNarrativeLineHeight] = useState(loadNarrativeLineHeightFromStorage);
   const [motionPreference, setMotionPreference] = useState(loadMotionPreferenceFromStorage);
   const [colorTheme, setColorTheme] = useState(loadColorThemeFromStorage);
+  const [narrativePresentation, setNarrativePresentation] = useState(loadNarrativePresentationFromStorage);
+  const [avgPlayerPortraitMode, setAvgPlayerPortraitMode] = useState(loadAvgPlayerPortraitModeFromStorage);
   const [difficultyDialogKind, setDifficultyDialogKind] = useState<'ordinary' | EncounterDifficultyKind | null>(null);
   const [isNarrativePerspectiveDialogOpen, setIsNarrativePerspectiveDialogOpen] = useState(false);
 
@@ -728,6 +735,9 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
               onClick={() => switchTab('display')}
             >
               阅读与动效
+            </button>
+            <button className={`settings-nav-item ${activeTab === 'avg' ? 'active' : ''}`} onClick={() => switchTab('avg')}>
+              AVG 演出资源
             </button>
             <button
               className={`settings-nav-item ${activeTab === 'save' ? 'active' : ''}`}
@@ -1277,6 +1287,11 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
               <NarrativeRegexSettingsPanel />
             </div>
           )}
+
+          {activeTab === 'avg' && <AvgSettingsPanel runtimeState={runtimeState} saveId={saveId}
+            narrativePresentation={narrativePresentation} playerPortraitMode={avgPlayerPortraitMode}
+            onNarrativePresentationChange={(value) => setNarrativePresentation(saveNarrativePresentationToStorage(value))}
+            onPlayerPortraitModeChange={(value) => setAvgPlayerPortraitMode(saveAvgPlayerPortraitModeToStorage(value))} />}
 
           {activeTab === 'promptTokenEstimate' && (
             <React.Suspense fallback={<div className="settings-section-loading" role="status">正在载入 Token 估算…</div>}>

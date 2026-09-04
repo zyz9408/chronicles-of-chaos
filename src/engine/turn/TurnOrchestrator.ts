@@ -64,7 +64,7 @@ import { isCurrentTroopLedgerEntry } from '../state/troopLifecycle';
 import { resolveBondTargetNpcIdsByExactName } from '../state/BondThreadIdentity';
 import { getStartBookmark } from '../worldbook/StartBookmarkResolver';
 import { getCrisisTemplate } from '../worldbook/OpeningCrisisResolver';
-import type { ApiConfigArchive } from '../settings/ApiConfigManager';
+import type { ApiConfigArchive, ApiFeatureExecutionModes } from '../settings/ApiConfigManager';
 import {
   LlmEmptyContentError,
   type EmbeddingClient,
@@ -93,8 +93,10 @@ import {
 } from '../npc/NpcIntentSimulation';
 import {
   executeRelationshipWorldEvolution,
+  selectSameTurnNpcEvolutionExclusions,
   type RelationshipWorldEvolutionResult,
 } from '../worldEvolution/RelationshipWorldEvolution';
+import { applyDeterministicTroopFatigueRecovery } from '../troops/TroopFatigueRecovery';
 import {
   buildTurnMessages,
   resolveTurnPromptCacheLayout,
@@ -118,6 +120,10 @@ import {
   applyPlayerVitalsAfterTurn,
 } from '../character/PlayerStaminaRuntime';
 import { settlePassiveUniqueArtsAfterRuntimeTurn } from '../character/PlayerPassiveUniqueArtRuntime';
+import {
+  applyPlayerLearningRulesToNewArts,
+  settlePlayerAuthoredArtUse,
+} from '../abilities/AbilityRuleEngine';
 import {
   applyPlayerExperience,
   calculateOrdinaryCheckExperienceAwards,
@@ -152,11 +158,28 @@ import type {
   SemanticProjection,
   WarStartIntent,
 } from '../encounterV2/EncounterContracts';
+import { COMBAT_RULESET_VERSION, WAR_RULESET_VERSION } from '../encounterV2/EncounterContracts';
 import type { TavernManagementSettings } from '../prompts/TavernPresetStore';
 import { advanceCorrespondenceState } from '../correspondence';
+import { createStateWritebackRecoveryCapsule } from '../state/StateWritebackRecovery';
+import {
+  applyBundledMemorySummary,
+  applyBundledWorldEvolution,
+  buildBundledMainPlan,
+  formatBundledMainProtocolForPrompt,
+  resolveBundledNpcSimulation,
+  type BundledMainPlan,
+} from './BundledMainProtocol';
+import {
+  buildAvgSpeakerRepairTargets,
+  materializeAvgSpeakerFacts,
+  mergeAvgSpeakerRepairFacts,
+  type AvgSpeakerRepairTarget,
+} from '../avg/AvgSpeakerIdentity';
 
 export interface TurnExecutionOptions {
   apiConfig?: ApiConfigArchive | null;
+  featureExecutionModes?: ApiFeatureExecutionModes;
   stateWritebackApiConfig?: ApiConfigArchive | null;
   stateWritebackFallbackApiConfig?: ApiConfigArchive | null;
   npcCompletionApiConfig?: ApiConfigArchive | null;
@@ -270,6 +293,9 @@ async function runProcessingStage<T>(
   try {
     const result = await task();
     const usage = extractStageTokenUsage(result);
+    const memoryRetrieval = stage === 'retrievingMemory'
+      ? extractMemoryRetrievalTrace(result)
+      : undefined;
     emit({
       stage,
       label,
@@ -277,6 +303,7 @@ async function runProcessingStage<T>(
       startedAt: startedAtIso,
       elapsedMs: Date.now() - startedAt,
       ...(usage ? { usage } : {}),
+      ...(memoryRetrieval ? { memoryRetrieval } : {}),
       ...meta,
     });
     return result;
@@ -294,6 +321,30 @@ async function runProcessingStage<T>(
     });
     throw error;
   }
+}
+
+function extractMemoryRetrievalTrace(
+  value: unknown,
+): TurnProcessingStageEvent['memoryRetrieval'] | undefined {
+  const candidate = value as Partial<MemoryVectorRetrievalResult> | null;
+  if (!candidate
+    || !['vector', 'localFallback', 'failedFallback'].includes(candidate.status ?? '')
+    || !Array.isArray(candidate.retrievedMemories)
+    || !candidate.refresh) return undefined;
+  const vectorHitCount = candidate.retrievedMemories.filter((entry) => entry.retrievalMode === 'vector').length;
+  const localHitCount = candidate.retrievedMemories.filter((entry) => entry.retrievalMode === 'local').length;
+  const indexCounts = candidate.status === 'failedFallback' ? {} : {
+    candidateCount: candidate.refresh.totalItemCount,
+    indexDeltaCount: candidate.refresh.deltaItemCount,
+    indexEmbeddedCount: candidate.refresh.embeddedItemCount,
+  };
+  return {
+    status: candidate.status!,
+    totalHitCount: candidate.retrievedMemories.length,
+    vectorHitCount,
+    localHitCount,
+    ...indexCounts,
+  };
 }
 
 function getErrorMessage(error: unknown): string {
@@ -405,6 +456,21 @@ export async function executeTurn(
     retrievedMemories: memoryVectorRetrieval?.retrievedMemories,
   });
 
+  const featureExecutionModes = options.featureExecutionModes ?? {
+    revision: 1,
+    stateWriteback: 'dedicated',
+    npcCompletion: 'dedicated',
+    npcSimulation: 'dedicated',
+    worldEvolution: 'dedicated',
+    memorySummary: 'dedicated',
+  } satisfies ApiFeatureExecutionModes;
+  const bundledMainPlan = buildBundledMainPlan(runtimeState, playerInput, featureExecutionModes, {
+    openingInitialization: options.openingInitialization,
+    npcSimulationEnabled: options.npcSimulationMaxNpcCount !== 0,
+    npcSimulationMaxNpcCount: options.npcSimulationMaxNpcCount,
+    worldEvolutionMaxNpcCount: options.worldEvolutionMaxNpcCount,
+  });
+
   const npcIntentSimulationStartedAt = Date.now();
   const npcIntentSimulationStartedAtIso = new Date(npcIntentSimulationStartedAt).toISOString();
   emitProcessingStage({
@@ -415,16 +481,25 @@ export async function executeTurn(
     provider: options.npcSimulationApiConfig?.provider,
     model: options.npcSimulationApiConfig?.model,
   });
-  const npcSimulationRequestBudget = options.npcSimulationApiConfig
+  const npcSimulationRequestBudget = featureExecutionModes.npcSimulation === 'dedicated'
+    && options.npcSimulationApiConfig
     ? turnLlmBudget.getAuxiliaryRequestBudget()
     : undefined;
-  const npcIntentSimulation = await executeNpcIntentSimulation(worldBook, runtimeState, playerInput, {
-      apiConfig: options.npcSimulationApiConfig ?? null,
-      llmClient: options.npcSimulationLlmClient ?? options.llmClient,
-      memoryContextPackage,
-      maxNpcCount: options.npcSimulationMaxNpcCount,
-      ...(npcSimulationRequestBudget ?? {}),
-    });
+  let npcIntentSimulation = featureExecutionModes.npcSimulation === 'bundledMain'
+    ? {
+        status: 'skipped' as const,
+        reason: bundledMainPlan.modules.npcSimulation.planned
+          ? 'scheduled in main narrative request'
+          : 'no relevant npc targets',
+        targetNpcIds: bundledMainPlan.npcSimulationTargets.map((target) => target.npcId),
+      }
+    : await executeNpcIntentSimulation(worldBook, runtimeState, playerInput, {
+        apiConfig: options.npcSimulationApiConfig ?? null,
+        llmClient: options.npcSimulationLlmClient ?? options.llmClient,
+        memoryContextPackage,
+        maxNpcCount: options.npcSimulationMaxNpcCount,
+        ...(npcSimulationRequestBudget ?? {}),
+      });
   emitProcessingStage({
     stage: 'simulatingNpcs',
     label: '模拟相关 NPC',
@@ -460,6 +535,10 @@ export async function executeTurn(
       persistentPromptGuide: options.persistentPromptGuide,
     },
   );
+  const bundledMainPrompt = options.apiConfig
+    && Object.values(bundledMainPlan.modules).some((module) => module.planned)
+    ? formatBundledMainProtocolForPrompt(bundledMainPlan)
+    : '';
 
   // 4. 获取所在地点名称
   const locationName = getLocationName(worldBook, runtimeState);
@@ -472,7 +551,9 @@ export async function executeTurn(
     runtimeState,
     currentDate: runtimeState.currentDate,
     systemPrompt: promptContext.systemPrompt,
-    userPrompt: promptContext.userPrompt,
+    userPrompt: bundledMainPrompt
+      ? `${promptContext.userPrompt}\n\n${bundledMainPrompt}`
+      : promptContext.userPrompt,
     adultIntimacyFinalReminder: promptContext.adultIntimacyFinalReminder,
     narrativeProseFinalReview: promptContext.narrativeProseFinalReview,
     narrativeLengthFinalReminder: promptContext.narrativeLengthFinalReminder,
@@ -497,6 +578,13 @@ export async function executeTurn(
   )?.elapsedMs;
   turnLlmBudget.throwIfExceeded();
   let narratorResponse = generation.response;
+  if (featureExecutionModes.npcSimulation === 'bundledMain') {
+    npcIntentSimulation = resolveBundledNpcSimulation(
+      narratorResponse,
+      bundledMainPlan,
+      runtimeState.currentDate,
+    );
+  }
   const rawStatePatches = collectStatePatches(narratorResponse);
 
   let locationPreparation = prepareNarratorLocationWriteback(
@@ -608,9 +696,47 @@ export async function executeTurn(
     patchValidation,
     invalidPatchNotes,
     quarantinedPatchNotes,
+    quarantinedSourcePatchIndexes,
+    quarantinedDomains,
     quarantineMode,
   } = statePatchTransaction;
   const statePatchTransactionFailed = statePatches.length > 0 && patchValidation?.valid === false;
+  const hasRecoverableStateWriteback = statePatchTransactionFailed || quarantinedSourcePatchIndexes.length > 0;
+  const recoveryEvidenceTransaction = hasRecoverableStateWriteback
+    ? prepareStatePatchTransaction(
+        canonicalStatePatches,
+        worldBook,
+        runtimeState,
+        { openingInitialization: options.openingInitialization },
+        npcAwareLocationState,
+        false,
+      )
+    : undefined;
+  const rejectedRecoveryDiagnostics = recoveryEvidenceTransaction
+    ? recoveryEvidenceTransaction.patchValidationResults
+        .map((validation, index) => ({
+          patchIndex: recoveryEvidenceTransaction.sourcePatchIndexes[index] ?? index,
+          errors: [...validation.errors],
+          warnings: [...validation.warnings],
+        }))
+        .filter((diagnostic) => diagnostic.errors.length > 0)
+    : [];
+  const recoveryPatchIndexes = [...new Set([
+    ...quarantinedSourcePatchIndexes,
+    ...rejectedRecoveryDiagnostics.map((diagnostic) => diagnostic.patchIndex),
+  ])].sort((left, right) => left - right);
+  const recoveryDomainMap = new Map(quarantinedDomains.map((entry) => [entry.domain, [...entry.patchIndexes]]));
+  for (const patchIndex of recoveryPatchIndexes) {
+    const patch = canonicalStatePatches[patchIndex];
+    const domain = patch ? getContinuityQuarantineDomain(patch) ?? 'other' : 'other';
+    const indexes = recoveryDomainMap.get(domain) ?? [];
+    indexes.push(patchIndex);
+    recoveryDomainMap.set(domain, indexes);
+  }
+  const recoveryQuarantinedDomains = [...recoveryDomainMap].map(([domain, patchIndexes]) => ({
+    domain,
+    patchIndexes: [...new Set(patchIndexes)].sort((left, right) => left - right),
+  }));
   const mapContinuitySalvaged = statePatchTransactionFailed
     && !locationDependencyRolledBack
     && (
@@ -720,12 +846,19 @@ export async function executeTurn(
       retryEnabled: promptContext.narrativeLengthRetryEnabled,
       ...generation.narrativeLengthRegeneration,
     },
+    presentationSpeakerFacts: narratorResponse.writeback?.presentationSpeakerFacts,
   });
   turnDisplayMeta.locationWriteback = {
     errors: locationWritebackErrors,
     routeErrors: routeWritebackErrors,
     diagnostics: locationWritebackDiagnostics,
   };
+  if (hasRecoverableStateWriteback) {
+    turnDisplayMeta.stateWriteback = {
+      recoveryStatus: 'future-recovery-available',
+      quarantinedDomains: recoveryQuarantinedDomains,
+    };
+  }
 
   newState = await runProcessingStage(
     emitProcessingStage,
@@ -784,7 +917,11 @@ export async function executeTurn(
       return copiedState;
     },
   );
-
+  newState = materializeAvgSpeakerFacts(
+    newState,
+    turnNumber,
+    narratorResponse.writeback?.presentationSpeakerFacts,
+  );
   if (locationDependencyRolledBack) {
     appendLocationWritebackRollbackSummary(newState, locationWritebackRollbackMessage);
     appendQuarantinedPeripheralSummary(newState, quarantinedPatchNotes, quarantineMode);
@@ -825,12 +962,14 @@ export async function executeTurn(
   }
 
   if (!options.openingInitialization) {
+    newState = applyPlayerLearningRulesToNewArts(newState, runtimeState);
     newState = applyPlayerVitalsAfterTurn(newState, {
       previousState: runtimeState,
       playerInput,
       actionIntent,
       recoveryKind: narratorResponse.writeback?.playerRecoveryKind,
     }).state;
+    newState = settlePlayerAuthoredArtUse(newState, playerInput);
     newState = settlePassiveUniqueArtsAfterRuntimeTurn(newState, runtimeState).state;
   }
 
@@ -879,26 +1018,60 @@ export async function executeTurn(
     if (settlementTimeline.annualMeta) {
       turnDisplayMeta.holdingAnnualSettlement = settlementTimeline.annualMeta;
     }
+  }
+
+  if (!options.openingInitialization) {
+    newState = applyDeterministicTroopFatigueRecovery(newState, {
+      previousState: runtimeState,
+      warParticipantTroopIds: encounterStartIntent?.kind === 'war'
+        ? [...encounterStartIntent.playerForce.troopIds, ...encounterStartIntent.enemyForce.troopIds]
+        : undefined,
+    }).state;
+  }
+
+  if (!statePatchTransactionFailed) {
     newState = advanceCorrespondenceState(newState, newState.currentDate).state;
     if (!options.openingInitialization) {
-      worldEvolution = await runProcessingStage(
-        emitProcessingStage,
-        'evolvingWorld',
-        '演化关系人物近况',
-        {
-          provider: options.worldEvolutionApiConfig?.provider,
-          model: options.worldEvolutionApiConfig?.model,
-        },
-        () => executeRelationshipWorldEvolution(worldBook, newState, playerInput, {
-          apiConfig: options.worldEvolutionApiConfig ?? null,
-          llmClient: options.worldEvolutionLlmClient ?? options.llmClient,
-          maxNpcCount: options.worldEvolutionMaxNpcCount,
-          excludedNpcIds: npcIntentSimulation.status === 'completed'
-            ? npcIntentSimulation.targetNpcIds
-            : [],
-          signal: options.signal,
-        }),
-      );
+      if (featureExecutionModes.worldEvolution === 'bundledMain') {
+        const sameTurnExclusions = new Set(
+          selectSameTurnNpcEvolutionExclusions(runtimeState, newState).npcIds,
+        );
+        const revalidatedPlan: BundledMainPlan = {
+          ...bundledMainPlan,
+          worldEvolutionCandidates: bundledMainPlan.worldEvolutionCandidates
+            .filter((candidate) => !sameTurnExclusions.has(candidate.npcId)),
+        };
+        worldEvolution = applyBundledWorldEvolution(
+          newState,
+          worldBook,
+          narratorResponse,
+          revalidatedPlan,
+        );
+      } else {
+        worldEvolution = await runProcessingStage(
+          emitProcessingStage,
+          'evolvingWorld',
+          '演化关系人物近况',
+          {
+            provider: options.worldEvolutionApiConfig?.provider,
+            model: options.worldEvolutionApiConfig?.model,
+          },
+          () => {
+            const sameTurnExclusions = selectSameTurnNpcEvolutionExclusions(runtimeState, newState);
+            const excludedNpcIds = new Set(sameTurnExclusions.npcIds);
+            if (npcIntentSimulation.status === 'completed') {
+              for (const npcId of npcIntentSimulation.targetNpcIds) excludedNpcIds.add(npcId);
+            }
+            return executeRelationshipWorldEvolution(worldBook, newState, playerInput, {
+              apiConfig: options.worldEvolutionApiConfig ?? null,
+              llmClient: options.worldEvolutionLlmClient ?? options.llmClient,
+              maxNpcCount: options.worldEvolutionMaxNpcCount,
+              excludedNpcIds: [...excludedNpcIds],
+              signal: options.signal,
+            });
+          },
+        );
+      }
       newState = worldEvolution.state;
       turnDisplayMeta.worldEvolution = {
         status: worldEvolution.status,
@@ -910,7 +1083,11 @@ export async function executeTurn(
         usage: worldEvolution.usage,
       };
     }
-    if (!options.deferMemorySummaryCompression) {
+    if (featureExecutionModes.memorySummary === 'bundledMain') {
+      memorySummary = applyBundledMemorySummary(newState, narratorResponse, bundledMainPlan);
+      newState = memorySummary.newState;
+      appendMemorySummaryExecutionSummary(newState, memorySummary);
+    } else if (!options.deferMemorySummaryCompression) {
       memorySummary = await runPostTurnMemorySummaryCompression(
         newState,
         options,
@@ -936,6 +1113,24 @@ export async function executeTurn(
   turnDisplayMeta.processingStages = processingStageRecorder.events;
   syncLatestTurnSuggestedActions(newState, narratorResponse.suggestedActions);
   syncLatestTurnDisplayMeta(newState, turnDisplayMeta);
+  if (hasRecoverableStateWriteback) {
+    newState.stateWritebackRecovery = createStateWritebackRecoveryCapsule({
+      preTurnState: runtimeState,
+      postTurnState: newState,
+      frozenNarrativeText: narratorResponse.narrativeText,
+      initialPatches: canonicalStatePatches,
+      initialWritebackJson: narratorResponse.writeback
+        ? JSON.stringify(narratorResponse.writeback)
+        : undefined,
+      rejectedCandidates: [{
+        attempt: 1,
+        patches: canonicalStatePatches,
+        writebackJson: narratorResponse.writeback ? JSON.stringify(narratorResponse.writeback) : '{}',
+        diagnostics: rejectedRecoveryDiagnostics,
+      }],
+      quarantinedPatchIndexes: recoveryPatchIndexes,
+    });
+  }
   if (encounterStartIntent) {
     assertEncounterReferenceIntegrity(
       newState,
@@ -2145,6 +2340,8 @@ export interface StatePatchTransactionPreparation {
   patchValidation: PatchValidationResult | null;
   invalidPatchNotes: string[];
   quarantinedPatchNotes: string[];
+  quarantinedSourcePatchIndexes: number[];
+  quarantinedDomains: Array<{ domain: string; patchIndexes: number[] }>;
   quarantineMode?: 'battle' | 'continuity';
 }
 
@@ -2337,6 +2534,18 @@ export function prepareStatePatchTransaction(
     const label = command?.action ?? entry.patch.type;
     return [`${label}: ${validation.valid ? '同域存在非法补丁，按域原子隔离' : validation.errors.join('；')}`];
   });
+  const quarantinedSourcePatchIndexes = [...quarantinedTransactionIndexes]
+    .flatMap((index) => preparedPatches[index]?.sourcePatchIndex ?? [])
+    .sort((left, right) => left - right);
+  const quarantinedDomainMap = new Map<string, number[]>();
+  for (const transactionIndex of quarantinedTransactionIndexes) {
+    const entry = preparedPatches[transactionIndex];
+    if (!entry) continue;
+    const domain = getContinuityQuarantineDomain(entry.patch) ?? 'other';
+    const indexes = quarantinedDomainMap.get(domain) ?? [];
+    indexes.push(entry.sourcePatchIndex);
+    quarantinedDomainMap.set(domain, indexes);
+  }
   if (quarantinedPatchNotes.length > 0 && effectiveValidationResults.length > 0) {
     effectiveValidationResults[0] = {
       ...effectiveValidationResults[0],
@@ -2376,6 +2585,11 @@ export function prepareStatePatchTransaction(
     patchValidation,
     invalidPatchNotes,
     quarantinedPatchNotes,
+    quarantinedSourcePatchIndexes,
+    quarantinedDomains: [...quarantinedDomainMap].map(([domain, patchIndexes]) => ({
+      domain,
+      patchIndexes: [...new Set(patchIndexes)].sort((left, right) => left - right),
+    })),
     quarantineMode: quarantinedPatchNotes.length > 0
       ? hasValidJudgementRecord ? 'battle' : 'continuity'
       : undefined,
@@ -2805,6 +3019,8 @@ async function generateNarratorResponse(input: GenerateNarratorResponseInput): P
     );
     const configuredStateWritebackApiConfig = input.options.stateWritebackApiConfig;
     const configuredStateWritebackFallbackApiConfig = input.options.stateWritebackFallbackApiConfig;
+    const bundledStateWriteback = input.options.featureExecutionModes?.stateWriteback === 'bundledMain';
+    const bundledNpcCompletion = input.options.featureExecutionModes?.npcCompletion === 'bundledMain';
     const repairSourcePatches = collectStatePatches(response);
     const mapWritebackRepairDiagnostics = prepareNarratorLocationWriteback(
       input.runtimeState,
@@ -2829,24 +3045,40 @@ async function generateNarratorResponse(input: GenerateNarratorResponseInput): P
       requiresPrivateAssetAcquisitionWritebackReview(input.runtimeState, response);
     const scenePresenceWritebackReviewRequired = !input.options.openingInitialization
       && requiresScenePresenceWritebackReview(response);
+    const presentationSpeakerRuntimeState = prepareNpcComplianceAcceptedRuntimeState({
+      patches: repairSourcePatches,
+      worldBook: input.worldBook,
+      runtimeState: input.runtimeState,
+      writeback: response.writeback,
+    }) ?? input.runtimeState;
+    const presentationSpeakerRepairTargets = buildAvgSpeakerRepairTargets(
+      presentationSpeakerRuntimeState,
+      response.narrativeText,
+      response.writeback?.presentationSpeakerFacts,
+    );
     const generalStatePatchRepairDiagnostics = statePatchDiagnostics.filter(
       (diagnostic) => diagnostic.patchType !== 'timeAdvance',
     );
     const encounterStartIntentPresent = Boolean(response.writeback?.encounterStartIntent);
-    const shouldBorrowMainApiForStateWriteback = (
-      !input.options.openingInitialization
-      && !encounterStartIntentPresent
-      && (
-        generalStatePatchRepairDiagnostics.length > 0
-        || mapWritebackRepairDiagnostics.length > 0
+    const shouldBorrowMainApiForStateWriteback = !input.options.featureExecutionModes?.stateWriteback && (
+      (
+        !input.options.openingInitialization
+        && !encounterStartIntentPresent
+        && (
+          generalStatePatchRepairDiagnostics.length > 0
+          || mapWritebackRepairDiagnostics.length > 0
+        )
       )
-    )
-      || judgementMarkerIntegrityIssues.length > 0
-      || playerEconomyWritebackReviewRequired
-      || privateAssetAcquisitionWritebackReviewRequired
-      || scenePresenceWritebackReviewRequired;
-    const stateWritebackApiConfig = configuredStateWritebackApiConfig
-      ?? (shouldBorrowMainApiForStateWriteback ? apiConfig : null);
+        || judgementMarkerIntegrityIssues.length > 0
+        || playerEconomyWritebackReviewRequired
+        || privateAssetAcquisitionWritebackReviewRequired
+        || scenePresenceWritebackReviewRequired
+        || presentationSpeakerRepairTargets.length > 0
+    );
+    const stateWritebackApiConfig = bundledStateWriteback
+      ? null
+      : configuredStateWritebackApiConfig
+        ?? (shouldBorrowMainApiForStateWriteback ? apiConfig : null);
 
     if (stateWritebackApiConfig) {
       const stateWritebackLlmClient = configuredStateWritebackApiConfig
@@ -2867,6 +3099,8 @@ async function generateNarratorResponse(input: GenerateNarratorResponseInput): P
               ? '补全私人产业产权写回'
               : scenePresenceWritebackReviewRequired
                 ? '补全当前场景在场名单'
+                : presentationSpeakerRepairTargets.length > 0
+                  ? '补全 AVG 说话人展示身份'
                 : '整理状态写回';
         const repaired = await runStateWritebackRepairStage({
           emit: input.emitProcessingStage,
@@ -2881,7 +3115,8 @@ async function generateNarratorResponse(input: GenerateNarratorResponseInput): P
           retryRequestBudget: () => capOptionalWritebackRequestBudget(
             postNarrativeBudget.getChildRequestBudget({ allowRetry: false }),
           ),
-          retryEmptyContent: !configuredStateWritebackFallbackApiConfig,
+          retryEmptyContent: !configuredStateWritebackFallbackApiConfig
+            && (presentationSpeakerRepairTargets.length === 0 || stateWritebackRepairRequiresRetry),
           request: (requestBudget) => requestStateWritebackRepair({
             apiConfig: stateWritebackApiConfig,
             llmClient: stateWritebackLlmClient,
@@ -2897,6 +3132,7 @@ async function generateNarratorResponse(input: GenerateNarratorResponseInput): P
             playerEconomyWritebackReviewRequired,
             playerEconomyWritebackReviewAttempt: 1,
             scenePresenceWritebackReviewRequired,
+            presentationSpeakerRepairTargets,
             requestBudget: capOptionalWritebackRequestBudget(requestBudget),
           }),
         });
@@ -2907,6 +3143,8 @@ async function generateNarratorResponse(input: GenerateNarratorResponseInput): P
           statePatchDiagnostics,
           mapWritebackRepairDiagnostics,
           judgementMarkerIntegrityIssues,
+          presentationSpeakerRuntimeState,
+          presentationSpeakerRepairTargets,
         });
         usage = mergeTokenUsage(usage, repaired.usage);
         const generalReviewCandidateDiagnostics = !stateWritebackRepairRequiresRetry
@@ -3153,6 +3391,17 @@ async function generateNarratorResponse(input: GenerateNarratorResponseInput): P
         '地点切换缺少结构化当前场景在场名单，未能安全补全 NPC 在场状态。',
       );
     }
+    if (presentationSpeakerRepairTargets.length > 0) {
+      const remainingSpeakerTargets = buildAvgSpeakerRepairTargets(
+        presentationSpeakerRuntimeState,
+        response.narrativeText,
+        response.writeback?.presentationSpeakerFacts,
+      );
+      if (remainingSpeakerTargets.length > 0) response = appendWritebackDebugNote(
+        response,
+        `AVG 展示身份仍有 ${remainingSpeakerTargets.length} 个具名对白段缺少可验证结构化身份，已保持剪影。`,
+      );
+    }
     rawContent = JSON.stringify(response, null, 2);
 
     const encounterTransitionRepairRequirement = buildEncounterTransitionRepairRequirement(
@@ -3187,7 +3436,7 @@ async function generateNarratorResponse(input: GenerateNarratorResponseInput): P
         elapsedMs: Date.now() - startedAt,
         detail,
       });
-    } else if (encounterTransitionRepairRequirement.required) {
+    } else if (encounterTransitionRepairRequirement.required && !bundledStateWriteback) {
       let repairRequirement = encounterTransitionRepairRequirement;
       let repairCompleted = false;
       for (let attempt = 1; attempt <= 2 && !repairCompleted; attempt += 1) {
@@ -3238,7 +3487,7 @@ async function generateNarratorResponse(input: GenerateNarratorResponseInput): P
       }
     }
 
-    if (!hasExplicitTimeAdvancePatch(response)) {
+    if (!hasExplicitTimeAdvancePatch(response) && !bundledStateWriteback) {
       const useStateWritebackApi = Boolean(
         successfulStateWritebackApiConfig
         && successfulStateWritebackLlmClient
@@ -3313,7 +3562,7 @@ async function generateNarratorResponse(input: GenerateNarratorResponseInput): P
       acceptedRuntimeState,
       response,
     });
-    if (missingNpcProfileCandidates.length > 0) {
+    if (missingNpcProfileCandidates.length > 0 && !bundledNpcCompletion) {
       const npcProfileRepairApiConfig = input.options.npcCompletionApiConfig ?? apiConfig;
       const npcProfileRepairLlmClient = input.options.npcCompletionApiConfig
         ? (input.options.npcCompletionLlmClient ?? llmClient)
@@ -4007,10 +4256,10 @@ function buildEncounterTransitionRepairMessages(input: {
           },
         }, null, 2),
         '',
-        'personal_combat intent 必须使用 contractVersion=1、rulesetVersion="combat-v2.0.0"、当前 sourceTurnNumber/locationId/createdAt；playerParty/enemyParty 各 1—3 人且不得重叠。',
+        `personal_combat intent 必须使用 contractVersion=1、rulesetVersion="${COMBAT_RULESET_VERSION}"、当前 sourceTurnNumber/locationId/createdAt；playerParty/enemyParty 各 1—3 人且不得重叠。`,
         input.requirement.preserveWarStart
           ? '原响应已有合法 start + war intent：本次只返回实体声明，运行时会原样保留原 encounterTransitionDecision / encounterStartIntent；不得改写 ID、playerForce/enemyForce、objective、policy、seed 或 createdAt。'
-          : 'war intent 必须使用 contractVersion=1、rulesetVersion="war-v2.1.0"，并只引用当前账本或本次 statePatches 同批完整声明的稳定 ID；必须使用 playerForce/enemyForce，不得写 attacker/defender。',
+          : `war intent 必须使用 contractVersion=1、rulesetVersion="${WAR_RULESET_VERSION}"，并只引用当前账本或本次 statePatches 同批完整声明的稳定 ID；必须使用 playerForce/enemyForce，不得写 attacker/defender。`,
         '新部队声明必须至少包含 action=upsertTroopLedger、troopId、name、size、morale、training、supplies、task、relationToPlayer、troopType、quality、fatigue、readiness、lifecycleStatus、knownLevel、certainty、locationId，并在已知时包含 factionId。',
         '部队字段枚举必须逐字使用本项目合同：relationToPlayer 写自然中文短句（如“敌对”），troopType 写具体中文兵种（步卒/骑兵/弓弩兵/水军/斥候/辎重队/守军/民兵/混编/乱兵），quality 只能低/中/高/精锐，fatigue 只能低/中/高/极高，readiness 只能低/中/高，lifecycleStatus 本场新军写 active，knownLevel 只能亲历/听闻/推测，certainty 只能 confirmed/reported/rumor/uncertain；不得写 hostile/infantry/regular/exact/full、数字 readiness/fatigue/certainty 或英文 task。',
         '新领地声明必须包含 action=upsertHoldingLedger、operation=create、holdingId、name、type、status=contested、summary、civilAdministrationScope、scaleLevel、agriculture、commerce、population、publicOrder、popularSupport、defense、recruitPotential、armory、horseSupply、locationId、actualController、updatedAt，并包含 controlEvidence={kind:"war_target",occurredAt:当前存档时间,sourceRefId:本次 encounterId,summary:已明确成立的战争目标事实}；民政范围不是 none 时还必须写 civilScaleLevel=1-5。type 只能 county/city/fort/pass/camp/estate/port/village/other，county 是具体县城/县邑，州与郡国是区域父级而不是领地实体，禁止 commandery；status 只能 controlled/contested/temporary/lost/archived，civilAdministrationScope 只能 none/households/territorial/mixed；scaleLevel 是据点规模，civilScaleLevel 是独立民政体量；city 最高民政 5 级，county/fort/pass/camp/port 最高 4 级，estate/other 最高 3 级，village 最高 2 级；各项分数只能 0-100，田亩编户不得超过类型、范围与民政规模上限，updatedAt 必须是上方给出的当前存档时间字符串，不得为空或写数字。',
@@ -4087,6 +4336,7 @@ async function requestStateWritebackRepair(input: {
   playerEconomyWritebackReviewRequired: boolean;
   playerEconomyWritebackReviewAttempt: 1 | 2;
   scenePresenceWritebackReviewRequired: boolean;
+  presentationSpeakerRepairTargets?: AvgSpeakerRepairTarget[];
   requestBudget: TurnLlmRequestBudget;
 }): Promise<{
   response: NarratorResponse;
@@ -4129,6 +4379,7 @@ function buildStateWritebackRepairMessages(input: {
   playerEconomyWritebackReviewRequired: boolean;
   playerEconomyWritebackReviewAttempt: 1 | 2;
   scenePresenceWritebackReviewRequired: boolean;
+  presentationSpeakerRepairTargets?: AvgSpeakerRepairTarget[];
   cacheLayout?: TurnPromptCacheLayout;
 }): LlmMessage[] {
   const allowInventoryScopeNarrativeCorrection =
@@ -4169,6 +4420,11 @@ function buildStateWritebackRepairMessages(input: {
         '若提供地图写回逐条诊断，必须按 kind 与 suggestionIndex 修正原 locationWriteSuggestions/routeWriteSuggestions 对应槽位；复用原稳定 ID，不得删除失败槽或改写无关合法地点。',
         '若提供判定标记一致性诊断，必须按标记中的稳定 ID 在 statePatches 尾部补充对应 upsertConflictRecord 或 upsertCombatRecord；只能使用正文已明确发生的事实，不得改写或删除 narrativeText 中的判定标记。',
         '若本次要求补全当前场景在场名单，必须根据原始最终正文与最后一条 locationChange，在 writeback.turnSummary.scenePresence 返回本回合结束时的完整场景真值：locationId 使用最终 toSceneId，未提供时使用最终 toLocationId；presentNpcIds 只填已经存在的人物志稳定 npcId，无人时明确返回 []。同城异场景、远场关注、书信、传闻、正在赶来或任务相关者不得列入。不得扫描关键词或创造新 NPC。',
+        ...((input.presentationSpeakerRepairTargets?.length ?? 0) > 0 ? [
+          '本次还包含一次性 AVG 展示身份补齐清单。只允许为清单中的精确 segmentIndex + speakerLabel 批量补充 writeback.presentationSpeakerFacts；不得改写 narrativeText、主写回、人物志、关系、位置、记忆或世界事实。',
+          '每个事实必须使用 identitySource=presentation_only、稳定且非占位的 avg-presentation: actorId、sex=male 或 female，并仅填写原响应或结构化上下文能够明确支持的最小 ageBand/roleFamily/professionTags/socialTierTags；不得从姓名字形、台词措辞、性别刻板印象或职业联想猜测。证据不足的清单项必须省略并保持剪影。',
+          '同一人物多次出现必须复用同一 actorId 与完全一致 profile；不同且无结构化同一性依据的标签不得共用 actorId。不得输出清单外事实，也不得逐人请求或要求后续重试。',
+        ] : []),
         'StatePatch validator 逐条诊断非空时，返回数组的前 N 项必须按原始 patchIndex 一一对应；不得增删、合并或重排槽位（这里的槽位只指原始 N 项）。若同时存在判定标记一致性诊断，只允许在这 N 项之后追加对应的判定记录。',
         'StatePatch validator 逐条诊断为空时，原始 raw statePatches 必须作为修复数组规范化后深度不变的同序前缀；只能在尾部追加正文有依据的缺失写回，不得删除、替换或重排原槽，新增项也不得与原前缀或其他新增项规范化后完全相同。',
         '未报错 raw 槽位必须在规范化后与原 patch 深度完全一致，包括 sanitizer 会过滤的 no-op；每个报错槽位必须保留原 reason 作为意图锚点，并在同一索引提供可通过 validator 且不会被 sanitizer 过滤的合法替代。',
@@ -4232,6 +4488,11 @@ function buildStateWritebackRepairMessages(input: {
         input.scenePresenceWritebackReviewRequired
           ? '原响应发生了地点切换，却没有提供可安全结算的最终场景名单。请仅依据原始最终正文和最后一条 locationChange 补齐 writeback.turnSummary.scenePresence；保留原始 statePatches 同序前缀，不得重写正文或猜测同城人物在场。'
           : '无需额外补全场景名单；保留原有结构化在场事实。',
+        '',
+        '## 一次性 AVG 展示说话人补齐清单（最终对白索引）',
+        (input.presentationSpeakerRepairTargets?.length ?? 0) > 0
+          ? JSON.stringify(input.presentationSpeakerRepairTargets, null, 2)
+          : '无；不得新增或改写 presentationSpeakerFacts。',
         '',
         '## 原始回合响应',
         JSON.stringify(input.originalResponse, null, 2),
@@ -4398,6 +4659,8 @@ function mergeStateWritebackRepairResponse(
     statePatchDiagnostics: StatePatchValidationDiagnostic[];
     mapWritebackRepairDiagnostics: NarratorMapWritebackRepairDiagnostic[];
     judgementMarkerIntegrityIssues: JudgementMarkerIntegrityIssue[];
+    presentationSpeakerRuntimeState?: RuntimeState;
+    presentationSpeakerRepairTargets?: AvgSpeakerRepairTarget[];
   },
 ): StateWritebackRepairMergeResult {
   const originalPatches = collectStatePatches(original);
@@ -4435,6 +4698,19 @@ function mergeStateWritebackRepairResponse(
   const nextPatches = patchCandidateAccepted ? candidatePatches : originalPatches;
   const allowInventoryScopeNarrativeCorrection =
     hasPlayerInventoryDestructiveScopeDiagnostic(options.statePatchDiagnostics);
+  const baseWriteback = patchCandidateAccepted ? candidateWriteback : original.writeback;
+  const speakerFacts = options.presentationSpeakerRepairTargets?.length
+    ? mergeAvgSpeakerRepairFacts(
+        options.presentationSpeakerRuntimeState ?? options.runtimeState,
+        original.narrativeText,
+        original.writeback?.presentationSpeakerFacts,
+        repaired.writeback?.presentationSpeakerFacts,
+        options.presentationSpeakerRepairTargets,
+      )
+    : baseWriteback?.presentationSpeakerFacts;
+  const mergedWriteback = speakerFacts
+    ? { ...normalizeWriteback(baseWriteback), presentationSpeakerFacts: speakerFacts }
+    : baseWriteback;
 
   return {
     patchCandidateAccepted,
@@ -4445,9 +4721,7 @@ function mergeStateWritebackRepairResponse(
         : original.narrativeText,
       statePatches: nextPatches.length > 0 ? nextPatches : undefined,
       statePatch: null,
-      writeback: patchCandidateAccepted
-        ? candidateWriteback
-        : original.writeback,
+      writeback: mergedWriteback,
     },
   };
 }

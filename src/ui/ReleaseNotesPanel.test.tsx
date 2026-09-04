@@ -7,12 +7,14 @@ describe('ReleaseNotesPanel', () => {
     const markup = renderToStaticMarkup(<ReleaseNotesPanel onClose={() => undefined} />);
 
     expect(markup).toContain('role="dialog"');
-    expect(markup).toContain('2026年8月18日');
-    expect(markup).toContain('dateTime="2026-08-18T00:10:00+08:00"');
-    expect(markup).toContain('>00:10</time>');
-    expect(markup).toContain('v1.7.24');
-    expect(markup).toContain('GLM 与 MiniMax 接口兼容优化');
-    expect(markup).toContain('累计正文片段');
+    expect(markup).toContain('2026年9月5日');
+    expect(markup).toContain('dateTime="2026-09-05T01:45:00+08:00"');
+    expect(markup).toContain('>01:45</time>');
+    expect(markup).toContain('v1.8.4');
+    expect(markup).toContain('战斗属性与玩家权威能力完善');
+    expect(markup).toContain('本地确定性规则');
+    expect(markup).toContain('查看2026年9月3日更新，共1项');
+    expect(markup).toContain('查看2026年9月2日更新，共2项');
     expect(markup).toContain('查看2026年8月17日更新，共1项');
     expect(markup).toContain('查看2026年8月12日更新，共2项');
     expect(markup).toContain('查看2026年8月11日更新，共2项');

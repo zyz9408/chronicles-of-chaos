@@ -4,6 +4,7 @@
 
 import type { NpcAwarenessReference } from './luanshi';
 import type { RelationshipTargetKind } from './statePatch';
+import type { AbilityMechanics } from './ability';
 
 export type CharacterTraitSource = 'opening' | 'history' | 'event' | 'training' | 'injury' | 'custom';
 export type CharacterTraitRarity = 'white' | 'green' | 'blue' | 'purple' | 'orange' | 'red';
@@ -87,6 +88,8 @@ export interface CharacterTrait {
   rarity?: CharacterTraitRarity | string;
   promptHint?: string;
   checkHooks?: CharacterCheckHook[];
+  /** Frozen local rules. Free-form prose is never executed directly. */
+  mechanics?: AbilityMechanics;
 }
 
 export interface CharacterUniqueArt {
@@ -112,6 +115,8 @@ export interface CharacterUniqueArt {
   relatedFactionIds?: string[];
   /** 最近的本地确定性成长记录；旧存档允许缺失。 */
   progressHistory?: CharacterUniqueArtProgressRecord[];
+  /** Frozen local rules compiled from an explicit player-authored promise. */
+  mechanics?: AbilityMechanics;
 }
 
 export type CharacterEffectType = 'buff' | 'debuff' | 'mixed';

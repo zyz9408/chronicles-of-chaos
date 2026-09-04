@@ -77,6 +77,15 @@ export type {
   QuestStatus,
 } from './actor';
 export { PERSONAL_ESCORT_ENTITLEMENT_BASES } from './actor';
+export type {
+  AbilityMechanics,
+  AbilityMechanicsMode,
+  AbilityMechanicsStatus,
+  AbilityRule,
+  AbilityRuleEffect,
+  AbilityRuleExecutionTrace,
+  AbilityRuleTrigger,
+} from './ability';
 export type { Faction } from './faction';
 export type {
   SuggestedAction,

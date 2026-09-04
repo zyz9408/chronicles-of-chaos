@@ -290,6 +290,7 @@ function formatWorldlineKnowledgeDiagnostic(runtimeState: RuntimeState): string 
 function formatSituationProjectionDiagnostic(runtimeState: RuntimeState): string {
   const promptContext = selectPromptContext(runtimeState);
   const projection = promptContext.situationProjection;
+  const { continuityMatterProjection } = promptContext;
   const lines = [
     'Situation Projection Diagnostics / 局势投影诊断：',
   ];
@@ -305,6 +306,19 @@ function formatSituationProjectionDiagnostic(runtimeState: RuntimeState): string
     lines.push(
       `- ${id}: source=${projection.sourceCounts[id]} projected=${projection.projectedCounts[id]} omitted=${projection.omittedCounts[id]} truncated=${projection.truncatedCounts[id]}`,
     );
+  }
+
+  lines.push(`- continuityMatters: projected=${continuityMatterProjection.entries.length} omitted=${continuityMatterProjection.omittedCount}`);
+  for (const entry of continuityMatterProjection.entries) {
+    lines.push([
+      `  - matterId=${entry.matterId}`,
+      `tags=${entry.tags.join(',')}`,
+      `npcIds=${entry.linkedNpcIds.join(',') || 'none'}`,
+      `factionIds=${entry.linkedFactionIds.join(',') || 'none'}`,
+      `troopIds=${entry.linkedTroopIds.join(',') || 'none'}`,
+      `holdingIds=${entry.linkedHoldingIds.join(',') || 'none'}`,
+      `placeIds=${entry.linkedPlaceIds.join(',') || 'none'}`,
+    ].join('; '));
   }
 
   if (projection.sections.length === 0) {

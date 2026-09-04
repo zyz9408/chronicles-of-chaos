@@ -11,6 +11,7 @@ import {
 import {
   AGGRESSIVE_WAR_RULESET_VERSION,
   COMMAND_WAR_RULESET_VERSION,
+  REBALANCED_WAR_RULESET_VERSION,
 } from './EncounterContracts';
 import {
   createValidatedWarProjectionBundle,
@@ -35,6 +36,8 @@ function makeSnapshot(options: {
   includeWarArt?: boolean;
   rulesetVersion?: WarEncounterSnapshot['intent']['rulesetVersion'];
   warDifficulty?: 'story' | 'easy' | 'standard' | 'hard' | 'brutal';
+  playerCommanderOverrides?: Parameters<typeof makeWarCommander>[1];
+  enemyCommanderOverrides?: Parameters<typeof makeWarCommander>[1];
 } = {}): WarEncounterSnapshot {
   const playerTroops = options.playerTroops ?? [makeWarTroop('troop_player_infantry')];
   const enemyTroops = options.enemyTroops ?? [makeWarTroop('troop_enemy_cavalry')];
@@ -58,9 +61,9 @@ function makeSnapshot(options: {
     intent,
     playerTroops,
     enemyTroops,
-    playerCommander: makeWarCommander('player_liuping'),
+    playerCommander: makeWarCommander('player_liuping', options.playerCommanderOverrides),
     warDifficulty: options.warDifficulty,
-    enemyCommander: makeWarCommander('npc_enemy_commander'),
+    enemyCommander: makeWarCommander('npc_enemy_commander', options.enemyCommanderOverrides),
     projections: createValidatedWarProjectionBundle(profiles),
   });
 }
@@ -108,6 +111,37 @@ describe('WarEngine deterministic rounds', () => {
       expect(force.fatigue).toBeGreaterThanOrEqual(0);
       expect(force.fatigue).toBeLessThanOrEqual(100);
     }
+  });
+
+  it('applies War V2.6 intelligence to tactics and martial ability to aggressive pressure only', () => {
+    const commanderOverrides = {
+      playerCommanderOverrides: { abilityScores: { 统率: 70, 智力: 90, 武力: 90, 魅力: 50, 政治: 50 } },
+      enemyCommanderOverrides: { abilityScores: { 统率: 70, 智力: 50, 武力: 50, 魅力: 50, 政治: 50 } },
+    };
+    const orders: WarRoundOrders = {
+      player: { type: 'tactic', tactic: 'all_out_assault' },
+      enemy: { type: 'tactic', tactic: 'hold_position' },
+    };
+    const current = executeWarRound(createInitialWarState(makeSnapshot({
+      seed: 'war-v26-attributes',
+      ...commanderOverrides,
+    })), orders);
+    const legacy = executeWarRound(createInitialWarState(makeSnapshot({
+      seed: 'war-v26-attributes',
+      rulesetVersion: REBALANCED_WAR_RULESET_VERSION,
+      ...commanderOverrides,
+    })), orders);
+    const currentValues = current.actionLog[0].values;
+    const legacyValues = legacy.actionLog[0].values;
+
+    expect(currentValues).toMatchObject({
+      playerIntelligenceTacticFactorBps: 11_600,
+      playerMartialPressureBps: 11_000,
+      enemyIntelligenceTacticFactorBps: 8_400,
+      enemyMartialPressureBps: 10_000,
+    });
+    expect(legacyValues.playerIntelligenceTacticFactorBps).toBe(10_000);
+    expect(legacyValues.playerMartialPressureBps).toBe(10_000);
   });
 
   it('applies the frozen war difficulty through player effective strength', () => {

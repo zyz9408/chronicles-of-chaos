@@ -10,6 +10,7 @@ import {
 import { simulateCombatWithLocalAi } from './CombatAi';
 import { createCombatEncounterSnapshot } from './CombatSnapshotAdapter';
 import type { CombatEngineState, CombatRuntimeCombatant } from './CombatTypes';
+import { LEGACY_COMBAT_RULESET_VERSION } from './EncounterContracts';
 import {
   bundle,
   makeCombatIntent,
@@ -162,6 +163,49 @@ describe('CombatEngine deterministic core', () => {
     expect(state.actionLog.map((entry) => entry.actionType)).toEqual(['defend', 'normal_attack']);
   });
 
+  it('records Combat V2.1 martial, intelligence and party leadership contributions', () => {
+    const snapshot = buildSnapshot({
+      players: 2,
+      playerOverrides: { abilityScores: { 武力: 80, 智力: 80, 统率: 90, 机运: 50 } },
+      enemyOverrides: { abilityScores: { 武力: 60, 智力: 50, 统率: 50, 机运: 50 } },
+    });
+    const state = executeCombatAction(
+      forceTurn(createCombatEngineState(snapshot), 'player_1'),
+      { type: 'normal_attack', actorId: 'player_1', targetId: 'enemy_1' },
+    );
+
+    expect(state.actionLog[0].values).toMatchObject({
+      martialHitModifier: 12,
+      intelligenceHitModifier: 3,
+      leadershipAccuracyModifier: 4,
+      martialDamageBonus: 12,
+    });
+  });
+
+  it('keeps a legacy Combat V2.0 snapshot on its frozen formulas', () => {
+    const currentSnapshot = buildSnapshot({
+      playerOverrides: { abilityScores: { 武力: 80, 智力: 100, 统率: 100, 机运: 50 } },
+      enemyOverrides: { abilityScores: { 武力: 60, 智力: 0, 统率: 0, 机运: 50 } },
+    });
+    const snapshot = {
+      ...currentSnapshot,
+      intent: {
+        ...currentSnapshot.intent,
+        rulesetVersion: LEGACY_COMBAT_RULESET_VERSION,
+      },
+    };
+    const state = executeCombatAction(
+      forceTurn(createCombatEngineState(snapshot), 'player_1'),
+      { type: 'normal_attack', actorId: 'player_1', targetId: 'enemy_1' },
+    );
+
+    expect(state.actionLog[0].values).toMatchObject({
+      intelligenceHitModifier: 0,
+      leadershipAccuracyModifier: 0,
+      martialDamageBonus: 9,
+    });
+  });
+
   it('applies the frozen combat difficulty only to cross-side damage', () => {
     const strike = (combatDifficulty: 'story' | 'brutal') => executeCombatAction(
       forceTurn(createCombatEngineState(buildSnapshot({ combatDifficulty, seed: 'difficulty-strike' })), 'player_1'),
@@ -218,6 +262,38 @@ describe('CombatEngine deterministic core', () => {
       powerClass: 'heavy',
       armorPiercing: true,
     });
+  });
+
+  it('honors an authored full-heal promise whenever that unique art is used', () => {
+    const art = makeDamageArtProfile('art_full_heal', {
+      targetMode: 'single_enemy',
+      purpose: 'damage',
+    });
+    const snapshot = buildSnapshot({
+      seed: 'authored-full-heal',
+      playerOverrides: {
+        vitals: { hp: 9, maxHp: 120, stamina: 100, maxStamina: 100 },
+        uniqueArts: [{
+          id: 'art_full_heal', name: '万象回春', rarity: 'red', domain: 'personalCombat', level: 1,
+          description: '每次使用必定恢复所有生命。', effectSummary: '恢复所有生命。', source: 'opening',
+        }],
+      },
+      projections: bundle(art),
+    });
+    expect(snapshot.combatants[0].uniqueArtProfiles[0]).toMatchObject({
+      purpose: 'mixed',
+      effects: expect.arrayContaining([
+        expect.objectContaining({ trigger: 'on_unique_art_use', operation: 'restore_hp_to_max', target: 'self' }),
+      ]),
+    });
+
+    const result = executeCombatAction(
+      forceTurn(createCombatEngineState(snapshot), 'player_1'),
+      { type: 'unique_art', actorId: 'player_1', artId: 'art_full_heal', targetIds: ['enemy_1'] },
+    );
+
+    const player = result.combatants.find((entry) => entry.actorId === 'player_1');
+    expect(player?.hp).toBe(player?.maxHp);
   });
 
   it('spends stamina once for a multi-hit art and enforces its per-battle limit', () => {

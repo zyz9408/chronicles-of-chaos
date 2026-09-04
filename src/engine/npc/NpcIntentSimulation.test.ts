@@ -6,6 +6,7 @@ import { TurnExecutionCancelledError } from '../turn/TurnExecutionContext';
 import {
   executeNpcIntentSimulation,
   parseNpcIntentSimulationResponse,
+  validateNpcIntentSimulationResponse,
   selectNpcIntentSimulationTargets,
 } from './NpcIntentSimulation';
 
@@ -266,6 +267,27 @@ describe('NpcIntentSimulation', () => {
       intent: '抬手拦住主角，要求说明来意。',
     });
     expect(parsed).not.toHaveProperty('statePatches');
+  });
+
+  it('distinguishes the v1.8.4 frozen-target contract failures', () => {
+    const targets = selectNpcIntentSimulationTargets(makeState(), '我看向门候', { maxNpcCount: 2 });
+    const validation = validateNpcIntentSimulationResponse(JSON.stringify({
+      protocolVersion: 'coc.v2.npcIntent.v0',
+      intents: [
+        { npcId: targets[0].npcId, intent: '观察', trigger: '在场' },
+        { npcId: targets[0].npcId, intent: '重复', trigger: '在场' },
+        { npcId: 'npc_unknown', intent: '越界', trigger: '无' },
+      ],
+    }), targets);
+
+    expect(validation.valid).toBe(false);
+    expect(validation.diagnosticCodes).toEqual(expect.arrayContaining([
+      'npc-trajectory-stale-contract',
+      'npc-trajectory-duplicate-target',
+      'npc-trajectory-unknown-target',
+      'npc-trajectory-count-mismatch',
+      'npc-trajectory-missing-target',
+    ]));
   });
 
   it('calls the NPC simulation model once for a batch of target NPCs', async () => {

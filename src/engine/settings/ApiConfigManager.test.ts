@@ -9,6 +9,8 @@ import {
   getApiMaxOutputTokenGuidance,
   getApiMaxOutputTokenPresetId,
   getApiTaskRoutes,
+  getApiFeatureExecutionModes,
+  setApiFeatureExecutionMode,
   listApiConfigs,
   maskApiKey,
   prepareApiConfigForSave,
@@ -46,6 +48,33 @@ class MemoryStorage implements Storage {
 }
 
 describe('ApiConfigManager', () => {
+  it('defaults the five auxiliary features to the v1.8.2 bundled main request', () => {
+    const storage = new MemoryStorage();
+    expect(getApiFeatureExecutionModes(storage)).toEqual({
+      revision: 1,
+      stateWriteback: 'bundledMain',
+      npcCompletion: 'bundledMain',
+      npcSimulation: 'bundledMain',
+      worldEvolution: 'bundledMain',
+      memorySummary: 'bundledMain',
+    });
+
+    setApiFeatureExecutionMode('worldEvolution', 'dedicated', storage);
+    expect(getApiFeatureExecutionModes(storage).worldEvolution).toBe('dedicated');
+  });
+
+  it('migrates an old explicitly routed feature to dedicated execution', () => {
+    const storage = new MemoryStorage();
+    const saved = upsertApiConfig({
+      ...createApiConfigDraft(),
+      model: 'legacy-model',
+    }, storage);
+    setApiTaskRoute('npcSimulation', { configId: saved.id, model: 'legacy-model' }, storage);
+
+    expect(getApiFeatureExecutionModes(storage).npcSimulation).toBe('dedicated');
+    expect(getApiFeatureExecutionModes(storage).memorySummary).toBe('bundledMain');
+  });
+
   it('offers 8K, 32K, and 64K output presets while keeping new profiles at 8K', () => {
     expect(API_MAX_OUTPUT_TOKEN_PRESETS.map((preset) => preset.value)).toEqual([
       8_192,

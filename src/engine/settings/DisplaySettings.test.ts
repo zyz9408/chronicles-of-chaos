@@ -48,6 +48,16 @@ import {
   saveColorThemeToStorage,
   saveNarrativeFontSizeToStorage,
   saveNarrativeLineHeightToStorage,
+  DEFAULT_NARRATIVE_PRESENTATION,
+  DEFAULT_AVG_PLAYER_PORTRAIT_MODE,
+  GAME_NARRATIVE_PRESENTATION_KEY,
+  GAME_AVG_PLAYER_PORTRAIT_MODE_KEY,
+  loadNarrativePresentationFromStorage,
+  loadAvgPlayerPortraitModeFromStorage,
+  normalizeNarrativePresentation,
+  normalizeAvgPlayerPortraitMode,
+  saveNarrativePresentationToStorage,
+  saveAvgPlayerPortraitModeToStorage,
 } from './DisplaySettings';
 
 class MemoryStorage {
@@ -63,6 +73,20 @@ class MemoryStorage {
 }
 
 describe('DisplaySettings', () => {
+  it('normalizes and persists the v1.8.0 AVG presentation preferences', () => {
+    const storage = new MemoryStorage();
+
+    expect(normalizeNarrativePresentation('invalid')).toBe(DEFAULT_NARRATIVE_PRESENTATION);
+    expect(loadNarrativePresentationFromStorage(storage)).toBe('auto');
+    expect(saveNarrativePresentationToStorage('avg', storage)).toBe('avg');
+    expect(storage.getItem(GAME_NARRATIVE_PRESENTATION_KEY)).toBe('avg');
+
+    expect(normalizeAvgPlayerPortraitMode('invalid')).toBe(DEFAULT_AVG_PLAYER_PORTRAIT_MODE);
+    expect(loadAvgPlayerPortraitModeFromStorage(storage)).toBe('hidden');
+    expect(saveAvgPlayerPortraitModeToStorage('show', storage)).toBe('show');
+    expect(storage.getItem(GAME_AVG_PLAYER_PORTRAIT_MODE_KEY)).toBe('show');
+  });
+
   it('defaults invalid render depth to 30', () => {
     expect(normalizeRenderDepth(undefined)).toBe(30);
     expect(normalizeRenderDepth('not-a-number')).toBe(30);

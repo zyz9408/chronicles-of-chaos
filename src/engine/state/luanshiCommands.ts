@@ -690,6 +690,9 @@ const privateAssetProjectStatuses: PrivateAssetProjectEntry['status'][] = [
 ];
 const troopQualities: NonNullable<TroopLedgerEntry['quality']>[] = ['低', '中', '高', '精锐'];
 const troopFatigueLevels: NonNullable<TroopLedgerEntry['fatigue']>[] = ['低', '中', '高', '极高'];
+const troopActivityTempos: NonNullable<TroopLedgerEntry['activityTempo']>[] = [
+  'resting', 'stationary_duty', 'training', 'marching', 'combat', 'unknown',
+];
 const troopReadinessLevels: NonNullable<TroopLedgerEntry['readiness']>[] = ['低', '中', '高'];
 const troopLifecycleStatuses: NonNullable<TroopLedgerEntry['lifecycleStatus']>[] = [
   'active',
@@ -1504,6 +1507,9 @@ function validateUpsertTroopLedgerCommand(
   }
   if (command.fatigue !== undefined && normalizeTroopFatigue(command.fatigue) === undefined) {
     errors.push(`upsertTroopLedger.fatigue 非法：${String(command.fatigue)}`);
+  }
+  if (command.activityTempo !== undefined && !troopActivityTempos.includes(command.activityTempo)) {
+    errors.push(`upsertTroopLedger.activityTempo 非法：${String(command.activityTempo)}`);
   }
   if (command.readiness !== undefined && normalizeTroopReadiness(command.readiness) === undefined) {
     errors.push(`upsertTroopLedger.readiness 非法：${String(command.readiness)}`);

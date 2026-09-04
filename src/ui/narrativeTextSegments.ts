@@ -7,6 +7,7 @@ export type NarrativeTextSegment =
     type: 'dialogue';
     speaker: string;
     text: string;
+    speakerSource: 'explicit' | 'inferred';
   };
 
 const narrationSpeakers = new Set(['旁白', '叙述', '叙事', 'Narrator', 'narrator']);
@@ -112,7 +113,7 @@ function parseInlineQuoteLine(line: string): NarrativeTextSegment[] | undefined 
   if (before.trim()) {
     segments.push({ type: 'narration', text: before.trim() });
   }
-  segments.push({ type: 'dialogue', speaker, text: normalizeQuotedDialogue(quoted) });
+  segments.push({ type: 'dialogue', speaker, text: normalizeQuotedDialogue(quoted), speakerSource: 'inferred' });
   if (after.trim()) {
     segments.push({ type: 'narration', text: after.trim() });
   }
@@ -154,6 +155,7 @@ export function parseNarrativeTextSegments(text: string): NarrativeTextSegment[]
       type: 'dialogue',
       speaker,
       text: speakerText,
+      speakerSource: 'explicit',
     });
   };
 
@@ -203,6 +205,7 @@ export function parseNarrativeTextSegments(text: string): NarrativeTextSegment[]
       type: 'dialogue',
       speaker: speakerLine.speaker,
       text: speakerLine.text,
+      speakerSource: 'explicit',
     });
   });
 

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { pruneAutoSaves } from '../engine/save/SaveManager';
+import { pruneAutoSavesWithVisuals } from '../engine/avg/AvgVisualSaveIntegration';
 import {
   MAX_AUTO_SAVE_INTERVAL_TURNS,
   MAX_AUTO_SAVE_LIMIT,
@@ -25,7 +25,7 @@ export function SaveSettingsPanel({ currentSaveId }: { currentSaveId?: string | 
     const nextLimit = saveAutoSaveLimitToStorage(value);
     setAutoSaveLimit(String(nextLimit));
     try {
-      await pruneAutoSaves(nextLimit, currentSaveId ?? undefined);
+      await pruneAutoSavesWithVisuals(nextLimit, currentSaveId ?? undefined);
       setStatus(`已保留最近 ${nextLimit} 个自动存档。`);
     } catch (error) {
       setStatus(`自动存档清理失败：${error instanceof Error ? error.message : '未知错误'}`);

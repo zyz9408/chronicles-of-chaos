@@ -277,6 +277,34 @@ export function compareWarTactics(
   return { playerModifier: 1, enemyModifier: 1 };
 }
 
+/** War V2.6: intelligence improves deliberate tactics without becoming raw troop damage. */
+export function calculateWarIntelligenceTacticFactor(input: {
+  ownIntelligence: number;
+  enemyIntelligence: number;
+  tactic: WarTactic;
+}): number {
+  const coefficient = input.tactic === 'steady_advance' ? 0.002 : 0.004;
+  return Number(clampWarValue(
+    1 + (input.ownIntelligence - input.enemyIntelligence) * coefficient,
+    input.tactic === 'steady_advance' ? 0.92 : 0.84,
+    input.tactic === 'steady_advance' ? 1.08 : 1.16,
+  ).toFixed(3));
+}
+
+/** War V2.6: martial ability adds bounded pressure only to aggressive orders. */
+export function calculateWarMartialPressureFactor(input: {
+  ownMartial: number;
+  enemyMartial: number;
+  tactic: WarTactic;
+}): number {
+  if (!['all_out_assault', 'flank'].includes(input.tactic)) return 1;
+  return Number(clampWarValue(
+    1 + (input.ownMartial - input.enemyMartial) * 0.0025,
+    0.90,
+    1.10,
+  ).toFixed(3));
+}
+
 const ENVIRONMENT_CLASS_FACTORS: Record<EncounterEnvironmentTag, Record<TroopSemanticProfile['primaryClass'], number>> = {
   open: { infantry: 1, cavalry: 1.15, ranged: 1.05, naval: 0.65, siege: 0.85, mixed: 1 },
   difficult: { infantry: 1.05, cavalry: 0.80, ranged: 1, naval: 0.65, siege: 0.80, mixed: 0.95 },

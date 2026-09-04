@@ -24,6 +24,10 @@ import {
   calculateCriticalChance,
   calculateHitChance,
   calculateNormalAttackDamage,
+  calculateV21BlockChance,
+  calculateV21HitChance,
+  calculateV21NormalAttackDamage,
+  calculateV21ScopedDamageCap,
   calculateRetreatChance,
   clamp,
   normalizeCombatStatuses,
@@ -298,6 +302,18 @@ interface StrikeOptions {
   normalAttack: boolean;
 }
 
+function usesCombatV21(state: CombatEngineState): boolean {
+  return state.snapshot.intent.rulesetVersion === COMBAT_RULESET_VERSION;
+}
+
+function leadershipAura(state: CombatEngineState, side: CombatRuntimeCombatant['side']): number {
+  if (!usesCombatV21(state)) return 0;
+  const activeAllies = state.combatants.filter((candidate) => candidate.side === side && isActive(candidate));
+  if (activeAllies.length < 2) return 0;
+  const bestLeadership = Math.max(...activeAllies.map((candidate) => snapshotFor(state, candidate.actorId).leadership ?? 50));
+  return clamp(Math.trunc((bestLeadership - 50) / 10), -5, 5);
+}
+
 function calculateArtDamage(input: {
   rawDamage: number;
   damageMultiplier: number;
@@ -320,28 +336,76 @@ function performStrike(
   attacker: CombatRuntimeCombatant,
   defender: CombatRuntimeCombatant,
   options: StrikeOptions,
-): { hit: boolean; blocked: boolean; critical: boolean; damage: number } {
+): {
+  hit: boolean;
+  blocked: boolean;
+  critical: boolean;
+  damage: number;
+  hitChance: number;
+  blockChance: number;
+  criticalChance: number;
+  martialHitModifier: number;
+  intelligenceHitModifier: number;
+  leadershipAccuracyModifier: number;
+  martialDamageBonus: number;
+} {
   const attackerSnapshot = snapshotFor(state, attacker.actorId);
   const defenderSnapshot = snapshotFor(state, defender.actorId);
   const attackerMartial = effectiveMartial(state, attacker);
   const defenderMartial = effectiveMartial(state, defender);
-  const hitChance = calculateHitChance({
+  const v21 = usesCombatV21(state);
+  const leadershipAccuracyModifier = leadershipAura(state, attacker.side);
+  const attackerAccuracy = attacker.modifiers.accuracy + options.accuracyModifier
+    + passiveModifier(state, attacker, defender, 'modify_accuracy', ['before_attack'], true)
+    + leadershipAccuracyModifier;
+  const defenderEvasion = defender.modifiers.evasion
+    + passiveModifier(state, defender, attacker, 'modify_evasion', ['before_attack'], false);
+  const hitChance = v21 ? calculateV21HitChance({
+    attackerMartial,
+    defenderMartial,
+    attackerIntelligence: attackerSnapshot.intelligence ?? 50,
+    defenderIntelligence: defenderSnapshot.intelligence ?? 50,
+    weaponAccuracy: attackerSnapshot.weapon.accuracyBonus,
+    attackerAccuracy,
+    defenderEvasion,
+    attackerLuck: attackerSnapshot.luck,
+    defenderLuck: defenderSnapshot.luck,
+  }) : calculateHitChance({
     attackerMartial,
     defenderMartial,
     weaponAccuracy: attackerSnapshot.weapon.accuracyBonus,
-    attackerAccuracy: attacker.modifiers.accuracy + options.accuracyModifier
-      + passiveModifier(state, attacker, defender, 'modify_accuracy', ['before_attack'], true),
-    defenderEvasion: defender.modifiers.evasion
-      + passiveModifier(state, defender, attacker, 'modify_evasion', ['before_attack'], false),
+    attackerAccuracy,
+    defenderEvasion,
     attackerLuck: attackerSnapshot.luck,
     defenderLuck: defenderSnapshot.luck,
   });
+  const martialHitModifier = (attackerMartial - defenderMartial) * (v21 ? 0.60 : 0.55);
+  const intelligenceHitModifier = v21
+    ? ((attackerSnapshot.intelligence ?? 50) - (defenderSnapshot.intelligence ?? 50)) * 0.10
+    : 0;
+  const martialDamageBonus = Math.floor(attackerMartial * (v21 ? 0.16 : 0.12));
   const hit = random.nextIntInclusive(1, 100) <= hitChance;
-  if (!hit) return { hit: false, blocked: false, critical: false, damage: 0 };
+  if (!hit) return {
+    hit: false, blocked: false, critical: false, damage: 0, hitChance, blockChance: 0,
+    criticalChance: 0, martialHitModifier, intelligenceHitModifier,
+    leadershipAccuracyModifier, martialDamageBonus,
+  };
 
   const penetration = attackerSnapshot.weapon.armorPenetration + attacker.modifiers.armorPenetration
     + passiveModifier(state, attacker, defender, 'modify_armor_penetration', ['before_attack'], true);
-  const blockChance = options.blockable ? calculateBlockChance({
+  const defenderLeadershipAura = leadershipAura(state, defender.side);
+  const blockChance = options.blockable ? (v21 ? calculateV21BlockChance({
+    attackerMartial,
+    defenderMartial,
+    attackerIntelligence: attackerSnapshot.intelligence ?? 50,
+    defenderIntelligence: defenderSnapshot.intelligence ?? 50,
+    equipmentBlock: defenderSnapshot.armor.blockBonus,
+    defenderBlock: defender.modifiers.block
+      + passiveModifier(state, defender, attacker, 'modify_block', ['before_attack', 'on_block'], false)
+      + defenderLeadershipAura,
+    defendActionBonus: defender.defending ? 30 : 0,
+    attackerPenetration: penetration,
+  }) : calculateBlockChance({
     attackerMartial,
     defenderMartial,
     equipmentBlock: defenderSnapshot.armor.blockBonus,
@@ -349,7 +413,7 @@ function performStrike(
       + passiveModifier(state, defender, attacker, 'modify_block', ['before_attack', 'on_block'], false),
     defendActionBonus: defender.defending ? 30 : 0,
     attackerPenetration: penetration,
-  }) : 0;
+  })) : 0;
   const blocked = options.blockable && random.nextIntInclusive(1, 100) <= blockChance;
   const criticalChance = calculateCriticalChance(
     attackerSnapshot.luck,
@@ -371,8 +435,14 @@ function performStrike(
       0,
       5,
     );
-  const rawDamage = attackerSnapshot.weapon.baseDamage + Math.floor(attackerMartial * 0.12) + flatDamage + variance;
-  const baseDamage = options.normalAttack ? calculateNormalAttackDamage({
+  const rawDamage = attackerSnapshot.weapon.baseDamage + martialDamageBonus + flatDamage + variance;
+  const scopedBaseCap = attackerSnapshot.combatArchetype
+    ? SCOPED_NORMAL_ATTACK_DAMAGE_CAP[attackerSnapshot.combatArchetype]
+    : undefined;
+  const maxDamage = v21 && scopedBaseCap !== undefined
+    ? calculateV21ScopedDamageCap(scopedBaseCap, attackerMartial)
+    : scopedBaseCap;
+  const normalDamageInput = {
     weaponBaseDamage: attackerSnapshot.weapon.baseDamage,
     attackerMartial,
     flatDamage,
@@ -381,10 +451,11 @@ function performStrike(
     blocked,
     defenderWasDefending: defender.defending,
     armorTier,
-    maxDamage: attackerSnapshot.combatArchetype
-      ? SCOPED_NORMAL_ATTACK_DAMAGE_CAP[attackerSnapshot.combatArchetype]
-      : undefined,
-  }) : calculateArtDamage({
+    maxDamage,
+  };
+  const baseDamage = options.normalAttack ? (v21
+    ? calculateV21NormalAttackDamage(normalDamageInput)
+    : calculateNormalAttackDamage(normalDamageInput)) : calculateArtDamage({
     rawDamage,
     damageMultiplier: options.damageMultiplier * passiveMultiplier,
     critical,
@@ -405,7 +476,10 @@ function performStrike(
   const beforeHp = defender.hp;
   defender.hp = Math.max(0, defender.hp - damage);
   if (beforeHp > 0 && defender.hp === 0) markDowned(defender);
-  return { hit: true, blocked, critical, damage };
+  return {
+    hit: true, blocked, critical, damage, hitChance, blockChance, criticalChance,
+    martialHitModifier, intelligenceHitModifier, leadershipAccuracyModifier, martialDamageBonus,
+  };
 }
 
 function resolveTargets(
@@ -457,6 +531,12 @@ function applyExecutableEffects(target: CombatRuntimeCombatant, effects: readonl
         break;
       case 'restore_stamina':
         target.stamina = Math.min(target.maxStamina, target.stamina + Math.max(0, Math.round(effect.value)));
+        break;
+      case 'restore_hp_to_max':
+        if (target.hp > 0) target.hp = target.maxHp;
+        break;
+      case 'restore_stamina_to_max':
+        target.stamina = target.maxStamina;
         break;
       case 'apply_status':
         if (effect.statusId) addStatus(target, effect.statusId);
@@ -595,6 +675,7 @@ export function executeCombatAction(input: CombatEngineState, action: CombatActi
       let blockedHits = 0;
       let criticalHits = 0;
       let totalDamage = 0;
+      let attributeStrike: ReturnType<typeof performStrike> | undefined;
       if (art.purpose === 'damage' || art.purpose === 'mixed') {
         const damageTargets = targets.filter((target) => target.side !== actor.side && isActive(target));
         for (let hitIndex = 0; hitIndex < art.maxHits; hitIndex += 1) {
@@ -608,6 +689,7 @@ export function executeCombatAction(input: CombatEngineState, action: CombatActi
             canCrit: art.canCrit,
             normalAttack: false,
           });
+          attributeStrike ??= strike;
           if (strike.hit) hitsLanded += 1;
           if (strike.blocked) blockedHits += 1;
           if (strike.critical) criticalHits += 1;
@@ -615,7 +697,12 @@ export function executeCombatAction(input: CombatEngineState, action: CombatActi
         }
       }
       if (art.purpose !== 'damage') {
-        for (const target of targets) applyExecutableEffects(target, art.effects);
+        for (const effect of art.effects) {
+          const effectTargets = effect.target === 'self' || effect.target === 'current_attacker'
+            ? [actor]
+            : targets;
+          for (const target of effectTargets) applyExecutableEffects(target, [effect]);
+        }
       }
       Object.assign(values, {
         artId: art.sourceId,
@@ -625,6 +712,15 @@ export function executeCombatAction(input: CombatEngineState, action: CombatActi
         blockedHits,
         criticalHits,
         totalDamage,
+        ...(attributeStrike ? {
+          hitChance: attributeStrike.hitChance,
+          blockChance: attributeStrike.blockChance,
+          criticalChance: attributeStrike.criticalChance,
+          martialHitModifier: attributeStrike.martialHitModifier,
+          intelligenceHitModifier: attributeStrike.intelligenceHitModifier,
+          leadershipAccuracyModifier: attributeStrike.leadershipAccuracyModifier,
+          martialDamageBonus: attributeStrike.martialDamageBonus,
+        } : {}),
       });
       summaryKey = 'combat.unique_art';
       break;
@@ -849,7 +945,7 @@ export function finalizeCombatResult(
     sessionId: state.snapshot.sessionId,
     encounterId: state.snapshot.intent.encounterId,
     kind: 'personal_combat',
-    rulesetVersion: COMBAT_RULESET_VERSION,
+    rulesetVersion: state.snapshot.intent.rulesetVersion,
     sourceTurnNumber: state.snapshot.intent.sourceTurnNumber,
     seed: state.snapshot.seed,
     resolvedAt,

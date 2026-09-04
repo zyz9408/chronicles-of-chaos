@@ -160,6 +160,22 @@ function roundLogLabel(entry: WarEngineState['actionLog'][number]): string {
     const enemyFactor = typeof entry.values.enemyCommanderFactor === 'number'
       ? `（统率系数 ×${entry.values.enemyCommanderFactor.toFixed(2)}）`
       : '';
+    const playerAttributeEffects = [
+      typeof entry.values.playerIntelligenceTacticFactorBps === 'number' && entry.values.playerIntelligenceTacticFactorBps !== 10_000
+        ? `智力战术 ${entry.values.playerIntelligenceTacticFactorBps >= 10_000 ? '+' : ''}${((entry.values.playerIntelligenceTacticFactorBps - 10_000) / 100).toFixed(0)}%`
+        : '',
+      typeof entry.values.playerMartialPressureBps === 'number' && entry.values.playerMartialPressureBps !== 10_000
+        ? `武勇压力 ${entry.values.playerMartialPressureBps >= 10_000 ? '+' : ''}${((entry.values.playerMartialPressureBps - 10_000) / 100).toFixed(0)}%`
+        : '',
+    ].filter(Boolean).join('、');
+    const enemyAttributeEffects = [
+      typeof entry.values.enemyIntelligenceTacticFactorBps === 'number' && entry.values.enemyIntelligenceTacticFactorBps !== 10_000
+        ? `智力战术 ${entry.values.enemyIntelligenceTacticFactorBps >= 10_000 ? '+' : ''}${((entry.values.enemyIntelligenceTacticFactorBps - 10_000) / 100).toFixed(0)}%`
+        : '',
+      typeof entry.values.enemyMartialPressureBps === 'number' && entry.values.enemyMartialPressureBps !== 10_000
+        ? `武勇压力 ${entry.values.enemyMartialPressureBps >= 10_000 ? '+' : ''}${((entry.values.enemyMartialPressureBps - 10_000) / 100).toFixed(0)}%`
+        : '',
+    ].filter(Boolean).join('、');
     const losses = typeof entry.values.playerCasualties === 'number'
       && typeof entry.values.enemyCasualties === 'number'
       ? `；战损我方 ${entry.values.playerCasualties}、敌方 ${entry.values.enemyCasualties}`
@@ -172,7 +188,7 @@ function roundLogLabel(entry: WarEngineState['actionLog'][number]): string {
         ? `敌军冲击令我军士气 -${entry.values.playerOpeningShock}`
         : '',
     ].filter(Boolean).join('，');
-    return `第 ${entry.values.round} 轮：我方${player}${playerFactor}，敌方${enemy}${enemyFactor}${losses}${shock ? `；${shock}` : ''}`;
+    return `第 ${entry.values.round} 轮：我方${player}${playerFactor}${playerAttributeEffects ? `〔${playerAttributeEffects}〕` : ''}，敌方${enemy}${enemyFactor}${enemyAttributeEffects ? `〔${enemyAttributeEffects}〕` : ''}${losses}${shock ? `；${shock}` : ''}`;
   }
   if (entry.actionType === 'war_retreat') return entry.summaryKey === 'war_retreat_success' ? '撤退成功' : '撤退受阻';
   if (entry.actionType === 'war_pursuit') return entry.summaryKey === 'war_pursuit_resolved' ? '追击展开' : '停止追击';

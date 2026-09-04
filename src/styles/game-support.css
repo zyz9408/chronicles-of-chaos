@@ -259,6 +259,34 @@
   color: #efb0a8;
 }
 
+.state-writeback-recovery-notice {
+  border-color: color-mix(in srgb, var(--accent, #b88a44) 48%, transparent);
+}
+
+.state-writeback-recovery-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.state-writeback-recovery-preview-grid > div {
+  padding: 0.7rem;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+  border-radius: 0.5rem;
+}
+
+.state-writeback-recovery-preview-grid dt {
+  color: var(--text-muted, #9d9489);
+  font-size: 0.78rem;
+}
+
+.state-writeback-recovery-preview-grid dd {
+  margin: 0.2rem 0 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
 /* Suggested Actions */
 .processing-stage-box {
   display: block;

@@ -145,6 +145,7 @@ function formatStageStatus(status: TurnProcessingStageEvent['status']): string {
 }
 
 function formatStageUsage(event: TurnProcessingStageEvent): string | undefined {
+  if (event.stage === 'retrievingMemory') return formatMemoryRetrievalUsage(event);
   const usage = event.usage;
   if (!usage) return undefined;
 
@@ -173,6 +174,26 @@ function formatStageUsage(event: TurnProcessingStageEvent): string | undefined {
     parts.push(`命中率 ${(hitRate * 100).toFixed(1)}%`);
   }
 
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
+function formatMemoryRetrievalUsage(event: TurnProcessingStageEvent): string | undefined {
+  const parts: string[] = [];
+  if (typeof event.usage?.promptTokens === 'number') {
+    parts.push(`向量输入 ${formatTokenCount(event.usage.promptTokens)} tokens`);
+  }
+  const retrieval = event.memoryRetrieval;
+  if (retrieval) {
+    parts.push(retrieval.status === 'vector' ? '向量召回' : retrieval.status === 'localFallback' ? '本地召回' : '本地回退');
+    parts.push(`总命中 ${retrieval.totalHitCount}`);
+    if (retrieval.vectorHitCount > 0) parts.push(`向量命中 ${retrieval.vectorHitCount}`);
+    if (retrieval.localHitCount > 0) parts.push(`本地召回 ${retrieval.localHitCount}`);
+    if (typeof retrieval.candidateCount === 'number') parts.push(`候选 ${retrieval.candidateCount}`);
+    if (retrieval.indexDeltaCount === 0) parts.push('索引无更新');
+    else if (typeof retrieval.indexEmbeddedCount === 'number' && retrieval.indexEmbeddedCount > 0) {
+      parts.push(`索引新增/更新 ${retrieval.indexEmbeddedCount}`);
+    } else if (typeof retrieval.indexDeltaCount === 'number') parts.push(`待索引 ${retrieval.indexDeltaCount}`);
+  }
   return parts.length > 0 ? parts.join(' · ') : undefined;
 }
 

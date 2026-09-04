@@ -12,8 +12,8 @@ describe('parseNarrativeTextSegments', () => {
 
     expect(segments).toEqual([
       { type: 'narration', text: '夜风穿过长秋宫外的廊道。' },
-      { type: 'dialogue', speaker: '萧行', text: '「上东门方向的喊杀声是怎么回事？」' },
-      { type: 'dialogue', speaker: '典韦', text: '「回主公，正是袁绍在突围。」' },
+      { type: 'dialogue', speaker: '萧行', text: '「上东门方向的喊杀声是怎么回事？」', speakerSource: 'explicit' },
+      { type: 'dialogue', speaker: '典韦', text: '「回主公，正是袁绍在突围。」', speakerSource: 'explicit' },
     ]);
   });
 
@@ -38,7 +38,7 @@ describe('parseNarrativeTextSegments', () => {
 
     expect(segments).toEqual([
       { type: 'narration', text: '光和七年正月四日，巳时末刻。' },
-      { type: 'dialogue', speaker: '屯骑营军侯', text: '“禀校尉大人！请大人训示！”' },
+      { type: 'dialogue', speaker: '屯骑营军侯', text: '“禀校尉大人！请大人训示！”', speakerSource: 'explicit' },
     ]);
   });
 
@@ -46,7 +46,7 @@ describe('parseNarrativeTextSegments', () => {
     const segments = parseNarrativeTextSegments('“慌什么？” 你眉头微皱，宗室子弟的威仪在这一刻不怒自威。');
 
     expect(segments).toEqual([
-      { type: 'dialogue', speaker: '你', text: '「慌什么？」' },
+      { type: 'dialogue', speaker: '你', text: '「慌什么？」', speakerSource: 'inferred' },
       { type: 'narration', text: '你眉头微皱，宗室子弟的威仪在这一刻不怒自威。' },
     ]);
   });
@@ -56,7 +56,7 @@ describe('parseNarrativeTextSegments', () => {
 
     expect(segments).toEqual([
       { type: 'narration', text: '李丰匆匆从营门处跑来，压低声音道：' },
-      { type: 'dialogue', speaker: '李丰', text: '「司马，朝臣们开始入宫了。」' },
+      { type: 'dialogue', speaker: '李丰', text: '「司马，朝臣们开始入宫了。」', speakerSource: 'inferred' },
     ]);
   });
 
@@ -65,7 +65,7 @@ describe('parseNarrativeTextSegments', () => {
 
     expect(segments).toEqual([
       { type: 'narration', text: '夜色沉下。\n火光很远。' },
-      { type: 'dialogue', speaker: '刘构', text: '「传令。」' },
+      { type: 'dialogue', speaker: '刘构', text: '「传令。」', speakerSource: 'explicit' },
     ]);
   });
 
@@ -85,7 +85,7 @@ describe('parseNarrativeTextSegments', () => {
 
   it('still parses real speaker lines after excluding clock separators', () => {
     expect(parseNarrativeTextSegments('张虎：军令已下。')).toEqual([
-      { type: 'dialogue', speaker: '张虎', text: '军令已下。' },
+      { type: 'dialogue', speaker: '张虎', text: '军令已下。', speakerSource: 'explicit' },
     ]);
   });
 });

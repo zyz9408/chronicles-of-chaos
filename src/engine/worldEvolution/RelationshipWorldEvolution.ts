@@ -41,7 +41,36 @@ import {
   getWorldlineStoryPack,
 } from '../worldline/WorldlineKnowledgeRegistry';
 
-export type RelationshipWorldEvolutionTrigger = 'bootstrap' | 'due';
+export type RelationshipWorldEvolutionTrigger = 'bootstrap' | 'due' | 'selfHeal';
+
+export interface SameTurnNpcEvolutionExclusion {
+  npcId: string;
+  reason: 'same_turn_present' | 'same_turn_involved';
+  eventId: string;
+}
+
+export function selectSameTurnNpcEvolutionExclusions(
+  previousState: RuntimeState,
+  nextState: RuntimeState,
+): { npcIds: string[]; diagnostics: SameTurnNpcEvolutionExclusion[] } {
+  const previousEventIds = new Set((previousState.turnEvents ?? []).map((event) => event.eventId));
+  const exclusions: SameTurnNpcEvolutionExclusion[] = [];
+  for (const event of nextState.turnEvents ?? []) {
+    if (previousEventIds.has(event.eventId)) continue;
+    for (const npcId of event.presentNpcIds) {
+      exclusions.push({ npcId, reason: 'same_turn_present', eventId: event.eventId });
+    }
+    for (const npcId of event.involvedNpcIds) {
+      if (!event.presentNpcIds.includes(npcId)) {
+        exclusions.push({ npcId, reason: 'same_turn_involved', eventId: event.eventId });
+      }
+    }
+  }
+  const diagnostics = exclusions.filter((entry, index) => (
+    exclusions.findIndex((candidate) => candidate.npcId === entry.npcId) === index
+  ));
+  return { npcIds: diagnostics.map((entry) => entry.npcId), diagnostics };
+}
 
 export interface RelationshipWorldEvolutionCandidate {
   npcId: string;
@@ -160,11 +189,7 @@ export function selectRelationshipWorldEvolutionCandidates(
       normalized.activeQuests,
       normalized.currentDate,
     );
-    const trigger = !activity || activity.status === 'completed' || activity.status === 'cancelled'
-      ? 'bootstrap'
-      : activity.dueAt && isReached(normalized, activity.dueAt)
-        ? 'due'
-        : undefined;
+    const trigger = resolveEvolutionTrigger(normalized, activity);
     if (!trigger) continue;
 
     const evaluationId = buildEvaluationId(npc, activity, trigger, normalized.currentDate);
@@ -456,11 +481,7 @@ function explainNoRelationshipWorldEvolutionCandidate(
       normalized.activeQuests,
       normalized.currentDate,
     );
-    const trigger = !activity || activity.status === 'completed' || activity.status === 'cancelled'
-      ? 'bootstrap'
-      : activity.dueAt && isReached(normalized, activity.dueAt)
-        ? 'due'
-        : undefined;
+    const trigger = resolveEvolutionTrigger(normalized, activity);
     if (!trigger) {
       pendingCount += 1;
       continue;
@@ -476,6 +497,18 @@ function explainNoRelationshipWorldEvolutionCandidate(
     duplicateCount > 0 ? `本阶段已结算 ${duplicateCount} 人` : '',
     unresolvedNameOnlyBonds > 0 ? `姓名模式羁绊 ${unresolvedNameOnlyBonds} 条` : '',
   ].filter(Boolean).join('；');
+}
+
+function resolveEvolutionTrigger(
+  state: RuntimeState,
+  activity: LuanShiNpc['backgroundActivity'],
+): RelationshipWorldEvolutionTrigger | undefined {
+  if (!activity || activity.status === 'completed' || activity.status === 'cancelled') return 'bootstrap';
+  if (['active', 'planned', 'blocked'].includes(activity.status)) {
+    if (!activity.dueAt || !tryCreateGameClockFromDateLabel(activity.dueAt)) return 'selfHeal';
+    if (isReached(state, activity.dueAt)) return 'due';
+  }
+  return undefined;
 }
 
 function buildEvaluationId(

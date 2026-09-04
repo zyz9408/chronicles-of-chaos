@@ -75,6 +75,7 @@ export function buildTurnOutputRequirements(): string {
     '- 合同完整且结果一致的 ordinaryChecks 由本地自动发放阅历，成败均有成长；不得为刷阅历虚构或拆分判定，也不要在 statePatches/writeback 重复写经验。',
     '- narrativeText 中只有存在同一 ID 的 ordinaryChecks、upsertConflictRecord 或 upsertCombatRecord 时才可输出 `[[判定:...]]` 占位；不得输出孤儿判定标记。',
     '- writeback 只作为建议写回/诊断对象；需要立即生效的事实必须同时给出对应 statePatches。',
+    '- writeback.presentationSpeakerFacts 只承载 AVG 展示身份：最终 narrativeText 每个显式人物对白段必须复用结构化 actorId/source/sex，或为一次性具名人物建立稳定 avg-presentation: ID；不得从姓名、称谓或正文猜性别/职业，也不得借此建立人物志或世界事实。',
     '- 每回合必须输出 writeback.playerRecoveryKind，且只能是 none/rest/treatment。只有最终正文已经实际完成睡眠或休整才用 rest，已经实际完成治疗或疗伤才用 treatment；计划、询问、等待、被打断或未完成都用 none。不得返回生命、体力、恢复量或时长数值；rest/treatment 必须同时有与正文一致的正向 timeAdvance，由本地按实际游戏时钟差结算。',
     '- 每回合必须输出 writeback.encounterTransitionDecision：明确物理攻击已发动或不可避免交锋用 start；仍可选择是否交手的拔刀、威胁、追逐、对峙用 offer；没有本地冲突边界用 none。start/offer 必须同时提供合法 encounterStartIntent，none 必须返回 null。',
     '- mode=start 的个人战必须把 narrativeText 停在第一击命中和伤害结果之前；不得裁定胜负、伤亡、战利品或战后影响，不得写入 upsertCombatRecord。攻击由同伴或敌人发动时同样必须切入。',

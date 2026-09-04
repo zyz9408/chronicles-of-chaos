@@ -2038,6 +2038,38 @@ describe('validateLuanShiCommand', () => {
     expect(next.worldStateDelta.openingTraitsSummary).toBe('Opening AI judged the custom trait as blue.');
   });
 
+  it('does not let an incomplete provider trait snapshot delete a player-authority rule', () => {
+    const state = makeState();
+    state.player.traits = [{
+      id: 'custom_trait_perfect_learning',
+      label: '天生圣人',
+      description: '快速完美学习任何技能。',
+      source: 'custom',
+    }];
+
+    const next = applyLuanShiCommand(state, {
+      action: 'updatePlayerTraits',
+      characterId: 'player',
+      traits: [{
+        id: 'trait_well_rested',
+        label: '精神充沛',
+        description: '休息充分。',
+        source: 'event',
+        rarity: 'white',
+      }],
+      summary: '更新当前特质。',
+    } as any);
+
+    expect(next.player.traits?.map((trait) => trait.id)).toEqual([
+      'custom_trait_perfect_learning',
+      'trait_well_rested',
+    ]);
+    expect(next.player.traits?.[0].mechanics).toMatchObject({
+      mode: 'authoritative',
+      confirmedByPlayer: true,
+    });
+  });
+
   it('rejects unresolved player trait rarity writeback placeholders', () => {
     const result = validateLuanShiCommand(makeState(), {
       action: 'updatePlayerTraits',

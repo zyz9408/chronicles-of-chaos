@@ -10,6 +10,7 @@ import {
   executeRelationshipWorldEvolution,
   parseRelationshipWorldEvolutionResponse,
   selectRelationshipWorldEvolutionCandidates,
+  selectSameTurnNpcEvolutionExclusions,
   type RelationshipWorldEvolutionPackage,
 } from './RelationshipWorldEvolution';
 
@@ -128,6 +129,30 @@ describe('RelationshipWorldEvolution', () => {
       .toEqual(['npc_caocao']);
     expect(selectRelationshipWorldEvolutionCandidates(state, '继续赶路', 3, ['npc_caocao']))
       .toEqual([]);
+  });
+
+  it('修复缺失或无效到期时间的旧后台活动', () => {
+    const state = makeState();
+    delete state.npcs![0].backgroundActivity!.dueAt;
+    expect(selectRelationshipWorldEvolutionCandidates(state, '继续赶路')[0]?.trigger).toBe('selfHeal');
+    state.npcs![0].backgroundActivity!.dueAt = '不是日期';
+    expect(selectRelationshipWorldEvolutionCandidates(state, '继续赶路')[0]?.trigger).toBe('selfHeal');
+  });
+
+  it('排除本回合新事件中在场或直接涉及的人物并给出原因', () => {
+    const previous = makeState();
+    const next = structuredClone(previous);
+    next.turnEvents = [{
+      eventId: 'event_new', happenedAt: next.currentDate, locationId: next.currentLocationId,
+      summary: '本回合事件', visibility: '在场可知', presentNpcIds: ['npc_caocao'], involvedNpcIds: ['npc_caocao', 'npc_paused'],
+    }];
+    expect(selectSameTurnNpcEvolutionExclusions(previous, next)).toEqual({
+      npcIds: ['npc_caocao', 'npc_paused'],
+      diagnostics: [
+        { npcId: 'npc_caocao', reason: 'same_turn_present', eventId: 'event_new' },
+        { npcId: 'npc_paused', reason: 'same_turn_involved', eventId: 'event_new' },
+      ],
+    });
   });
 
   it('拒绝未知人物、未知地点和超过30日的下一阶段', () => {

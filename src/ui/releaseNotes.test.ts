@@ -9,8 +9,8 @@ import {
   shouldShowDailyReleaseNotes,
 } from './releaseNotes';
 
-const ALL_RELEASE_NOTES = RAW_RELEASE_NOTES.slice(9);
-const RELEASE_NOTES = RAW_RELEASE_NOTES.slice(14);
+const ALL_RELEASE_NOTES = RAW_RELEASE_NOTES.slice(16);
+const RELEASE_NOTES = RAW_RELEASE_NOTES.slice(21);
 
 class MemoryStorage {
   private values = new Map<string, string>();
@@ -26,25 +26,25 @@ class MemoryStorage {
 
 describe('releaseNotes', () => {
   it('exposes the current release and its exact publication time', () => {
-    expect(APP_VERSION).toBe('1.7.24');
-    expect(APP_VERSION_LABEL).toBe('v1.7.24');
-    expect(RAW_RELEASE_NOTES).toHaveLength(19);
-    expect(RAW_RELEASE_NOTES[0]?.id).toBe('2026-08-18');
-    expect(RAW_RELEASE_NOTES[0]?.date).toBe('2026年8月18日');
+    expect(APP_VERSION).toBe('1.8.4');
+    expect(APP_VERSION_LABEL).toBe('v1.8.4');
+    expect(RAW_RELEASE_NOTES).toHaveLength(26);
+    expect(RAW_RELEASE_NOTES[0]?.id).toBe('2026-09-05');
+    expect(RAW_RELEASE_NOTES[0]?.date).toBe('2026年9月5日');
     expect(RAW_RELEASE_NOTES[0]?.updates).toHaveLength(1);
 
     const latestRelease = RAW_RELEASE_NOTES[0]?.updates[0];
-    expect(latestRelease?.id).toBe('2026-08-18-v1.7.24-glm-minimax-compatibility');
-    expect(latestRelease?.time).toBe('00:10');
-    expect(latestRelease?.version).toBe('v1.7.24');
-    expect(latestRelease?.title).toBe('GLM 与 MiniMax 接口兼容优化');
-    expect(latestRelease?.items.join('')).toContain('累计正文片段');
+    expect(latestRelease?.id).toBe('2026-09-05-v1.8.4-combat-authority-rules');
+    expect(latestRelease?.time).toBe('01:45');
+    expect(latestRelease?.version).toBe('v1.8.4');
+    expect(latestRelease?.title).toBe('战斗属性与玩家权威能力完善');
+    expect(latestRelease?.items.join('')).toContain('本地结算');
 
-    const augustTwelfthRelease = RAW_RELEASE_NOTES[2];
+    const augustTwelfthRelease = RAW_RELEASE_NOTES[9];
     expect(augustTwelfthRelease?.id).toBe('2026-08-12');
     expect(augustTwelfthRelease?.updates).toHaveLength(2);
 
-    const augustEleventhRelease = RAW_RELEASE_NOTES[3];
+    const augustEleventhRelease = RAW_RELEASE_NOTES[10];
     expect(augustEleventhRelease?.id).toBe('2026-08-11');
     expect(augustEleventhRelease?.updates).toHaveLength(2);
 
@@ -53,22 +53,22 @@ describe('releaseNotes', () => {
     expect(confirmedNpcAdmissionRelease?.time).toBe('00:17');
     expect(confirmedNpcAdmissionRelease?.items.join('')).toContain('强制建档');
 
-    const augustTenthRelease = RAW_RELEASE_NOTES[4];
+    const augustTenthRelease = RAW_RELEASE_NOTES[11];
     expect(augustTenthRelease?.id).toBe('2026-08-10');
     expect(augustTenthRelease?.date).toBe('2026年8月10日');
     expect(augustTenthRelease?.updates).toHaveLength(2);
 
-    const augustNinthRelease = RAW_RELEASE_NOTES[5];
+    const augustNinthRelease = RAW_RELEASE_NOTES[12];
     expect(augustNinthRelease?.id).toBe('2026-08-09');
     expect(augustNinthRelease?.date).toBe('2026年8月9日');
     expect(augustNinthRelease?.updates).toHaveLength(1);
 
-    const augustEighthRelease = RAW_RELEASE_NOTES[6];
+    const augustEighthRelease = RAW_RELEASE_NOTES[13];
     expect(augustEighthRelease?.id).toBe('2026-08-08');
     expect(augustEighthRelease?.date).toBe('2026年8月8日');
     expect(augustEighthRelease?.updates).toHaveLength(6);
 
-    const augustSeventhRelease = RAW_RELEASE_NOTES[7];
+    const augustSeventhRelease = RAW_RELEASE_NOTES[14];
     expect(augustSeventhRelease?.id).toBe('2026-08-07');
     expect(augustSeventhRelease?.date).toBe('2026年8月7日');
     expect(augustSeventhRelease?.updates).toHaveLength(6);
@@ -105,7 +105,7 @@ describe('releaseNotes', () => {
     expect(runtimeStabilityRelease?.time).toBe('07:48');
     expect(runtimeStabilityRelease?.items.join('')).toContain('连续作战');
 
-    const previousRelease = RAW_RELEASE_NOTES[8];
+    const previousRelease = RAW_RELEASE_NOTES[15];
     expect(previousRelease?.id).toBe('2026-08-06');
     expect(previousRelease?.updates).toHaveLength(8);
 

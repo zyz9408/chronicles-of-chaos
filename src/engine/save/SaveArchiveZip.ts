@@ -12,7 +12,7 @@ function loadSaveArchiveCodec(): Promise<SaveArchiveCodec> {
 }
 
 export const PORTABLE_SAVE_ZIP_FORMAT = 'chronicles-of-chaos-v2-save-archive';
-export const PORTABLE_SAVE_ZIP_VERSION = 1;
+export const PORTABLE_SAVE_ZIP_VERSION = 2;
 
 const ASSET_FOLDERS = {
   characters: 'assets/images/characters',
@@ -38,9 +38,31 @@ interface PortableSnapshotManifestEntry {
   turnNumber: number;
 }
 
+export interface PortableAvgVisualPartition {
+  visualPartitionId: string;
+  archiveBytes: Uint8Array;
+  actorCount: number;
+  sceneCount: number;
+  outfitCount: number;
+  outfitOverrideCount: number;
+  assetCount: number;
+  imageBytes: number;
+}
+
+interface PortableAvgVisualPartitionManifestEntry extends Omit<PortableAvgVisualPartition, 'archiveBytes'> {
+  path: string;
+  archiveBytes: number;
+}
+
+export interface PortableSaveZipBundle {
+  archive: SaveArchive;
+  visualCapability: 'portable-v2' | 'none';
+  avgVisualPartitions: Array<PortableAvgVisualPartition & { path: string }>;
+}
+
 interface PortableSaveZipManifest {
   format: typeof PORTABLE_SAVE_ZIP_FORMAT;
-  version: typeof PORTABLE_SAVE_ZIP_VERSION;
+  version: 1 | typeof PORTABLE_SAVE_ZIP_VERSION;
   schema: SaveArchive['schema'];
   archiveVersion: SaveArchive['version'];
   exportedAt: string;
@@ -50,6 +72,7 @@ interface PortableSaveZipManifest {
   saves: PortableSaveManifestEntry[];
   turnSnapshots: PortableSnapshotManifestEntry[];
   assetFolders: typeof ASSET_FOLDERS;
+  avgVisualPartitions?: PortableAvgVisualPartitionManifestEntry[];
 }
 
 function safeFileSegment(value: string, fallback: string): string {
@@ -138,10 +161,28 @@ function isSnapshotManifestEntry(value: unknown): value is PortableSnapshotManif
     && Number.isInteger(value.turnNumber);
 }
 
+function isNonNegativeInteger(value: unknown): boolean {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isAvgVisualPartitionEntry(value: unknown): value is PortableAvgVisualPartitionManifestEntry {
+  return isRecord(value)
+    && typeof value.visualPartitionId === 'string'
+    && value.visualPartitionId.trim().length > 0
+    && typeof value.path === 'string'
+    && isNonNegativeInteger(value.archiveBytes)
+    && isNonNegativeInteger(value.actorCount)
+    && isNonNegativeInteger(value.sceneCount)
+    && isNonNegativeInteger(value.outfitCount)
+    && isNonNegativeInteger(value.outfitOverrideCount)
+    && isNonNegativeInteger(value.assetCount)
+    && isNonNegativeInteger(value.imageBytes);
+}
+
 function parseManifest(value: unknown): PortableSaveZipManifest {
   if (!isRecord(value)
     || value.format !== PORTABLE_SAVE_ZIP_FORMAT
-    || value.version !== PORTABLE_SAVE_ZIP_VERSION
+    || (value.version !== 1 && value.version !== PORTABLE_SAVE_ZIP_VERSION)
     || value.schema !== 'coc.v2.saves'
     || (value.archiveVersion !== 1 && value.archiveVersion !== 2)
     || typeof value.exportedAt !== 'string'
@@ -151,13 +192,29 @@ function parseManifest(value: unknown): PortableSaveZipManifest {
     || !Array.isArray(value.saves)
     || !value.saves.every(isManifestEntry)
     || !Array.isArray(value.turnSnapshots)
-    || !value.turnSnapshots.every(isSnapshotManifestEntry)) {
+    || !value.turnSnapshots.every(isSnapshotManifestEntry)
+    || (value.version === PORTABLE_SAVE_ZIP_VERSION
+      && (!Array.isArray(value.avgVisualPartitions) || !value.avgVisualPartitions.every(isAvgVisualPartitionEntry)))
+    || (value.version === 1 && value.avgVisualPartitions !== undefined)) {
     throw new Error('存档 ZIP 清单格式不正确。');
   }
   return value as unknown as PortableSaveZipManifest;
 }
 
-export async function createPortableSaveZip(archive: SaveArchive): Promise<Uint8Array> {
+function collectArchiveVisualPartitionIds(archive: SaveArchive): string[] {
+  return [...new Set(archive.saves.flatMap((save) => {
+    const direct = save.runtimeState.avgPresentation?.visualPartitionId?.trim();
+    if (direct) return [direct];
+    const legacy = [...new Set((save.runtimeState.avgPresentation?.portraitBindings ?? [])
+      .map((binding) => binding.saveId?.trim()).filter(Boolean))];
+    return legacy.length === 1 ? legacy : [];
+  }))].sort();
+}
+
+export async function createPortableSaveZip(
+  archive: SaveArchive,
+  options: { avgVisualPartitions?: PortableAvgVisualPartition[] } = {},
+): Promise<Uint8Array> {
   const { strToU8 } = await loadSaveArchiveCodec();
   const entries: Record<string, Uint8Array> = {};
   const saves: PortableSaveManifestEntry[] = archive.saves.map((save, index) => {
@@ -186,6 +243,35 @@ export async function createPortableSaveZip(archive: SaveArchive): Promise<Uint8
       };
     });
 
+  const referencedPartitions = new Set(collectArchiveVisualPartitionIds(archive));
+  const seenPartitionIds = new Set<string>();
+  const seenVisualPaths = new Set<string>();
+  const avgVisualPartitions: PortableAvgVisualPartitionManifestEntry[] = [];
+  for (const [index, partition] of (options.avgVisualPartitions ?? []).entries()) {
+    const visualPartitionId = partition.visualPartitionId.trim();
+    if (!visualPartitionId || !referencedPartitions.has(visualPartitionId)) throw new Error('存档 ZIP 包含未知视觉分区。');
+    if (seenPartitionIds.has(visualPartitionId)) throw new Error('存档 ZIP 包含重复视觉分区。');
+    if (!(partition.archiveBytes instanceof Uint8Array) || partition.archiveBytes.byteLength === 0) {
+      throw new Error('视觉分区归档不能为空。');
+    }
+    const path = `avg-visuals/${String(index + 1).padStart(4, '0')}-${safeFileSegment(visualPartitionId, 'visual')}.zip`;
+    if (seenVisualPaths.has(path)) throw new Error('存档 ZIP 包含重复视觉路径。');
+    seenPartitionIds.add(visualPartitionId);
+    seenVisualPaths.add(path);
+    entries[path] = partition.archiveBytes;
+    avgVisualPartitions.push({
+      visualPartitionId,
+      path,
+      archiveBytes: partition.archiveBytes.byteLength,
+      actorCount: partition.actorCount,
+      sceneCount: partition.sceneCount,
+      outfitCount: partition.outfitCount,
+      outfitOverrideCount: partition.outfitOverrideCount,
+      assetCount: partition.assetCount,
+      imageBytes: partition.imageBytes,
+    });
+  }
+
   const manifest: PortableSaveZipManifest = {
     format: PORTABLE_SAVE_ZIP_FORMAT,
     version: PORTABLE_SAVE_ZIP_VERSION,
@@ -198,6 +284,7 @@ export async function createPortableSaveZip(archive: SaveArchive): Promise<Uint8
     saves,
     turnSnapshots,
     assetFolders: ASSET_FOLDERS,
+    avgVisualPartitions,
   };
   entries['manifest.json'] = strToU8(JSON.stringify(manifest, null, 2));
   Object.values(ASSET_FOLDERS).forEach((folder) => {
@@ -207,7 +294,7 @@ export async function createPortableSaveZip(archive: SaveArchive): Promise<Uint8
   return zipAsync(entries);
 }
 
-export async function parsePortableSaveZip(data: Uint8Array): Promise<SaveArchive> {
+export async function parsePortableSaveZipBundle(data: Uint8Array): Promise<PortableSaveZipBundle> {
   const { strFromU8 } = await loadSaveArchiveCodec();
   const entries = await unzipAsync(data);
   const manifestBytes = entries['manifest.json'];
@@ -258,14 +345,60 @@ export async function parsePortableSaveZip(data: Uint8Array): Promise<SaveArchiv
     return snapshot;
   });
 
-  return {
+  const referencedPartitions = new Set(collectArchiveVisualPartitionIds({
     schema: 'coc.v2.saves',
     version: manifest.archiveVersion,
     exportedAt: manifest.exportedAt,
     lastSaveId: manifest.lastSaveId,
     saves,
     turnSnapshots,
+  }));
+  const visualIds = new Set<string>();
+  const visualPaths = new Set<string>();
+  const avgVisualPartitions = (manifest.avgVisualPartitions ?? []).map((summary) => {
+    if (!referencedPartitions.has(summary.visualPartitionId)) throw new Error('存档 ZIP 包含未知视觉分区。');
+    if (visualIds.has(summary.visualPartitionId)) throw new Error('存档 ZIP 包含重复视觉分区。');
+    if (visualPaths.has(summary.path)
+      || !/^avg-visuals\/\d{4}-[^/]+\.zip$/u.test(summary.path)
+      || summary.path.includes('..')
+      || summary.path.includes('\\')) throw new Error('存档 ZIP 包含非法或重复视觉路径。');
+    const archiveBytes = entries[summary.path];
+    if (!archiveBytes) throw new Error('存档 ZIP 缺少视觉分区文件。');
+    if (archiveBytes.byteLength !== summary.archiveBytes) throw new Error('存档 ZIP 视觉分区字节数量不一致。');
+    visualIds.add(summary.visualPartitionId);
+    visualPaths.add(summary.path);
+    return {
+      ...summary,
+      archiveBytes,
+    };
+  });
+
+  const allowedPaths = new Set([
+    'manifest.json',
+    ...paths,
+    ...Object.values(ASSET_FOLDERS).map((folder) => `${folder}/.keep`),
+    ...visualPaths,
+  ]);
+  if (Object.keys(entries).some((path) => !allowedPaths.has(path))) {
+    throw new Error('存档 ZIP 包含清单之外的额外文件。');
+  }
+
+  return {
+    archive: {
+      schema: 'coc.v2.saves',
+      version: manifest.archiveVersion,
+      exportedAt: manifest.exportedAt,
+      lastSaveId: manifest.lastSaveId,
+      saves,
+      turnSnapshots,
+    },
+    visualCapability: manifest.version === PORTABLE_SAVE_ZIP_VERSION ? 'portable-v2' : 'none',
+    avgVisualPartitions,
   };
+}
+
+export async function parsePortableSaveZip(data: Uint8Array): Promise<SaveArchive> {
+  return (await parsePortableSaveZipBundle(data)).archive;
 }
 
 function isZipBytes(data: Uint8Array): boolean {
@@ -306,4 +439,20 @@ export async function readSaveArchiveFile(file: File): Promise<unknown> {
   if (isZipBytes(bytes)) return parsePortableSaveZip(bytes);
   const { strFromU8 } = await loadSaveArchiveCodec();
   return JSON.parse(strFromU8(bytes));
+}
+
+export async function readPortableSaveZipBundle(file: File): Promise<PortableSaveZipBundle | null> {
+  const bytes = await readSaveArchiveBytes(file);
+  return isZipBytes(bytes) ? parsePortableSaveZipBundle(bytes) : null;
+}
+
+export async function readSaveArchiveBundleFile(file: File): Promise<PortableSaveZipBundle> {
+  const bytes = await readSaveArchiveBytes(file);
+  if (isZipBytes(bytes)) return parsePortableSaveZipBundle(bytes);
+  const { strFromU8 } = await loadSaveArchiveCodec();
+  return {
+    archive: JSON.parse(strFromU8(bytes)) as SaveArchive,
+    visualCapability: 'none',
+    avgVisualPartitions: [],
+  };
 }

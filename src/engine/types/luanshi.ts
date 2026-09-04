@@ -912,6 +912,10 @@ export interface TroopLedgerEntry {
   fatigue?: '低' | '中' | '高' | '极高';
   /** War Engine V2 的精确疲劳值；旧记录缺省时仍由 fatigue 档位投影。 */
   warFatiguePercent?: number;
+  /** 本回合部队的活动节奏；本地确定性疲劳恢复只认 resting。 */
+  activityTempo?: 'resting' | 'stationary_duty' | 'training' | 'marching' | 'combat' | 'unknown';
+  /** 本地确定性恢复的幂等时间戳，不由模型写入。 */
+  lastDeterministicFatigueRecoveryAt?: string;
   readiness?: '低' | '中' | '高';
   lifecycleStatus?: 'active' | 'routed' | 'merged' | 'split' | 'destroyed' | 'surrendered' | 'disbanded' | 'unknown' | 'archived';
   statusTags?: string[];

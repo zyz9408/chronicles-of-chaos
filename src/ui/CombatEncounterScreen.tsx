@@ -103,7 +103,21 @@ function logLabel(
   if (entry.actionType === 'stabilize') {
     return `${actor}消耗${entry.values.rescuerHpSpent ?? COMBAT_STABILIZE_HP_COST}点生命援护${targets || '同伴'}`;
   }
-  return `${actor}${labels[entry.actionType] ?? '采取行动'}${targets ? `，目标：${targets}` : ''}`;
+  const attributeParts = [
+    typeof entry.values.martialHitModifier === 'number' && entry.values.martialHitModifier !== 0
+      ? `武力命中 ${entry.values.martialHitModifier > 0 ? '+' : ''}${entry.values.martialHitModifier.toFixed(1)}%`
+      : '',
+    typeof entry.values.intelligenceHitModifier === 'number' && entry.values.intelligenceHitModifier !== 0
+      ? `智力识破 ${entry.values.intelligenceHitModifier > 0 ? '+' : ''}${entry.values.intelligenceHitModifier.toFixed(1)}%`
+      : '',
+    typeof entry.values.leadershipAccuracyModifier === 'number' && entry.values.leadershipAccuracyModifier !== 0
+      ? `统率协同 ${entry.values.leadershipAccuracyModifier > 0 ? '+' : ''}${entry.values.leadershipAccuracyModifier}`
+      : '',
+    typeof entry.values.martialDamageBonus === 'number'
+      ? `武力伤害 +${entry.values.martialDamageBonus}`
+      : '',
+  ].filter(Boolean).join('，');
+  return `${actor}${labels[entry.actionType] ?? '采取行动'}${targets ? `，目标：${targets}` : ''}${attributeParts ? `（${attributeParts}）` : ''}`;
 }
 
 function prepareArtTargets(
