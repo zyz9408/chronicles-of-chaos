@@ -4087,7 +4087,16 @@ describe('composePrompt', () => {
   });
 
   it('documents player loadout partial writeback boundaries', () => {
-    const prompt = composePrompt(worldBook, undefined, [], undefined, makeState(), '我收起金疮药并换上偃月刀');
+    const state = makeState();
+    state.player.equipment = [{
+      id: 'eq_yanyuedao',
+      slot: 'weapon',
+      name: '偃月刀',
+      quality: 'blue',
+      description: '厚重长刃。',
+      condition: '完好',
+    }];
+    const prompt = composePrompt(worldBook, undefined, [], undefined, state, '我收起金疮药并换上偃月刀');
 
     expect(prompt.stateWriterContext).toContain('payload.command.action=updatePlayerLoadout');
     expect(prompt.stateWriterContext).toContain('inventoryChanges:[{action:"upsert"');
@@ -4105,6 +4114,12 @@ describe('composePrompt', () => {
     expect(prompt.stateWriterContext).toContain('先核对玩家行动与最终正文已经成立的事实');
     expect(prompt.stateWriterContext).toContain('仅在正文中提到、看见或回忆既有物品');
     expect(prompt.stateWriterContext).toContain('不得再次 upsert');
+    expect(prompt.stateWriterContext).toContain('既有装备的更新、强化、改造、修复、重铸');
+    expect(prompt.stateWriterContext).toContain('updatePlayerLoadout.equipmentChanges:[{action:"upsert"');
+    expect(prompt.stateWriterContext).toContain('逐字复用当前装备的稳定 equipmentId');
+    expect(prompt.stateWriterContext).toContain('currentPlayerEquipment');
+    expect(prompt.stateWriterContext).toContain('equipmentId: eq_yanyuedao');
+    expect(prompt.stateWriterContext).toContain('"condition":"完好"');
     expect(prompt.stateWriterContext).toContain('购买成立时必须同时写入物品获得与负数 personalMoneyDelta');
     expect(prompt.stateWriterContext).toContain('personalMoney 与 personalMoneyDelta 的底层单位均为钱');
     expect(prompt.stateWriterContext).toContain('黄金不是 personalMoney 的高位单位');

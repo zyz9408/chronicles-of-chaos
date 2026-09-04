@@ -1598,6 +1598,8 @@ const PLAYER_INVENTORY_LIFECYCLE_WRITEBACK_REVIEW_PATTERN =
   /出售|卖出|卖给|收走|收下|消耗|服用|吃下|喝下|交出|交给|交回|收回|赠予|赠送|送出|遗失|丢失|损毁|毁坏|过期|兑付|兑现|提取/;
 const PLAYER_INVENTORY_ACQUISITION_WRITEBACK_REVIEW_PATTERN =
   /获得|取得|领取|收下|购买|买下|捡到|缴获|入手/;
+const PLAYER_EQUIPMENT_PROPERTY_WRITEBACK_REVIEW_PATTERN =
+  /更新|强化|改造|改装|修复|修补|重铸|重锻|锻造|精炼|淬炼|淬火|打磨|开刃|镶嵌|刻印|加装|拆除|更换|调整配重|重设(?:重心|配重)|校正(?:重心|配重)|损坏|受损|磨损|折断|碎裂|腐蚀|钝化|染毒|涂毒/;
 const PLAYER_INVENTORY_DESTRUCTIVE_SCOPE_DIAGNOSTIC_PREFIX =
   '主角物品破坏范围越界：';
 
@@ -1637,6 +1639,26 @@ function requiresPlayerEconomyWritebackReview(
   if (hasCompletedPersonalMoneyFact && !hasMoneyWriteback) {
     return true;
   }
+
+  const currentEquipment = runtimeState.player.equipment ?? [];
+  const equipmentMentionTokens = buildUniqueLoadoutMentionTokens(currentEquipment);
+  const touchedEquipmentIds = new Set<string>();
+  for (const command of playerLoadoutCommands) {
+    for (const item of command.equipment ?? []) touchedEquipmentIds.add(item.id);
+    for (const change of command.equipmentChanges ?? []) {
+      if (change.action === 'upsert') touchedEquipmentIds.add(change.item.id);
+      else if (change.action === 'equipFromInventory') touchedEquipmentIds.add(change.itemId);
+      else touchedEquipmentIds.add(change.equipmentId);
+    }
+  }
+  const hasUnwrittenEquipmentPropertyChange = currentEquipment.some((item) => (
+    !touchedEquipmentIds.has(item.id)
+    && narrativeClauses.some((clause) => (
+      PLAYER_EQUIPMENT_PROPERTY_WRITEBACK_REVIEW_PATTERN.test(clause)
+      && clauseMentionsLoadoutItem(clause, item, equipmentMentionTokens)
+    ))
+  ));
+  if (hasUnwrittenEquipmentPropertyChange) return true;
 
   if (!PLAYER_INVENTORY_WRITEBACK_REVIEW_PATTERN.test(text)) return false;
   const touchedInventoryIds = new Set<string>();
@@ -1697,8 +1719,14 @@ function splitPlayerEconomyReviewClauses(text: string): string[] {
 function buildUniqueInventoryMentionTokens(
   inventory: NonNullable<RuntimeState['player']['inventory']>,
 ): Map<string, Set<string>> {
+  return buildUniqueLoadoutMentionTokens(inventory);
+}
+
+function buildUniqueLoadoutMentionTokens(
+  items: ReadonlyArray<{ id: string; name: string }>,
+): Map<string, Set<string>> {
   const tokenOwners = new Map<string, Set<string>>();
-  for (const item of inventory) {
+  for (const item of items) {
     const normalizedName = item.name.replace(/\s+/g, '');
     for (let index = 0; index < normalizedName.length - 1; index += 1) {
       const token = normalizedName.slice(index, index + 2);
@@ -1710,7 +1738,7 @@ function buildUniqueInventoryMentionTokens(
   }
 
   const result = new Map<string, Set<string>>();
-  for (const item of inventory) {
+  for (const item of items) {
     const tokens = new Set<string>();
     for (const [token, owners] of tokenOwners) {
       if (owners.size === 1 && owners.has(item.id)) tokens.add(token);
@@ -1723,6 +1751,14 @@ function buildUniqueInventoryMentionTokens(
 function clauseMentionsInventoryItem(
   clause: string,
   item: NonNullable<RuntimeState['player']['inventory']>[number],
+  itemMentionTokens: Map<string, Set<string>>,
+): boolean {
+  return clauseMentionsLoadoutItem(clause, item, itemMentionTokens);
+}
+
+function clauseMentionsLoadoutItem(
+  clause: string,
+  item: { id: string; name: string },
   itemMentionTokens: Map<string, Set<string>>,
 ): boolean {
   const normalizedName = item.name.trim();
@@ -2788,10 +2824,7 @@ async function generateNarratorResponse(input: GenerateNarratorResponseInput): P
       ...playerInventoryScopeDiagnostics,
     ];
     const playerEconomyWritebackReviewRequired = playerInventoryScopeDiagnostics.length > 0
-      || (
-        !configuredStateWritebackApiConfig
-        && requiresPlayerEconomyWritebackReview(input.runtimeState, response)
-      );
+      || requiresPlayerEconomyWritebackReview(input.runtimeState, response);
     const privateAssetAcquisitionWritebackReviewRequired =
       requiresPrivateAssetAcquisitionWritebackReview(input.runtimeState, response);
     const scenePresenceWritebackReviewRequired = !input.options.openingInitialization
@@ -4123,7 +4156,8 @@ function buildStateWritebackRepairMessages(input: {
         '若正文已经明确某个钱粮、势力、部队、人物、任务、风声或纪事发生变化，应补成现有协议允许的结构化写回。',
         '若 turnSummary.privateAssetAcquisitions 非空，逐项核对是否已有使用相同 sourceRefId 的 upsertPrivateAsset。产权已完成但命令缺失时，必须在 statePatches 尾部补齐 operation=create 的严格私产命令；已有同一产业则复用其 privateAssetId 更新，禁止重复建档。不得把谈判、看契书、代管、驻守、租用、口头许诺、争议中产权或玩家单方面声称取得补成私产。',
         '逐句复核最终 narrativeText 中已有势力已经采取的新行动：玩家以该势力成员、首领或代表身份完成的势力行为，以及通过传闻、军报、密报、使者或线索新获知的其他势力行动，都必须在 writeback.factionRecentActionSuggestions 逐项补齐；必须复用当前势力稳定 factionId，并按亲历/听闻/推测填写 knownLevel。通用 statePatches.recordFactionRecentAction 只作兼容，不要在两处重复同一动作。不得把提议、问题、计划、背景介绍或未发生结果提前落账。',
-        '必须逐项核对玩家行动、最终 narrativeText、主角个人钱财余额和完整背包真值：个人收支已成立却缺少 personalMoneyDelta、物品实际获得却缺少 upsert、物品消耗/交出/遗失/损毁/过期或一次性凭证权益兑现却缺少 remove/setQuantity 时，应在尾部补齐对应 updatePlayerLoadout。',
+        '必须逐项核对玩家行动、最终 narrativeText、主角个人钱财余额、完整装备与背包真值：个人收支已成立却缺少 personalMoneyDelta、物品实际获得却缺少 upsert、物品消耗/交出/遗失/损毁/过期或一次性凭证权益兑现却缺少 remove/setQuantity 时，应在尾部补齐对应 updatePlayerLoadout。',
+        '若最终正文明确完成了主角既有装备的更新、强化、改造、修复、重铸或其他稳定属性变化，必须复用当前 equipmentId，用 updatePlayerLoadout.equipmentChanges.upsert 写回完整的更新后装备。保留正文未改变的稳定字段，只更新有正文依据的 name/description/condition/statBonuses/promptHint/checkHooks/unlocks/risks；不得另造新 ID。同一装备若在背包有镜像条目，必须同步复用 itemId 写回一致属性。',
         '仅在正文中提到、看见、出示、核验或回忆既有物品不等于再次获得；不得为此追加 upsert。更新同一种既有物品必须逐字复用当前背包 itemId，不得另造 ID；upsert.quantity 是变化后的绝对总数。',
         '购买、出售或以个人钱财换取/交出物品已经成立时，钱财与物品两侧必须成对写回；势力粮草、军械等公共资源仍写 updateResourceLedger，不得混入个人钱财。',
         '单一物品操作不得扩散到其他稳定 ID：不能因同属手令、凭证、文书、药品、名称相似或此前曾被提及，就批量消耗、核销、交出或移除其他物品。若原响应破坏性修改了玩家行动未明确点名的现存物品，必须从同一 updatePlayerLoadout 槽位移除这些额外变更；本回合确需操作多个现存物品时，玩家行动必须逐项明确点名。',
@@ -4185,7 +4219,7 @@ function buildStateWritebackRepairMessages(input: {
               input.playerEconomyWritebackReviewAttempt === 2
                 ? '上一次复核没有产生可接受的完整 statePatches；请从原始响应重新独立核对，不要沿用上一次遗漏。'
                 : '',
-              '结构完整性检查发现本回合可能涉及主角物品、个人钱财或公共资源，但现有写回可能缺项或越过玩家明确点名的物品范围。该信号本身不代表变化已经成立：请先根据玩家行动与最终 narrativeText 独立判断事实；若交易、收支、取得、消费、交出或一次性权益兑现已经成立，必须使用当前稳定 ID 补齐所有相关侧；若正文只是在提及、查看、核验、计划或未完成，则保持对应状态不变。所有未被玩家行动明确点名却遭破坏性修改的现存物品都必须从写回中移除；不得因类别或名称相似批量处理。',
+              '结构完整性检查发现本回合可能涉及主角装备、背包物品、个人钱财或公共资源，但现有写回可能缺项或越过玩家明确点名的物品范围。该信号本身不代表变化已经成立：请先根据玩家行动与最终 narrativeText 独立判断事实；若交易、收支、取得、消费、交出、一次性权益兑现，或既有装备的更新/强化/改造/修复/重铸已经成立，必须使用当前稳定 ID 补齐所有相关侧；装备稳定属性变化使用 equipmentChanges.upsert，不得另造 ID。若正文只是在提及、查看、核验、计划或未完成，则保持对应状态不变。所有未被玩家行动明确点名却遭破坏性修改的现存物品都必须从写回中移除；不得因类别或名称相似批量处理。',
             ].filter(Boolean).join('\n')
           : '无额外主角经济复核信号；仍按正文事实和 validator 诊断处理。',
         '',
@@ -4218,6 +4252,21 @@ function buildStateWritebackRepairMessages(input: {
 }
 
 function formatStateWritebackRuntimeSummary(runtimeState: RuntimeState): string {
+  const playerEquipment = (runtimeState.player.equipment ?? [])
+    .map((item) => [
+      `- equipmentId=${item.id}`,
+      `name=${item.name}`,
+      `slot=${item.slot}`,
+      `quality=${item.quality}`,
+      `condition=${item.condition ?? '未写'}`,
+      `description=${item.description}`,
+      `statBonuses=${JSON.stringify(item.statBonuses ?? {})}`,
+      `promptHint=${item.promptHint ?? '未写'}`,
+      `checkHooks=${JSON.stringify(item.checkHooks ?? [])}`,
+      `unlocks=${JSON.stringify(item.unlocks ?? [])}`,
+      `risks=${JSON.stringify(item.risks ?? [])}`,
+    ].join('；'))
+    .join('\n');
   const playerInventory = (runtimeState.player.inventory ?? [])
     .map((item) => [
       `- itemId=${item.id}`,
@@ -4299,6 +4348,8 @@ function formatStateWritebackRuntimeSummary(runtimeState: RuntimeState): string 
       `identitySummary=${runtimeState.player.identitySummary ?? '未写'}`,
     ].join('；'),
     `主角个人钱财余额=${typeof runtimeState.player.personalMoney === 'number' && Number.isFinite(runtimeState.player.personalMoney) ? runtimeState.player.personalMoney : 0}`,
+    '主角当前装备（写回前完整稳定 ID 真值）：',
+    playerEquipment || '- 暂无',
     '主角当前背包（写回前完整稳定 ID 真值）：',
     playerInventory || '- 暂无',
     `资源：钱=${runtimeState.resources?.money ?? '未记录'}；粮=${runtimeState.resources?.grain ?? '未记录'}；马=${runtimeState.resources?.horses ?? '未记录'}；军械=${runtimeState.resources?.arms ?? '未记录'}；可征召人手=${runtimeState.resources?.recruits ?? '未记录'}`,

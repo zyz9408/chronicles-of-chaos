@@ -2253,10 +2253,21 @@ function appendPlayerEconomyWritebackSnapshot(
   parts: string[],
   player: RuntimeState['player'],
 ): void {
+  const equipment = player.equipment ?? [];
   const inventory = player.inventory ?? [];
   parts.push('playerEconomySnapshot:');
   parts.push(`- personalMoney: ${typeof player.personalMoney === 'number' && Number.isFinite(player.personalMoney) ? player.personalMoney : 0}`);
   parts.push('- personalMoneyUnit: 钱（1000钱仅显示为1贯；黄金不计入此余额，也不与贯钱自动兑换）');
+  parts.push(`- equipmentCount: ${equipment.length}`);
+  parts.push('- currentPlayerEquipment 是写回前完整已装备真值；强化、改造、修复、重铸时必须复用其 equipmentId 并保留未变字段。');
+  if (equipment.length === 0) {
+    parts.push('- currentPlayerEquipment: empty');
+  } else {
+    parts.push('- currentPlayerEquipment:');
+    for (const item of equipment) {
+      parts.push(`  - equipmentId: ${item.id}; record: ${JSON.stringify(item)}`);
+    }
+  }
   parts.push(`- inventoryCount: ${inventory.length}`);
   parts.push('- currentPlayerInventory 是写回前完整背包真值，不是获得候选；仅在玩家行动与最终正文已经成立的事实要求变化时才写入变更。');
   if (inventory.length === 0) {
@@ -2827,6 +2838,7 @@ function generateStateWriterContext(
   parts.push('- payload.command.action=updateCharacterIdentity: 更新主角或 NPC 的姓名/字/号/别称/常用称呼、出身、当前身份、所属势力、效力对象、官职、军职、爵位封号、身份摘要、稳定外貌与核心性格；主角还可同步更新 personalEscortEntitlement，NPC 不得使用该字段。称呼只供识别显示，正文中具体如何称呼由 LLM 根据关系与场景自然发挥。只有正文实际确立新的稳定身份事实时才写入，不要把普通回合的措辞、摘要改写、当前事项、风声线索或纪事转述当成身份变化；稳定身份事实不得只写入记忆、事项或纪事，必须同步 updateCharacterIdentity。凡 factionId/factionName/officeTitle/militaryTitle/nobleTitle 任一字段发生变化，命令必须显式包含 currentIdentity：主身份不变就逐字复用 playerIdentitySnapshot 当前值，主身份变化就写新值，禁止省略后留下部分更新。凡 currentIdentity 发生变化，必须同步写入匹配的 currentIdentityDescription 与已经变化的 identitySummary，不得沿用旧身份说明；凡 currentIdentity、官职、军职、爵位或势力归属发生变化，还必须在同一命令重新判断并写入 personalEscortEntitlement（不再具备时写 status=none）。');
   parts.push('- 身份变化同回合闭环：最终 narrativeText 若已正式任命、罢免、转任、晋升、受封、改换效力或确立新的长期主身份，必须同时在 turnSummary.identityChanges 写入结构化身份事实，并输出匹配的 updateCharacterIdentity。identityChanges 必须提供 sourceRefId、稳定 characterId、currentIdentity/currentIdentityDescription/identitySummary 与事实依据 summary；主角还必须提供不含 updatedAt 的 personalEscortEntitlement，技术时间由本地补齐。普通自称、期待、口头许诺、临时代行、玩家要求或尚未生效的任命不得写入。');
   parts.push('- payload.command.action=updatePlayerLoadout: 更新主角个人钱财、装备和背包。personalMoney 是开局初始化或明确重算时的绝对余额；普通回合买卖、花费、赠予、领取、存取、个人军饷或缴获必须使用 personalMoneyDelta，支出写负数、收入写正数，不能与 personalMoney 同时提供，也不得透支。个人钱财只写 player.personalMoney，不得写入 playerResources.money/钱财；势力总资源仍写 updateResourceLedger。真开局可用 equipment/inventory 写入初始全量行装。普通回合获得、失去、消耗、损坏、赠送、换装时优先使用 inventoryChanges/equipmentChanges 做局部变更，不要为了一件物品覆盖整个背包。获得/新增背包物品使用 inventoryChanges:[{action:"upsert", item:{id,name,quantity,...}}]，不要用 action:"add"。inventoryChanges.remove/setQuantity.itemId 必须非空，并逐字复用 playerEconomySnapshot.currentPlayerInventory 中的稳定 itemId；没有明确目标 itemId 时省略该候选，不得输出空 itemId。更新同一种既有物品时必须复用其 itemId，upsert.quantity 写变化后的绝对总数，不得为同名既有物品另造 ID。消耗品实际使用、物品交出/赠送/遗失/损毁/过期，或一次性凭证的权益已经兑现时，同一回合必须用 inventoryChanges.remove 或 setQuantity 写回减少/移除；部分消耗写 remove.quantity，全部耗尽可写 setQuantity=0。仅出示、核验或仍可重复使用的长期凭证不得移除；关键物品也不等于永久不可移除，是否移除只取决于本回合是否已真实完成其生命周期。装备品级 quality 必须写 white/green/blue/purple/orange/red，对应普通/良好/精良/珍贵/传说/绝世；御赐、国宝、家传、军府制式等来源或身份标签只能写在 name/description，不能作为 quality。可装备背包物品应写 category=equipment、equipSlot(weapon/armor/mount/treasure)、quality、description；从背包装备到身上使用 equipmentChanges: [{ action:"equipFromInventory", itemId, slot, treasureIndex? }]，equipFromInventory.itemId 必须非空；没有实际换装不要输出空 itemId 的 equipmentChanges 候选。');
+  parts.push('- 主角既有装备的更新、强化、改造、修复、重铸等稳定属性变化一旦在最终正文中明确完成，必须在同回合输出 updatePlayerLoadout.equipmentChanges:[{action:"upsert",item:{...}}]。item.id 必须逐字复用当前装备的稳定 equipmentId，item 必须是更新后的完整装备；保留正文未改变的字段，只修改有明确依据的 name/description/condition/statBonuses/promptHint/checkHooks/unlocks/risks，不得另造 ID。若同一装备在背包中有同 ID 镜像，同批用 inventoryChanges.upsert 保持属性一致。只是计划、尝试失败或查看时不得写回。');
   parts.push('- 个人钱货单位：personalMoney 与 personalMoneyDelta 的底层单位均为钱，1000钱仅可显示为1贯；黄金不是 personalMoney 的高位单位，也不存在“1金自动等于10贯”的底层换算。剧情明确获得、支付或失去黄金、金饼、马蹄金等实物财货时，使用 inventoryChanges 以 category=material、独立稳定 itemId、实际 quantity 和说明记录；复用已有黄金物品 ID，并保留正文已确认的形制、重量或成色，不得自行折成贯钱。只有剧情另行明确完成兑换时，才同时按实际成交结果更新黄金物品和 personalMoneyDelta。');
   parts.push('- 行装稳定身份与槽位不变量：equipment 与 inventory 各自列表内，每个逻辑物品的 id 必须唯一；不得把同一个通用 id 分配给多件不同名称、不同槽位的物品。只有同一件装备同时出现在 equipment 与 inventory 时才可跨列表复用同一 id，且 name 与 slot/equipSlot 必须一致。weapon/armor/mount 各最多装备 1 件，treasure 最多 3 件；换装使用局部 equipmentChanges，不得在全量 equipment 中并列两件同槽装备。');
   parts.push('- 主角经济与背包写回核对：返回 JSON 前，先核对玩家行动与最终正文已经成立的事实，再逐项对照 playerEconomySnapshot。仅在正文中提到、看见或回忆既有物品，不等于再次获得，不得再次 upsert；只有实际取得、数量增加或稳定属性变化才更新。购买成立时必须同时写入物品获得与负数 personalMoneyDelta；出售成立时必须同时写入物品减少与正数 personalMoneyDelta。领取势力粮草、军械等公共资源时写 updateResourceLedger；若同时交回一次性手令或凭证，必须另写 updatePlayerLoadout.inventoryChanges.remove/setQuantity。支付、赠予、领取、退还、存取等个人钱财变化不得只写在正文。以上事实判断由 LLM 依据本回合最终正文完成；本地不会按关键词代替你裁定。');

@@ -1634,6 +1634,104 @@ describe('executeTurn LLM integration', () => {
     expect(result.newRuntimeState.player.inventory).toEqual([]);
   });
 
+  it('automatically asks the LLM to persist a completed modification to equipped gear', async () => {
+    const initialState = {
+      ...makeState(),
+      player: {
+        ...makeState().player,
+        equipment: [{
+          id: 'eq_zhanmadao',
+          slot: 'weapon' as const,
+          name: '冷锻透甲斩马刀',
+          quality: 'blue',
+          description: '三十二斤重的双手破阵利器。',
+          condition: '完好',
+        }],
+      },
+    } as RuntimeState;
+    const timeAdvancePatch: StatePatch = {
+      type: 'timeAdvance',
+      reason: '改造斩马刀',
+      payload: { minutesAdvanced: 60, category: 'craft' },
+    };
+    const modifiedWeapon = {
+      id: 'eq_zhanmadao',
+      slot: 'weapon' as const,
+      name: '冷锻透甲斩马刀',
+      quality: 'blue',
+      description: '刀背加凿五道倒钩血槽，刀柄缠油麻防滑绳，重心回缩，更适合近身破甲绞杀。',
+      condition: '改造完成',
+      checkHooks: [{
+        scope: 'personalCombat.armorBreak',
+        modifier: 5,
+        note: '对重甲或近身绞杀判定有利。',
+      }],
+    };
+    const llmClient = {
+      generate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            protocolVersion: 'lsfy.turn.v1',
+            narrativeText: '主角将冷锻透甲斩马刀加凿五道倒钩血槽，重设刀柄配重，改造顺利完成。',
+            suggestedActions: [],
+            statePatches: [timeAdvancePatch],
+            statePatch: null,
+            writeback: {
+              turnSummary: {
+                brief: '改造斩马刀。',
+                playerActionSummary: '改造斩马刀',
+                visibleConsequence: '斩马刀已加凿倒钩血槽并调整配重。',
+              },
+            },
+          }),
+          provider: 'openai_compatible' as const,
+          model: 'test-model',
+        })
+        .mockImplementationOnce(async (request: LlmGenerateRequest) => {
+          const prompt = request.messages.map((message) => message.content).join('\n');
+          expect(prompt).toContain('稳定属性变化');
+          expect(prompt).toContain('equipmentId=eq_zhanmadao');
+          expect(prompt).toContain('name=冷锻透甲斩马刀');
+          return {
+            content: JSON.stringify({
+              protocolVersion: 'lsfy.turn.v1',
+              narrativeText: '不得覆盖主叙事。',
+              suggestedActions: [],
+              statePatches: [
+                timeAdvancePatch,
+                {
+                  type: 'luanshiCommand',
+                  reason: '写回已完成的斩马刀改造',
+                  payload: {
+                    command: {
+                      action: 'updatePlayerLoadout',
+                      characterId: 'player',
+                      equipmentChanges: [{ action: 'upsert', item: modifiedWeapon }],
+                      summary: '斩马刀改造完成。',
+                    },
+                  },
+                },
+              ],
+              statePatch: null,
+              writeback: {},
+            }),
+            provider: 'openai_compatible' as const,
+            model: 'test-model',
+          };
+        }),
+    };
+
+    const result = await executeTurn(worldBook, initialState, '我改造冷锻透甲斩马刀', {
+      apiConfig,
+      llmClient,
+    });
+
+    expect(llmClient.generate).toHaveBeenCalledTimes(2);
+    expect(result.patchValidation).toMatchObject({ valid: true, errors: [] });
+    expect(result.newRuntimeState.player.equipment?.[0]).toMatchObject(modifiedWeapon);
+  });
+
   it('repairs a completed sale whose inventory removal omitted the stable itemId', async () => {
     const initialState = {
       ...makeState(),
