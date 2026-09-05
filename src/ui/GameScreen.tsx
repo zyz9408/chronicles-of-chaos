@@ -1094,23 +1094,28 @@ export const GameScreen: React.FC<Props> = ({
     };
   }, [executionOwner, saveId, sessionGeneration]);
 
+  const publishedRuntimeStatesRef = useRef(new WeakSet<RuntimeState>());
   useEffect(() => {
+    publishedRuntimeStatesRef.current.add(runtimeState);
     onRuntimeStateChange?.(runtimeState);
   }, [runtimeState, onRuntimeStateChange]);
 
-  const syncedInitialRef = useRef(initialWithRecovery);
+  const syncedInitialRef = useRef(initial);
   useEffect(() => {
     // The first state was consumed by useState already. Reapplying it during
     // StrictMode's effect probe discards AVG staging while its save still lands.
     // Likewise, a parent echo of our own published state is not a new load.
-    if (syncedInitialRef.current === initialWithRecovery) return;
-    syncedInitialRef.current = initialWithRecovery;
-    if (runtimeStateRef.current === initialWithRecovery) return;
+    if (syncedInitialRef.current === initial) return;
+    syncedInitialRef.current = initial;
+    // AVG staging may already have produced C before the parent echoes B.
+    // Both are our own publications: applying B again creates a B/C feedback
+    // loop that keeps cancelling image reads and combat advancement timers.
+    if (publishedRuntimeStatesRef.current.has(initial)) return;
     setRuntimeState(initialWithRecovery);
     runtimeStateRef.current = initialWithRecovery;
     setSuggestedActions(getLatestSuggestedActions(initialWithRecovery));
     setStateWritebackRecoveryPreview(null);
-  }, [initialWithRecovery]);
+  }, [initial, initialWithRecovery]);
 
   useEffect(() => {
     setIsResolvingEncounterOffer(false);
