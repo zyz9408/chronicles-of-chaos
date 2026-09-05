@@ -145,6 +145,7 @@ const defaultMemoryArchive = (): NormalizedMemoryArchive => ({
 function normalizeMemoryArchive(archive?: MemoryArchive): NormalizedMemoryArchive {
   const defaults = defaultMemoryArchive();
   if (!archive) return defaults;
+  const memorySummaryMaintenance = normalizeMemorySummaryMaintenance(archive.memorySummaryMaintenance);
 
   return {
     schemaVersion: 2,
@@ -159,7 +160,7 @@ function normalizeMemoryArchive(archive?: MemoryArchive): NormalizedMemoryArchiv
     settings: archive.schemaVersion === 2
       ? { ...defaults.settings, ...(archive.settings ?? {}) }
       : upgradeLegacyMemoryProjectionSettings(defaults.settings, archive.settings),
-    memorySummaryMaintenance: normalizeMemorySummaryMaintenance(archive.memorySummaryMaintenance),
+    ...(memorySummaryMaintenance ? { memorySummaryMaintenance } : {}),
   };
 }
 

@@ -34,10 +34,10 @@ function makeState(turn = false): RuntimeState {
   };
 }
 
-function makeRecoverableState(): RuntimeState {
+function makeRecoverableState(recoveryPatch?: StatePatch): RuntimeState {
   const pre = makeState();
   const post = makeState(true);
-  const invalidPatch: StatePatch = {
+  const invalidPatch: StatePatch = recoveryPatch ?? {
     type: 'localSituationChanged', payload: { description: '' }, reason: '营务整顿',
   };
   post.stateWritebackRecovery = createStateWritebackRecoveryCapsule({
@@ -111,5 +111,39 @@ describe('StateWritebackRecoveryService', () => {
     expect(result.repairAttemptCount).toBe(2);
     expect(result.preview.state.stateWritebackRecovery?.recoveryAttempts).toHaveLength(1);
     expect(result.preview.state.stateWritebackRecovery?.selectedRecoveryCandidate?.attempt).toBe(2);
+  });
+
+  it('compares normalized LuanShi drafts using their JSON storage form', async () => {
+    const state = makeRecoverableState({
+      type: 'luanshiCommand',
+      reason: '府库粮草写回格式错误',
+      payload: {
+        command: {
+          action: 'updateResourceLedger',
+          grain: '很多',
+          summary: '',
+        },
+      },
+    } as StatePatch);
+    const client: LlmClient = { generate: async () => ({
+      provider: 'openai_compatible', model: 'test',
+      content: JSON.stringify({ statePatches: [{
+        type: 'luanshiCommand',
+        reason: '府库粮草写回格式修复',
+        payload: {
+          command: {
+            action: 'updateResourceLedger',
+            grain: 2_000,
+            summary: '府库现存粮草二千石。',
+          },
+        },
+      }] }),
+    }) };
+
+    const prepared = await prepareStateWritebackRecovery({
+      currentState: state, worldBook, apiConfig, llmClient: client,
+    });
+
+    expect(prepared.status).toBe('ready');
   });
 });

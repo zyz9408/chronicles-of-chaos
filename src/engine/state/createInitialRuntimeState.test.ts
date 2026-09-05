@@ -652,6 +652,25 @@ describe('ensureLuanShiState', () => {
     expect(state.memoryArchive.memorySummaryMaintenance?.status).toBe('pending');
   });
 
+  it('省略不存在的记忆摘要维护字段，保持规范化状态可直接 JSON 序列化', () => {
+    const state = ensureLuanShiState({
+      ...makeLegacyState(),
+      memoryArchive: {
+        recentTurnSummaries: [],
+        midTermSummaries: [],
+        longTermFacts: [],
+        npcInteractionSummaries: [],
+        locationMemorySummaries: [],
+        settings: {},
+      } as any,
+    });
+
+    expect(Object.prototype.hasOwnProperty.call(
+      state.memoryArchive,
+      'memorySummaryMaintenance',
+    )).toBe(false);
+  });
+
   it('按 npcId 合并旧档中重复的红颜线并保留不同人物的同名关系', () => {
     const makeHeroine = (
       heroineThreadId: string,

@@ -38,6 +38,16 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+/**
+ * Recovery compares the state exactly as it would be persisted. Optional
+ * object properties with an undefined value are omitted by JSON storage and
+ * must not be sent directly to the stricter encounter canonicalizer.
+ */
+function canonicalStoredValue(value: unknown): string {
+  const encoded = JSON.stringify(value);
+  return encoded === undefined ? 'undefined' : canonicalStringify(JSON.parse(encoded));
+}
+
 function patchSlotIdentity(patch: StatePatch): string {
   const record = patch as StatePatch & { payload?: { command?: { action?: unknown } } };
   const action = typeof record.payload?.command?.action === 'string'
@@ -187,8 +197,14 @@ function buildProposedState(input: {
   const proposed = clone(input.currentState);
   for (const key of Object.keys(repaired.statePatchDraft) as Array<keyof RuntimeState>) {
     if (FROZEN_TOP_LEVEL_KEYS.has(key)) continue;
-    if (canonicalStringify(baseline.statePatchDraft[key]) !== canonicalStringify(repaired.statePatchDraft[key])) {
-      (proposed as unknown as Record<string, unknown>)[key] = clone(repaired.statePatchDraft[key]);
+    const baselineValue = baseline.statePatchDraft[key];
+    const repairedValue = repaired.statePatchDraft[key];
+    if (canonicalStoredValue(baselineValue) !== canonicalStoredValue(repairedValue)) {
+      if (repairedValue === undefined) {
+        delete (proposed as unknown as Record<string, unknown>)[key];
+      } else {
+        (proposed as unknown as Record<string, unknown>)[key] = clone(repairedValue);
+      }
     }
   }
   return proposed;
