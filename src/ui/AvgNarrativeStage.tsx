@@ -23,6 +23,8 @@ import { AvgOutfitManager } from './AvgOutfitManager';
 import { AvgImageCandidateControl } from './AvgImageCandidateControl';
 import { buildAvgActorImagePrompt, buildAvgSceneImagePrompt } from '../engine/avg/AvgImagePrompt';
 import { deriveActorCurrentAge, deriveNpcCurrentAge } from '../engine/time/npcAge';
+import { collectAvgCurrentActors, getAvgActorVisualContext } from '../engine/avg/AvgActorVisualContext';
+import { AvgCharacterImageDialog } from './AvgCharacterImageDialog';
 
 export interface AvgNarrativeStageProps {
   entryKey: string;
@@ -86,6 +88,8 @@ export function AvgNarrativeStage(props: AvgNarrativeStageProps): React.ReactEle
   const [notice, setNotice] = useState('');
   const [isOutfitManagerOpen, setIsOutfitManagerOpen] = useState(false);
   const [isVisualManagerOpen, setIsVisualManagerOpen] = useState(false);
+  const [isCharacterGeneratorOpen, setIsCharacterGeneratorOpen] = useState(false);
+  const [previewActorId, setPreviewActorId] = useState<string>();
   const [pendingVisual, setPendingVisual] = useState<ValidatedAvgImage>();
   const [pendingVisualUrl, setPendingVisualUrl] = useState('');
   const [selectedOutfit, setSelectedOutfit] = useState<AvgUserOutfit>();
@@ -114,14 +118,20 @@ export function AvgNarrativeStage(props: AvgNarrativeStageProps): React.ReactEle
   [avgPresentation?.sceneBinding?.sceneResourceId, runtimeState.currentLocationId, runtimeState.currentPlaceId, runtimeState.currentSceneId, visualSnapshot, worldBookId]);
   const currentSegment = segments[Math.min(frameIndex, Math.max(segments.length - 1, 0))];
   const currentBinding = currentSegment?.type === 'dialogue' ? bindingBySegment.get(frameIndex) : undefined;
-  const isPlayer = currentBinding?.actorId === runtimeState.player.id;
-  const showPortrait = currentSegment?.type === 'dialogue' && (!isPlayer || playerPortraitMode === 'show');
-  const actorTarget = useMemo(() => currentBinding?.actorId && showPortrait
-    ? createAvgActorTarget(partitionId(runtimeState, saveId), worldBookId, currentBinding.actorId)
+  const displayedActorId = previewActorId ?? currentBinding?.actorId;
+  const isPlayer = displayedActorId === runtimeState.player.id;
+  const showPortrait = Boolean(previewActorId) || (currentSegment?.type === 'dialogue' && (!isPlayer || playerPortraitMode === 'show'));
+  const actorContext = useMemo(() => displayedActorId ? getAvgActorVisualContext(runtimeState, displayedActorId, displayMeta) : undefined,
+    [displayMeta, displayedActorId, runtimeState]);
+  const currentActors = useMemo(() => collectAvgCurrentActors(runtimeState, displayMeta, visualSnapshot, { speakerBindings: bindingResult.bindings }),
+    [bindingResult.bindings, displayMeta, runtimeState, visualSnapshot]);
+  const actorTarget = useMemo(() => displayedActorId && showPortrait
+    ? createAvgActorTarget(partitionId(runtimeState, saveId), worldBookId, displayedActorId)
     : undefined,
-  [currentBinding?.actorId, runtimeState, saveId, showPortrait, worldBookId]);
+  [displayedActorId, runtimeState, saveId, showPortrait, worldBookId]);
 
   useEffect(() => { setFrameIndex(0); setShowAll(false); }, [entryKey]);
+  useEffect(() => { setPreviewActorId(undefined); setIsCharacterGeneratorOpen(false); }, [entryKey, frameIndex, saveId]);
   useEffect(() => { setIsOutfitManagerOpen(false); setIsVisualManagerOpen(false); setPendingVisual(undefined); }, [actorTarget?.kind === 'actor' ? actorTarget.actorId : '', sceneTarget?.kind === 'scene' ? sceneTarget.anchor.id : '']);
   useEffect(() => {
     const onChanged = () => setRefresh((value) => value + 1);
@@ -163,7 +173,10 @@ export function AvgNarrativeStage(props: AvgNarrativeStageProps): React.ReactEle
     let url: string | undefined;
     if (!actorTarget) { setPortrait({ status: 'idle' }); return; }
     setPortrait({ target: actorTarget, status: 'loading' });
-    repository.lookup(actorTarget).then(async (result) => {
+    repository.lookup(actorTarget, {
+      actorProfile: actorContext?.dedicated ? undefined : actorContext?.portraitProfile,
+      rememberMatch: true,
+    }).then(async (result) => {
       if (!active) return;
       if (result.status === 'found') {
         url = URL.createObjectURL(result.blob);
@@ -201,7 +214,7 @@ export function AvgNarrativeStage(props: AvgNarrativeStageProps): React.ReactEle
       }
     }).catch(() => active && setPortrait({ target: actorTarget, status: 'error' }));
     return () => { active = false; if (url) URL.revokeObjectURL(url); };
-  }, [actorTarget, displayMeta?.presentationSpeakerFacts, refresh, runtimeState.avgPresentation?.portraitBindings, worldBookId]);
+  }, [actorContext, actorTarget, displayMeta?.presentationSpeakerFacts, refresh, runtimeState, worldBookId]);
 
   useEffect(() => {
     let active = true;
@@ -226,10 +239,13 @@ export function AvgNarrativeStage(props: AvgNarrativeStageProps): React.ReactEle
       const npc = runtimeState.npcs?.find((candidate) => candidate.npcId === currentTarget.actorId);
       if (npc) return buildAvgActorImagePrompt({ name: npc.name, sex: npc.sex, age: deriveNpcCurrentAge(npc, runtimeState.currentDate), identity: npc.currentIdentity, occupation: npc.role, appearance: npc.appearance, outfit: selectedOutfit ? { name: selectedOutfit.name, note: selectedOutfit.note } : undefined });
       const known = runtimeState.knownActors.find((candidate) => candidate.id === currentTarget.actorId);
-      return buildAvgActorImagePrompt({ name: known?.name ?? speakerName, sex: known?.sex, occupation: known?.roleType, appearance: known?.appearance, outfit: selectedOutfit ? { name: selectedOutfit.name, note: selectedOutfit.note } : undefined });
+      if (!selectedOutfit) return getAvgActorVisualContext(runtimeState, currentTarget.actorId, displayMeta)?.prompt ?? buildAvgActorImagePrompt({ name: speakerName });
+      return buildAvgActorImagePrompt({ name: known?.name ?? speakerName, sex: known?.sex, age: known ? deriveActorCurrentAge(known, runtimeState.currentDate) : undefined, occupation: known?.roleType, appearance: known?.appearance, outfit: { name: selectedOutfit.name, note: selectedOutfit.note } });
     }
-    return buildAvgSceneImagePrompt({ name: visualSnapshot?.runtimePlaceId?.trim() || runtimeState.currentPlaceId?.trim() || runtimeState.currentLocationId });
-  }, [currentBinding?.actorId, currentSegment, currentTarget, runtimeState, selectedOutfit, visualSnapshot?.runtimePlaceId]);
+    return buildAvgSceneImagePrompt({ name: visualSnapshot?.structuredSceneAliases?.[0] || visualSnapshot?.runtimePlaceId?.trim() || runtimeState.currentPlaceId?.trim() || runtimeState.currentLocationId,
+      environment: visualSnapshot?.sceneSemantic?.environment, publicFunction: visualSnapshot?.sceneSemantic?.function,
+      signature: visualSnapshot?.sceneSemantic?.placeSignature, tags: visualSnapshot?.sceneSemantic?.tags });
+  }, [currentBinding?.actorId, currentSegment, currentTarget, displayMeta, runtimeState, selectedOutfit, visualSnapshot]);
   const replaceCurrentVisual = async (file: File) => {
     if (!currentTarget) return;
     setNotice('正在校验图片…');
@@ -285,8 +301,8 @@ export function AvgNarrativeStage(props: AvgNarrativeStageProps): React.ReactEle
           if (['Enter', ' ', 'ArrowRight'].includes(event.key)) { event.preventDefault(); advance(); }
           if (event.key === 'ArrowLeft') { event.preventDefault(); setShowAll(false); setFrameIndex((value) => Math.max(0, value - 1)); }
         }}>
-        {showPortrait && <div className="avg-stage-portrait" aria-label={activeSpeaker}>
-          {portrait.url ? <img src={portrait.url} alt={activeSpeaker} />
+        {showPortrait && <div className="avg-stage-portrait" aria-label={actorContext?.name ?? activeSpeaker}>
+          {portrait.url ? <img src={portrait.url} alt={actorContext?.name ?? activeSpeaker} />
             : <div className="avg-stage-silhouette" aria-hidden="true"><span>{activeSpeaker.slice(0, 1) || '人'}</span></div>}
         </div>}
         <div className="avg-stage-bottom-scrim" aria-hidden="true" />
@@ -314,12 +330,27 @@ export function AvgNarrativeStage(props: AvgNarrativeStageProps): React.ReactEle
           ))}</div>
         </article>
       </div>
+      <div className="avg-stage-generation-actions" role="group" aria-label="AVG 图片生成">
+        <button type="button" disabled={!currentTarget} onClick={() => { setIsCharacterGeneratorOpen(false); setIsVisualManagerOpen(true); }} title="为当前场景或人物生成候选图，预览后应用">生成候选图</button>
+        <button type="button" disabled={!currentActors.length} onClick={() => { setIsVisualManagerOpen(false); setIsCharacterGeneratorOpen(true); }} title="选择本回合人物，生成并加入 AVG 人物图库">生成人物图</button>
+      </div>
       <div className="avg-stage-resource-status" role="status" aria-live="polite">
+        {previewActorId && <span>人物预览：{actorContext?.name ?? '当前人物'} · 下一帧返回剧情</span>}
         {background.status !== 'found' && <span>场景未匹配，已使用中性背景</span>}
         {showPortrait && portrait.status !== 'found' && <span>人物立绘未匹配，已使用中性剪影</span>}
         {currentSegment?.type === 'dialogue' && currentBinding?.status !== 'frozen' && <span>人物身份未绑定，未自动选择立绘</span>}
         {notice && <span>{notice}</span>}
       </div>
+      {isCharacterGeneratorOpen && <AvgCharacterImageDialog
+        actors={currentActors} initialActorId={displayedActorId}
+        visualPartitionId={partitionId(runtimeState, saveId)} worldBookId={worldBookId}
+        onClose={() => setIsCharacterGeneratorOpen(false)} onOpenSettings={onOpenAvgSettings}
+        onApplied={(actorId, reusable) => {
+          setPreviewActorId(actorId);
+          setIsCharacterGeneratorOpen(false);
+          setNotice(reusable ? '人物图已加入 AVG 图库，并供相似人物自动匹配。' : '人物图已加入 AVG 图库，专属绑定已保存。');
+          setRefresh((value) => value + 1);
+        }} />}
       {isOutfitManagerOpen && actorTarget?.kind === 'actor' && <AvgOutfitManager
         repository={repository}
         owner={{ visualPartitionId: actorTarget.visualPartitionId, worldBookId, actorId: actorTarget.actorId }}

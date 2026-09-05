@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { RuntimeState } from '../engine/types';
 import type { AvgPlayerPortraitMode, NarrativePresentationPreference } from '../engine/settings/DisplaySettings';
-import { IndexedDbAvgVisualOverrideRepository, type AvgVisualPartitionSnapshot } from '../engine/avg/AvgVisualOverrideRepository';
+import { AVG_VISUAL_OVERRIDES_CHANGED_EVENT, IndexedDbAvgVisualOverrideRepository, type AvgVisualPartitionSnapshot } from '../engine/avg/AvgVisualOverrideRepository';
 import { THREE_KINGDOMS_AVG_REGISTRY_MANIFEST_ID } from '../engine/avg/AvgResourcePackManager';
 import registry from '../engine/avg/ThreeKingdomsAvgRegistry.generated.json';
 import { AvgResourcePackSettings } from './AvgResourcePackSettings';
 import { AvgImageGenerationSettings } from './AvgImageGenerationSettings';
+import { AvgPortraitLibraryPanel } from './AvgPortraitLibraryPanel';
 
 function bytes(value: number): string { return value < 1024 ? `${value} B` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KiB` : `${(value / 1024 / 1024).toFixed(1)} MiB`; }
 
@@ -80,7 +81,9 @@ export function AvgSettingsPanel({ runtimeState, saveId, narrativePresentation, 
     [runtimeState, saveId],
   );
   const [summary, setSummary] = useState<AvgVisualPartitionSnapshot | null>(); const [notice, setNotice] = useState('');
-  useEffect(() => { let active = true; if (!partitionId) { setSummary(null); return; } setSummary(undefined); visualRepository.exportPartition(partitionId).then((value) => { if (active) setSummary(value); }).catch(() => { if (active) setSummary(null); }); return () => { active = false; }; }, [partitionId, visualRepository]);
+  const [visualRevision, setVisualRevision] = useState(0);
+  useEffect(() => { const changed = () => setVisualRevision((value) => value + 1); window.addEventListener(AVG_VISUAL_OVERRIDES_CHANGED_EVENT, changed); return () => window.removeEventListener(AVG_VISUAL_OVERRIDES_CHANGED_EVENT, changed); }, []);
+  useEffect(() => { let active = true; if (!partitionId) { setSummary(null); return; } setSummary(undefined); visualRepository.exportPartition(partitionId).then((value) => { if (active) setSummary(value); }).catch(() => { if (active) setSummary(null); }); return () => { active = false; }; }, [partitionId, visualRepository, visualRevision]);
   const assets = registry.assets; const fixed = registry.fixedPortraitSets; const generic = registry.genericPortraitSets; const scenes = registry.scenes;
   return <div className="game-settings-section" data-testid="avg-settings-panel" role="region" aria-label="AVG 演出设置">
     <div className="game-settings-heading"><h2>AVG 演出资源</h2><p className="game-settings-subtitle">管理正文呈现、本机外置美术包与玩家视觉；不修改游戏事实或存档正文。</p></div><div className="gs-divider-thick" />{notice && <p className="settings-status feature-notice">{notice}</p>}<AvgPlayerGuide /><div className="gs-divider-thick" />
@@ -90,6 +93,7 @@ export function AvgSettingsPanel({ runtimeState, saveId, narrativePresentation, 
     <AvgResourcePackSettings /><div className="gs-divider-thick" />
     <div aria-label="当前存档人物与场景状态"><h3>当前存档人物与场景状态</h3>{runtimeVisualStatus.availability === 'no-save' ? <p className="game-settings-subtitle">进入存档后可查看当前存档的视觉绑定状态。</p> : <><p className="game-settings-subtitle">以下只读计数按当前存档、世界与轻量注册清单实时校验，不展示资源路径或内部标识。</p><div className="gs-divider-thin" /><div className="gs-setting-row"><div className="gs-setting-left"><span className="gs-setting-label">人物绑定</span><strong>可用 {runtimeVisualStatus.portraitBindings.active} · 失联 {runtimeVisualStatus.portraitBindings.orphaned}</strong></div><p className="gs-setting-desc">仅统计当前存档与当前世界的一般人物冻结绑定。</p></div><div className="gs-divider-thin" /><div className="gs-setting-row"><div className="gs-setting-left"><span className="gs-setting-label">历史说话人</span><strong>已冻结 {runtimeVisualStatus.speakerSegments.frozen} 段 · 未绑定 {runtimeVisualStatus.speakerSegments.unbound} 段</strong></div><p className="gs-setting-desc">按历史对白段的结构化冻结状态计数。</p></div><div className="gs-divider-thin" /><div className="gs-setting-row"><div className="gs-setting-left"><span className="gs-setting-label">历史场景</span><strong>可用 {runtimeVisualStatus.scenes.active} · 未绑定 {runtimeVisualStatus.scenes.unbound}</strong></div><p className="gs-setting-desc">场景清单与资源指纹不一致时按未绑定计数。</p></div></>}</div><div className="gs-divider-thick" />
     <div aria-label="AVG 本地覆盖摘要" data-testid="avg-local-override-summary"><h3>本地覆盖摘要</h3><p className="game-settings-subtitle">仅统计当前视觉分区在本机保存的人物、结构化场景、人物造型与服装专属立绘；不会上传。</p>{!partitionId ? <p className="gs-setting-desc">进入存档后可查看本地覆盖。</p> : summary === undefined ? <p className="gs-setting-desc" role="status">正在读取本地覆盖…</p> : !summary ? <p className="gs-setting-desc" role="status">本地覆盖摘要暂时无法读取，AVG 将继续使用默认资源。</p> : <div className="gs-setting-row"><div className="gs-setting-left"><span className="gs-setting-label">本机图片覆盖</span><strong>人物 {summary.actorCount} · 场景 {summary.sceneCount} · 造型 {summary.outfitCount} · 服装专属立绘 {summary.outfitOverrideCount}</strong></div><p className="gs-setting-desc">合计 {bytes(summary.totalBytes)}{summary.missingAssetCount ? ` · 缺失文件 ${summary.missingAssetCount}` : ' · 文件完整'}</p></div>}</div><div className="gs-divider-thick" />
+    {summary && runtimeState && <><AvgPortraitLibraryPanel snapshot={summary} state={runtimeState} /><div className="gs-divider-thick" /></>}
     <AvgImageGenerationSettings /><div className="gs-divider-thick" />
     <div aria-label="AVG 资源清单基线"><h3>资源清单基线</h3><p className="game-settings-subtitle">主程序只保留轻量身份与校验元数据；这不表示图片已安装。</p><div className="gs-setting-row"><div className="gs-setting-left"><span className="gs-setting-label">外置包期望 WebP</span><strong>{assets.length} 项清单</strong></div><p className="gs-setting-desc">具名人物组 {fixed.length} · 一般人物组 {generic.length} · 场景 {scenes.length}</p></div><div className="gs-setting-row"><div className="gs-setting-left"><span className="gs-setting-label">清单标识</span></div><p className="gs-setting-desc">{THREE_KINGDOMS_AVG_REGISTRY_MANIFEST_ID}</p></div></div>
   </div>;

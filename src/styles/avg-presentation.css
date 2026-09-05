@@ -77,6 +77,20 @@
 .avg-stage-block--dialogue > span { display:block; margin:.45rem 0 .15rem; color:#e5bd75; font-size:.82rem; }
 .avg-stage-resource-status { position:absolute; top:.55rem; left:.65rem; right:.65rem; display:flex; flex-wrap:wrap; gap:.35rem; pointer-events:none; }
 .avg-stage-resource-status span { padding:.22rem .5rem; border-radius:999px; color:#d6c6ab; background:rgba(10,13,17,.72); font-size:.75rem; }
+.avg-stage-generation-actions { position:absolute; top:.65rem; right:.75rem; z-index:4; display:flex; flex-wrap:wrap; gap:.5rem; }
+.avg-stage-generation-actions button { min-height:2.25rem; padding:.4rem .75rem; border:1px solid rgba(232,199,135,.55); border-radius:6px; background:rgba(43,33,20,.94); color:#f2ca82; cursor:pointer; }
+.avg-stage-generation-actions button:hover { background:#544023; }
+.avg-stage-generation-actions button:disabled { opacity:.45; cursor:not-allowed; }
+.avg-narrative-stage .avg-stage-resource-status { right:17rem; }
+.avg-character-picker { display:grid; gap:.4rem; margin:1rem 0; }
+.avg-character-picker select { width:100%; min-height:2.5rem; }
+.avg-character-exclusive { display:flex; gap:.5rem; align-items:center; }
+.avg-portrait-library-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:.7rem; max-height:32rem; overflow:auto; }
+.avg-portrait-library-grid figure { margin:0; padding:.5rem; border:1px solid rgba(210,169,92,.3); border-radius:8px; background:rgba(20,23,28,.5); }
+.avg-portrait-library-grid img { width:100%; height:12rem; object-fit:contain; }
+.avg-portrait-library-grid figcaption { display:grid; gap:.3rem; }
+.avg-portrait-library-grid figcaption span { color:var(--text-muted,#a99d89); font-size:.8rem; }
+@media (max-width:760px) { .avg-narrative-stage .avg-stage-resource-status { top:3.5rem; right:.65rem; } }
 .avg-outfit-modal { position:absolute; inset:5%; z-index:8; overflow:auto; padding:1rem; border:1px solid rgba(232,199,135,.42); border-radius:12px; color:#f2e5cf; background:rgba(10,13,17,.96); box-shadow:0 20px 60px rgba(0,0,0,.58); cursor:default; }
 .avg-outfit-modal > header { display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; }
 .avg-outfit-modal header p,.avg-outfit-modal > p { margin:.25rem 0 .8rem; color:#b9aa92; }

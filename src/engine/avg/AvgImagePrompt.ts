@@ -7,15 +7,17 @@ const SCENE_GUARD = '强制场景护栏（不可编辑）：仅生成无人物�
 
 function clean(value: string | undefined, limit: number): string { return (value ?? '').replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, limit); }
 
-export function buildAvgActorImagePrompt(input: { name: string; sex?: string; age?: number; identity?: string; occupation?: string; appearance?: string; outfit?: { name: string; note?: string } }): AvgImagePromptDraft {
-  const ageBand = input.age === undefined ? '年龄未知' : input.age < 18 ? '明确未满18岁' : input.age < 40 ? '明确成年' : input.age < 60 ? '明确成年且成熟' : '明确成年且年长';
-  const adult = input.age !== undefined && input.age >= 18;
-  const lines = [`为单人游戏人物立绘生成一张完整候选图。人物：${clean(input.name, 80) || '当前人物'}。`, `结构化特征：${input.sex === '女' ? '女性' : input.sex === '男' ? '男性' : '性别未知'}，${ageBand}。`];
+export function buildAvgActorImagePrompt(input: { name: string; sex?: string; age?: number; ageBand?: string; identity?: string; occupation?: string; appearance?: string; outfit?: { name: string; note?: string } }): AvgImagePromptDraft {
+  const bands: Record<string, string> = { child: '儿童', teen: '明确未满18岁', young_adult: '明确成年且年轻', adult: '明确成年', middle_aged: '明确成年且成熟', elderly: '明确成年且年长' };
+  const ageBand = input.age === undefined ? bands[input.ageBand ?? ''] ?? '年龄未知' : input.age < 18 ? '明确未满18岁' : input.age < 40 ? '明确成年' : input.age < 60 ? '明确成年且成熟' : '明确成年且年长';
+  const adult = input.age !== undefined ? Number.isFinite(input.age) && input.age >= 18 : ['young_adult', 'adult', 'middle_aged', 'elderly'].includes(input.ageBand ?? '');
+  const lines = [`为单人游戏人物立绘生成一张完整候选图。人物：${clean(input.name, 80) || '当前人物'}。`, `结构化特征：${input.sex === '女' || input.sex === 'female' ? '女性' : input.sex === '男' || input.sex === 'male' ? '男性' : '性别未知'}，${ageBand}。`];
   if (clean(input.identity, 160)) lines.push(`公开身份：${clean(input.identity, 160)}。`);
   if (clean(input.occupation, 160)) lines.push(`公开职业或职务：${clean(input.occupation, 160)}。`);
   if (clean(input.appearance, 500)) lines.push(`公开外观摘要：${clean(input.appearance, 500)}。`);
   if (input.outfit && clean(input.outfit.name, 80)) lines.push(`当前玩家自定义造型：${clean(input.outfit.name, 80)}${clean(input.outfit.note, 240) ? `；视觉备注：${clean(input.outfit.note, 240)}` : ''}。`);
   if (!adult) lines.push('年龄未明确成年：保持中性、非性化、合宜服装，不强调身体曲线或成人吸引力。');
+  lines.push('适合叠加在 AVG 背景上的人物立绘，单人全身或膝上完整构图，优先透明背景，否则简洁纯色背景，人物轮廓完整清晰。');
   lines.push('单人、完整构图、无文字、无水印、无拼贴、无多余人物、无裸体、无露骨性行为。');
   const draft = lines.join('\n'); return { draft, structuredDraft: draft, adultDirectionAvailable: adult, safetyMode: adult ? 'adult-actor' : 'non-adult-actor' };
 }

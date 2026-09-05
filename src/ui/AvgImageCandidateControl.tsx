@@ -4,7 +4,7 @@ import { AVG_IMAGE_PROFILE_CHANGED_EVENT, IndexedDbAvgImageGenerationProfileRepo
 import { finalizeAvgImagePrompt, type AvgImagePromptDraft } from '../engine/avg/AvgImagePrompt';
 import type { ValidatedAvgImage } from '../engine/avg/AvgVisualOverrideRepository';
 
-export function AvgImageCandidateControl({ targetSignature, targetLabel, prompt, onApply, onOpenSettings }: { targetSignature: string; targetLabel: string; prompt: AvgImagePromptDraft; onApply: (file: ValidatedAvgImage) => Promise<void>; onOpenSettings?: () => void }): React.ReactElement {
+export function AvgImageCandidateControl({ targetSignature, targetLabel, prompt, onApply, onOpenSettings, applyLabel = '应用此图', onBusyChange }: { targetSignature: string; targetLabel: string; prompt: AvgImagePromptDraft; onApply: (file: ValidatedAvgImage) => Promise<void>; onOpenSettings?: () => void; applyLabel?: string; onBusyChange?: (busy: boolean) => void }): React.ReactElement {
   const repository = useMemo(() => new IndexedDbAvgImageGenerationProfileRepository(), []);
   const [profiles, setProfiles] = useState<AvgImageGenerationProfile[]>([]); const [profileId, setProfileId] = useState('');
   const [edited, setEdited] = useState(prompt.draft); const [supplement, setSupplement] = useState(''); const [bold, setBold] = useState(false);
@@ -15,6 +15,7 @@ export function AvgImageCandidateControl({ targetSignature, targetLabel, prompt,
   useEffect(() => { controller.current?.abort(); setGenerating(false); setCandidate(undefined); setEdited(prompt.draft); setSupplement(''); setBold(false); setStatus(prompt.safetyMode === 'non-adult-actor' ? '年龄未明确成年：仅使用锁定的结构化中性提示词，不发送玩家补充要求。' : '提示词由当前安全结构化信息生成，可在请求前编辑。'); }, [prompt, targetSignature]);
   useEffect(() => { if (!candidate) { setCandidateUrl(''); return; } const url = URL.createObjectURL(candidate.blob); setCandidateUrl(url); return () => URL.revokeObjectURL(url); }, [candidate]);
   useEffect(() => () => controller.current?.abort(), []);
+  useEffect(() => { onBusyChange?.(generating || applying); return () => onBusyChange?.(false); }, [generating, applying, onBusyChange]);
   const selected = profiles.find((profile) => profile.id === profileId); const locked = prompt.safetyMode === 'non-adult-actor';
   const generate = async () => {
     if (!selected || generating || applying) return; const startSignature = targetSignature; const abort = new AbortController(); controller.current?.abort(); controller.current = abort; setCandidate(undefined); setGenerating(true); setStatus('正在请求一张候选图；关闭、取消或切换目标会中止本次请求。');
@@ -37,6 +38,6 @@ export function AvgImageCandidateControl({ targetSignature, targetLabel, prompt,
     {prompt.adultDirectionAvailable && <label className="avg-ai-bold-direction"><input type="checkbox" checked={bold} disabled={generating || applying} onChange={(event) => setBold(event.target.checked)} />大胆但不露骨（仅明确成年人物）</label>}
     <div className="avg-ai-generation-actions"><button type="button" disabled={!selected || generating || applying} onClick={() => void generate()}>生成候选图</button><button type="button" disabled={!generating} onClick={() => { controller.current?.abort(); setGenerating(false); setStatus('图片生成已取消。'); }}>取消生成</button></div>
     {status && <p className="avg-visual-modal-notice" role="status">{status}</p>}
-    {candidate && candidateUrl && <figure className="avg-visual-pending-preview avg-ai-candidate-preview"><img src={candidateUrl} alt={`${targetLabel} AI 候选图预览`} /><figcaption>{candidate.width}×{candidate.height} · {candidate.mediaType} · {(candidate.byteSize / 1024 / 1024).toFixed(1)} MiB</figcaption><div className="avg-ai-generation-actions"><button type="button" disabled={applying} onClick={() => void apply()}>应用此图</button><button type="button" disabled={applying} onClick={() => { setCandidate(undefined); setStatus('候选图已丢弃；未写入本地视觉仓库。'); }}>丢弃候选</button><a href={candidateUrl} download={`avg-ai-candidate.${candidate.mediaType === 'image/jpeg' ? 'jpg' : candidate.mediaType.split('/')[1]}`}>下载候选图</a></div></figure>}
+    {candidate && candidateUrl && <figure className="avg-visual-pending-preview avg-ai-candidate-preview"><img src={candidateUrl} alt={`${targetLabel} AI 候选图预览`} /><figcaption>{candidate.width}×{candidate.height} · {candidate.mediaType} · {(candidate.byteSize / 1024 / 1024).toFixed(1)} MiB</figcaption><div className="avg-ai-generation-actions"><button type="button" disabled={applying} onClick={() => void apply()}>{applyLabel}</button><button type="button" disabled={applying} onClick={() => { setCandidate(undefined); setStatus('候选图已丢弃；未写入本地视觉仓库。'); }}>丢弃候选</button><a href={candidateUrl} download={`avg-ai-candidate.${candidate.mediaType === 'image/jpeg' ? 'jpg' : candidate.mediaType.split('/')[1]}`}>下载候选图</a></div></figure>}
   </section>;
 }

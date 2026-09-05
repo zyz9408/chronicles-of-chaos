@@ -1,3 +1,10 @@
+import {
+  avgPortraitProfileKey,
+  isAvgPortraitMatchProfile,
+  selectSimilarAvgPortraitCandidate,
+  type AvgPortraitMatchProfile,
+} from './AvgPortraitLibrary';
+
 export const AVG_VISUAL_DATABASE_NAME = 'coc_v2_avg_visual_overrides';
 export const AVG_VISUAL_DATABASE_VERSION = 2;
 export const AVG_VISUAL_OVERRIDES_CHANGED_EVENT = 'coc-v2-avg-local-visual-overrides-changed';
@@ -41,6 +48,9 @@ export interface AvgVisualOverrideRecord extends AvgVisualOwnerBase {
   height: number;
   sha256: string;
   updatedAt: string;
+  portraitScope?: 'actor-bound' | 'adaptive-candidate';
+  sourceActorId?: string;
+  portraitProfile?: AvgPortraitMatchProfile;
 }
 
 export interface AvgUserOutfit extends AvgVisualOwnerBase {
@@ -104,7 +114,7 @@ export function createAvgActorTarget(
   visualPartitionId: string,
   worldBookId: string,
   actorId: string,
-): AvgVisualTarget {
+): Extract<AvgVisualTarget, { kind: 'actor' }> {
   return {
     kind: 'actor',
     visualPartitionId: required(visualPartitionId, '视觉分区'),
@@ -209,6 +219,27 @@ function makeOverride(target: AvgVisualTarget, image: ValidatedAvgImage): AvgVis
     height: image.height,
     sha256: image.sha256,
     updatedAt: new Date().toISOString(),
+  };
+}
+
+function makeAdaptivePortraitRecord(
+  target: Extract<AvgVisualTarget, { kind: 'actor' }>,
+  image: ValidatedAvgImage,
+  portraitProfile: AvgPortraitMatchProfile,
+): AvgVisualOverrideRecord {
+  return {
+    ...makeOverride(target, image),
+    key: joinKey([
+      'portrait-candidate',
+      target.visualPartitionId,
+      target.worldBookId,
+      target.actorId,
+      avgPortraitProfileKey(portraitProfile),
+      image.sha256,
+    ]),
+    portraitScope: 'adaptive-candidate',
+    sourceActorId: target.actorId,
+    portraitProfile,
   };
 }
 
@@ -317,12 +348,12 @@ export class IndexedDbAvgVisualOverrideRepository {
     }
   }
 
-  async lookup(target: AvgVisualTarget): Promise<
+  async lookup(target: AvgVisualTarget, options: { actorProfile?: AvgPortraitMatchProfile; rememberMatch?: boolean } = {}): Promise<
     | { status: 'missing' }
     | { status: 'asset-missing'; record: AvgVisualOverrideRecord }
     | { status: 'found'; record: AvgVisualOverrideRecord; blob: Blob }
   > {
-    return this.run(['overrides', 'assets', 'outfitSelections', 'outfitOverrides'], 'readonly', async (transaction) => {
+    return this.run(['overrides', 'assets', 'outfitSelections', 'outfitOverrides'], options.rememberMatch ? 'readwrite' : 'readonly', async (transaction) => {
       if (target.kind === 'actor') {
         const selection = await request<AvgOutfitSelection | undefined>(
           transaction.objectStore('outfitSelections').get(actorKey(target)),
@@ -347,12 +378,33 @@ export class IndexedDbAvgVisualOverrideRepository {
           }
         }
       }
-      const record = await request<AvgVisualOverrideRecord | undefined>(transaction.objectStore('overrides').get(avgVisualTargetKey(target)));
-      if (!record) return { status: 'missing' };
-      const asset = await request<AvgVisualAsset | undefined>(transaction.objectStore('assets').get(record.assetId));
-      return assetMatches(record, asset)
-        ? { status: 'found', record, blob: asset!.blob }
-        : { status: 'asset-missing', record };
+      const overrides = transaction.objectStore('overrides');
+      const record = await request<AvgVisualOverrideRecord | undefined>(overrides.get(avgVisualTargetKey(target)));
+      if (record) {
+        const asset = await request<AvgVisualAsset | undefined>(transaction.objectStore('assets').get(record.assetId));
+        return assetMatches(record, asset)
+          ? { status: 'found', record, blob: asset!.blob }
+          : { status: 'asset-missing', record };
+      }
+      if (target.kind === 'actor' && options.actorProfile) {
+        const rows = await request<AvgVisualOverrideRecord[]>(overrides.index('visualPartitionId').getAll(target.visualPartitionId));
+        const candidates = rows.filter((row) => row.worldBookId === target.worldBookId && row.portraitScope === 'adaptive-candidate');
+        while (candidates.length) {
+          const candidate = selectSimilarAvgPortraitCandidate(options.actorProfile, target.actorId, candidates);
+          if (!candidate) break;
+          const asset = await request<AvgVisualAsset | undefined>(transaction.objectStore('assets').get(candidate.assetId));
+          if (assetMatches(candidate, asset)) {
+            const matched: AvgVisualOverrideRecord = {
+              ...candidate, key: avgVisualTargetKey(target), actorId: target.actorId,
+              portraitScope: 'actor-bound', updatedAt: new Date().toISOString(),
+            };
+            if (options.rememberMatch) await request(overrides.put(matched));
+            return { status: 'found', record: matched, blob: asset!.blob };
+          }
+          candidates.splice(candidates.indexOf(candidate), 1);
+        }
+      }
+      return { status: 'missing' };
     });
   }
 
@@ -369,14 +421,65 @@ export class IndexedDbAvgVisualOverrideRepository {
     return { ...record };
   }
 
+  async saveGeneratedActorPortrait(
+    target: Extract<AvgVisualTarget, { kind: 'actor' }>,
+    image: ValidatedAvgImage,
+    options: { portraitProfile?: AvgPortraitMatchProfile; registerAdaptiveCandidate: boolean },
+  ): Promise<{ bound: AvgVisualOverrideRecord; adaptiveCandidate?: AvgVisualOverrideRecord }> {
+    if (options.portraitProfile && !isAvgPortraitMatchProfile(options.portraitProfile)) throw new Error('人物画像格式不正确。');
+    const bound: AvgVisualOverrideRecord = {
+      ...makeOverride(target, image),
+      portraitScope: 'actor-bound',
+      sourceActorId: target.actorId,
+      ...(options.portraitProfile ? { portraitProfile: options.portraitProfile } : {}),
+    };
+    const adaptiveCandidate = options.registerAdaptiveCandidate && options.portraitProfile
+      ? makeAdaptivePortraitRecord(target, image, options.portraitProfile)
+      : undefined;
+    await this.run(STORE_NAMES, 'readwrite', async (transaction) => {
+      const overrideStore = transaction.objectStore('overrides');
+      const rows = await request<AvgVisualOverrideRecord[]>(overrideStore.index('visualPartitionId').getAll(target.visualPartitionId));
+      const previousBound = await request<AvgVisualOverrideRecord | undefined>(overrideStore.get(bound.key));
+      const previousCandidates = rows.filter((row) => (
+        row.worldBookId === target.worldBookId
+        && row.portraitScope === 'adaptive-candidate'
+        && row.sourceActorId === target.actorId
+      ));
+      const staleAssetIds = new Set([
+        previousBound?.assetId,
+        ...previousCandidates.map((row) => row.assetId),
+      ].filter((assetId): assetId is string => Boolean(assetId) && assetId !== bound.assetId));
+
+      await request(transaction.objectStore('assets').put(makeAsset({ ...image, assetId: bound.assetId })));
+      await request(overrideStore.put(bound));
+      await request(transaction.objectStore('outfitSelections').delete(actorKey(target)));
+      for (const candidate of previousCandidates) {
+        if (candidate.key !== adaptiveCandidate?.key) await request(overrideStore.delete(candidate.key));
+      }
+      if (adaptiveCandidate) await request(overrideStore.put(adaptiveCandidate));
+      for (const assetId of staleAssetIds) await this.deleteAssetIfOrphaned(transaction, assetId);
+    });
+    emitChanged([target.visualPartitionId]);
+    return { bound: { ...bound }, ...(adaptiveCandidate ? { adaptiveCandidate: { ...adaptiveCandidate } } : {}) };
+  }
+
   async remove(target: AvgVisualTarget): Promise<boolean> {
     let removed = false;
     await this.run(STORE_NAMES, 'readwrite', async (transaction) => {
       const store = transaction.objectStore('overrides');
       const record = await request<AvgVisualOverrideRecord | undefined>(store.get(avgVisualTargetKey(target)));
-      if (!record) return;
-      await request(store.delete(record.key));
-      await this.deleteAssetIfOrphaned(transaction, record.assetId);
+      const adaptiveRows = target.kind === 'actor'
+        ? (await request<AvgVisualOverrideRecord[]>(store.index('visualPartitionId').getAll(target.visualPartitionId)))
+          .filter((row) => row.worldBookId === target.worldBookId
+            && row.portraitScope === 'adaptive-candidate'
+            && row.sourceActorId === target.actorId)
+        : [];
+      if (!record && adaptiveRows.length === 0) return;
+      if (record) await request(store.delete(record.key));
+      for (const row of adaptiveRows) await request(store.delete(row.key));
+      for (const assetId of new Set([record?.assetId, ...adaptiveRows.map((row) => row.assetId)])) {
+        await this.deleteAssetIfOrphaned(transaction, assetId);
+      }
       removed = true;
     });
     if (removed) emitChanged([target.visualPartitionId]);
@@ -517,7 +620,7 @@ export class IndexedDbAvgVisualOverrideRepository {
         .filter((asset): asset is AvgVisualAsset => Boolean(asset));
       return {
         visualPartitionId: partitionId,
-        actorCount: records.filter((row) => row.kind === 'actor').length,
+        actorCount: records.filter((row) => row.kind === 'actor' && row.portraitScope !== 'adaptive-candidate').length,
         sceneCount: records.filter((row) => row.kind === 'scene').length,
         outfitCount: userOutfits.length,
         outfitOverrideCount: outfitOverrides.length,
@@ -591,6 +694,33 @@ export function assertValidPartitionSnapshot(snapshot: AvgVisualPartitionSnapsho
   for (const row of allImageRows) {
     if (row.visualPartitionId !== partitionId) throw new Error('视觉覆盖记录归属不一致。');
     if (!assetMatches(row, assets.get(row.assetId))) throw new Error('视觉分区图片引用元数据不一致。');
+  }
+  for (const row of snapshot.records) {
+    if (row.kind === 'actor') {
+      if (!row.actorId) throw new Error('人物视觉覆盖缺少人物标识。');
+      if (row.portraitScope === 'adaptive-candidate') {
+        if (!row.sourceActorId || row.sourceActorId !== row.actorId || !isAvgPortraitMatchProfile(row.portraitProfile)) {
+          throw new Error('相似人物候选图缺少有效结构化画像。');
+        }
+        const expected = makeAdaptivePortraitRecord({ kind: 'actor', visualPartitionId: row.visualPartitionId, worldBookId: row.worldBookId, actorId: row.actorId }, {
+          blob: assets.get(row.assetId)!.blob,
+          mediaType: row.mediaType,
+          byteSize: row.byteSize,
+          width: row.width,
+          height: row.height,
+          sha256: row.sha256,
+        }, row.portraitProfile);
+        if (row.key !== expected.key) throw new Error('相似人物候选图内部 key 不正确。');
+      } else if (row.key !== avgVisualTargetKey(createAvgActorTarget(row.visualPartitionId, row.worldBookId, row.actorId))) {
+        throw new Error('人物视觉覆盖内部 key 不正确。');
+      }
+    } else if (!row.sceneAnchorKind || !row.sceneAnchorId || row.key !== avgVisualTargetKey(createAvgSceneTarget(
+      row.visualPartitionId,
+      row.worldBookId,
+      { kind: row.sceneAnchorKind, id: row.sceneAnchorId },
+    ))) {
+      throw new Error('场景视觉覆盖内部 key 不正确。');
+    }
   }
   const referenced = new Set(allImageRows.map((row) => row.assetId));
   if (referenced.size !== assets.size || [...referenced].some((id) => !assets.has(id))) {

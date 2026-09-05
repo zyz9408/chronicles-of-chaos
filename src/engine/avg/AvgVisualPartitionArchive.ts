@@ -49,7 +49,7 @@ function isSafeArchivePath(path: string): boolean {
 function summaryOf(snapshot: AvgVisualPartitionSnapshot): AvgVisualPartitionArchiveSummary {
   return {
     visualPartitionId: snapshot.visualPartitionId,
-    actorCount: snapshot.records.filter((record) => record.kind === 'actor').length,
+    actorCount: snapshot.records.filter((record) => record.kind === 'actor' && record.portraitScope !== 'adaptive-candidate').length,
     sceneCount: snapshot.records.filter((record) => record.kind === 'scene').length,
     outfitCount: snapshot.userOutfits.length,
     outfitOverrideCount: snapshot.outfitOverrides.length,

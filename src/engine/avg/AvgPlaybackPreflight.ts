@@ -6,6 +6,7 @@ import {
   createAvgSceneTarget,
 } from './AvgVisualOverrideRepository';
 import { resolveThreeKingdomsPortraitSet, resolveThreeKingdomsSceneResource } from './ThreeKingdomsAvgResolver';
+import { getAvgActorVisualContext } from './AvgActorVisualContext';
 
 export interface AvgPlaybackPreflightResult {
   status: 'ready' | 'warning';
@@ -63,7 +64,8 @@ async function runAvgPlaybackPreflight(
   for (const actorId of actorIds) {
     if (actorId === state.player.id && playerPortraitMode === 'hidden') continue;
     const target = createAvgActorTarget(partition, state.worldBookId, actorId);
-    const local = await overrides.lookup(target);
+    const actor = getAvgActorVisualContext(state, actorId, turn.displayMeta);
+    const local = await overrides.lookup(target, { actorProfile: actor?.dedicated ? undefined : actor?.portraitProfile });
     if (local.status === 'found') continue;
     const frozenSetId = state.avgPresentation?.portraitBindings?.find((binding) => binding.actorId === actorId)?.portraitSetId;
     const fact = facts.find((item) => item.speakerActorId === actorId);

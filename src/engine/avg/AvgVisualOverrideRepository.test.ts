@@ -1,5 +1,7 @@
 import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { createAvgPortraitMatchProfile } from './AvgPortraitLibrary';
+import { createAvgVisualPartitionArchive, parseAvgVisualPartitionArchive } from './AvgVisualPartitionArchive';
 import {
   IndexedDbAvgVisualOverrideRepository,
   createAvgActorTarget,
@@ -96,5 +98,53 @@ describe('IndexedDbAvgVisualOverrideRepository', () => {
 
     await expect(repository.replacePartitions([snapshot])).rejects.toThrow('归属不一致');
     expect((await repository.lookup(target)).status).toBe('found');
+  });
+
+  it('registers a generated portrait, matches a new ordinary actor, and keeps that face after the library grows', async () => {
+    const repository = new IndexedDbAvgVisualOverrideRepository(databaseName);
+    const profile = createAvgPortraitMatchProfile({ sex: '男', age: 30, roleFamily: '军士' })!;
+    const first = createAvgActorTarget('save-a', 'threeKingdoms', 'soldier-a');
+    const next = createAvgActorTarget('save-a', 'threeKingdoms', 'soldier-b');
+    const portrait = await image(2);
+    await repository.saveGeneratedActorPortrait(first, portrait, { portraitProfile: profile, registerAdaptiveCandidate: true });
+    expect(await repository.lookup(next)).toEqual({ status: 'missing' });
+    expect(await repository.lookup(next, { actorProfile: profile, rememberMatch: true })).toMatchObject({ status: 'found', record: { actorId: 'soldier-b', sha256: portrait.sha256 } });
+    await repository.saveGeneratedActorPortrait(createAvgActorTarget('save-a', 'threeKingdoms', 'soldier-c'), await image(3), { portraitProfile: profile, registerAdaptiveCandidate: true });
+    expect(await repository.lookup(next)).toMatchObject({ status: 'found', record: { sha256: portrait.sha256 } });
+    expect(await repository.lookup(createAvgActorTarget('save-b', 'threeKingdoms', 'outsider'), { actorProfile: profile })).toEqual({ status: 'missing' });
+    expect(await repository.lookup(createAvgActorTarget('save-a', 'other-world', 'outsider'), { actorProfile: profile })).toEqual({ status: 'missing' });
+  });
+
+  it('keeps dedicated portraits out of the reusable library and clears an active outfit when applying a new default portrait', async () => {
+    const repository = new IndexedDbAvgVisualOverrideRepository(databaseName);
+    const target = createAvgActorTarget('save-a', 'threeKingdoms', 'guan-yu');
+    const profile = createAvgPortraitMatchProfile({ sex: '男', age: 30, roleFamily: '军士' })!;
+    const outfit = await repository.createUserOutfit(target, { name: '便服' });
+    await repository.replaceOutfitImage(target, outfit.outfitId, await image(1));
+    await repository.selectUserOutfit(target, outfit.outfitId);
+    const portrait = await image(2);
+    await repository.saveGeneratedActorPortrait(target, portrait, { portraitProfile: profile, registerAdaptiveCandidate: false });
+    expect(await repository.lookup(target)).toMatchObject({ status: 'found', record: { sha256: portrait.sha256 } });
+    expect(await repository.getSelectedUserOutfit(target)).toBeUndefined();
+    expect(await repository.lookup(createAvgActorTarget('save-a', 'threeKingdoms', 'ordinary'), { actorProfile: profile })).toEqual({ status: 'missing' });
+    expect((await repository.listUserOutfits(target)).length).toBe(1);
+  });
+
+  it('preserves the generated library and exact bindings across portable export/import and source deletion', async () => {
+    const repository = new IndexedDbAvgVisualOverrideRepository(databaseName);
+    const target = createAvgActorTarget('save-a', 'threeKingdoms', 'merchant-a');
+    const borrower = createAvgActorTarget('save-a', 'threeKingdoms', 'merchant-b');
+    const profile = createAvgPortraitMatchProfile({ sex: '女', age: 32, roleFamily: '商人' })!;
+    await repository.saveGeneratedActorPortrait(target, await image(4), { portraitProfile: profile, registerAdaptiveCandidate: true });
+    await repository.lookup(borrower, { actorProfile: profile, rememberMatch: true });
+    const exported = await createAvgVisualPartitionArchive(await repository.exportPartition('save-a'));
+    const restored = await parseAvgVisualPartitionArchive(exported!.archiveBytes, { expectedSummary: exported!.summary, decodeDimensions: async () => ({ width: 1024, height: 1536 }) });
+    await repository.clear();
+    await repository.replacePartitions([restored]);
+    expect((await repository.exportPartition('save-a')).actorCount).toBe(2);
+    expect((await repository.lookup(createAvgActorTarget('save-a', 'threeKingdoms', 'merchant-c'), { actorProfile: profile })).status).toBe('found');
+    await repository.remove(target);
+    expect((await repository.lookup(borrower)).status).toBe('found');
+    expect((await repository.lookup(createAvgActorTarget('save-a', 'threeKingdoms', 'merchant-d'), { actorProfile: profile })).status).toBe('missing');
   });
 });
