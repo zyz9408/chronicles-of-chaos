@@ -62,6 +62,41 @@ function actorName(
     ?? actorId;
 }
 
+/**
+ * Combat projections intentionally keep stable source IDs for deterministic
+ * execution. Player-facing controls must resolve those IDs back to the
+ * authored character-sheet name instead of exposing an internal identifier.
+ */
+export function combatUniqueArtName(
+  state: RuntimeState,
+  actorId: string,
+  sourceId: string,
+): string {
+  const owner = state.player.id === actorId
+    ? state.player
+    : state.npcs?.find((npc) => npc.npcId === actorId)
+      ?? state.knownActors.find((actor) => actor.id === actorId);
+  const ownedName = owner?.uniqueArts
+    ?.find((art) => art.id === sourceId)
+    ?.name
+    ?.trim();
+  if (ownedName) return ownedName;
+
+  // Legacy encounters can retain a valid projection after their owner record
+  // was normalized. Source IDs are stable, so a unique cross-roster match is
+  // still a safe display-only fallback.
+  const matchingNames = [
+    state.player,
+    ...(state.npcs ?? []),
+    ...state.knownActors,
+  ].flatMap((actor) => actor.uniqueArts ?? [])
+    .filter((art) => art.id === sourceId)
+    .map((art) => typeof art.name === 'string' ? art.name.trim() : '')
+    .filter(Boolean);
+  const uniqueNames = [...new Set(matchingNames)];
+  return uniqueNames.length === 1 ? uniqueNames[0] : '未命名绝艺';
+}
+
 function activeCombatants(state: CombatEngineState, side: 'player' | 'enemy') {
   return state.combatants.filter((combatant) => (
     combatant.side === side
@@ -578,7 +613,7 @@ export function CombatEncounterScreen({
                       artId: art.sourceId,
                       targetIds: prepareArtTargets(engineState, currentActor!.actorId, selectedTarget, art.sourceId),
                     })}
-                  >绝艺 · {art.sourceId}</button>
+                  >绝艺 · {combatUniqueArtName(runtimeState, currentActor!.actorId, art.sourceId)}</button>
                 ))}
                 {currentSnapshot?.itemProfiles.map((item) => (
                   <button

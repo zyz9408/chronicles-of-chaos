@@ -9,7 +9,7 @@ import {
   stageCombatEncounter,
 } from '../engine/encounterV2/EncounterRuntimeIntegration';
 import { makeCombatIntent } from '../engine/encounterV2/CombatTestFixtures';
-import { CombatEncounterScreen } from './CombatEncounterScreen';
+import { CombatEncounterScreen, combatUniqueArtName } from './CombatEncounterScreen';
 
 function makeBaseState(): RuntimeState {
   return {
@@ -94,6 +94,23 @@ function makeNarrativePendingState(): RuntimeState {
 }
 
 describe('CombatEncounterScreen', () => {
+  it('resolves combat art controls to the authored Chinese name instead of exposing an internal id', () => {
+    const state = makeBaseState();
+    state.player.uniqueArts = [{
+      id: 'art_anatomical_strike',
+      name: '断脉绝击',
+      rarity: 'orange',
+      domain: 'personalCombat',
+      level: 3,
+      description: '洞察筋骨脉络后直击要害。',
+      effectSummary: '造成高额伤害。',
+      source: 'opening',
+    }];
+
+    expect(combatUniqueArtName(state, state.player.id, 'art_anatomical_strike')).toBe('断脉绝击');
+    expect(combatUniqueArtName(state, state.player.id, 'art_missing')).toBe('未命名绝艺');
+  });
+
   it('keeps enemies left, player party right, and exposes speed/auto controls without layout-dependent content', () => {
     const markup = renderToStaticMarkup(
       <CombatEncounterScreen
