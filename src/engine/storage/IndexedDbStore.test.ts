@@ -78,4 +78,18 @@ describe('IndexedDbStore multi-store transactions', () => {
     expect(await indexedDbStore.idbGet('saves', 'save-a')).toBeUndefined();
     expect(await indexedDbStore.idbGetMeta('lastSaveId')).toBeUndefined();
   });
+
+  it('rejects a blocked schema upgrade instead of leaving opening and saves pending forever', async () => {
+    const blocker = await new Promise<IDBDatabase>((resolve, reject) => {
+      const opening = indexedDB.open('coc_v2_local_data', 1);
+      opening.onsuccess = () => resolve(opening.result);
+      opening.onerror = () => reject(opening.error);
+    });
+
+    try {
+      await expect(indexedDbStore.openLocalDatabase()).rejects.toThrow('旧页面占用');
+    } finally {
+      blocker.close();
+    }
+  });
 });

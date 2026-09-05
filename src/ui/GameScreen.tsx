@@ -1203,6 +1203,7 @@ export const GameScreen: React.FC<Props> = ({
   const runTrueOpening = useCallback(async () => {
     const execution = beginExecution();
     let preserveProcessingTrace = false;
+    let generatedNarrativeRecovery = '';
     setIsProcessing(true);
     setMessage('正在生成开场剧情...');
     resetProcessingTrace('准备开场上下文');
@@ -1267,6 +1268,10 @@ export const GameScreen: React.FC<Props> = ({
       });
       assertExecutionCurrent(execution);
 
+      generatedNarrativeRecovery = result.narrativeText;
+      // Do not keep a completed opening hidden while IndexedDB commits the save.
+      setNarrativeText(result.narrativeText);
+
       const saveStage = startUiProcessingStage('saving', '保存开场存档');
       assertExecutionCurrent(execution);
       const saved = await saveCurrentState(saveId, result.newRuntimeState, { signal: execution.signal });
@@ -1292,9 +1297,11 @@ export const GameScreen: React.FC<Props> = ({
           fallbackStage: 'generatingNarrative',
           fallbackLabel: '准备开场上下文',
         });
-        setNarrativeText('');
+        setNarrativeText(generatedNarrativeRecovery);
         setSuggestedActions(getLatestSuggestedActions(runtimeState));
-        setMessage(`开场剧情生成失败：${error instanceof Error ? error.message : '请稍后重试'}`);
+        setMessage(generatedNarrativeRecovery
+          ? `开场正文已生成但存档提交失败，正文已保留：${error instanceof Error ? error.message : '请稍后重试'}`
+          : `开场剧情生成失败：${error instanceof Error ? error.message : '请稍后重试'}`);
       }
     } finally {
       settleExecutionUi(execution, { preserveProcessingTrace });
@@ -2904,6 +2911,7 @@ export const GameScreen: React.FC<Props> = ({
     currentPlayerInput: isProcessing ? pendingActionText : '',
     currentTitle: isProcessing ? '生成中' : turnDisplayTitle,
     includeLiveEntry: isProcessing,
+    includeUnpersistedNarrativeFallback: true,
   });
   const avgPlaybackEntry = !isProcessing
     ? [...renderedNarrativeEntries].reverse().find((entry) => !entry.isLive && entry.narrativeText.trim())
@@ -2911,8 +2919,11 @@ export const GameScreen: React.FC<Props> = ({
   const avgDecisionMode = narrativePresentation === 'classic'
     ? 'classic'
     : narrativePresentation === 'avg' || avgResourcePackReady ? 'avg' : 'classic';
-  const showAvgPreparing = isProcessing && avgResourcePackReady && avgDecisionMode === 'avg';
-  const canAttemptAvgPlayback = !isProcessing && avgResourcePackReady && avgDecisionMode === 'avg' && Boolean(avgPlaybackEntry);
+  const narrativeGenerationFinished = Boolean(narrativeText.trim()) && processingStageEvents.some(
+    (event) => event.stage === 'generatingNarrative' && event.status === 'finished',
+  );
+  const showAvgPreparing = isProcessing && avgResourcePackReady && avgDecisionMode === 'avg' && !narrativeGenerationFinished;
+  const canAttemptAvgPlayback = !isProcessing && avgResourcePackReady && avgDecisionMode === 'avg' && Boolean(avgPlaybackEntry?.turnNumber);
   const avgPlaybackTurn = avgPlaybackEntry?.turnNumber
     ? runtimeState.turnLog.find((turn) => turn.turnNumber === avgPlaybackEntry.turnNumber)
     : undefined;

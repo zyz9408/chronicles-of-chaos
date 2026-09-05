@@ -16,8 +16,17 @@ let databasePromise: Promise<IDBDatabase> | null = null;
 
 export function openLocalDatabase(): Promise<IDBDatabase> {
   if (!databasePromise) {
-    databasePromise = new Promise((resolve, reject) => {
+    let openingPromise: Promise<IDBDatabase>;
+    openingPromise = new Promise((resolve, reject) => {
       const request = getIndexedDbFactory().open(DB_NAME, DB_VERSION);
+      let settled = false;
+
+      const rejectOpening = (error: Error | DOMException) => {
+        if (settled) return;
+        settled = true;
+        if (databasePromise === openingPromise) databasePromise = null;
+        reject(error);
+      };
 
       request.onupgradeneeded = () => {
         const db = request.result;
@@ -40,9 +49,23 @@ export function openLocalDatabase(): Promise<IDBDatabase> {
           db.createObjectStore('memoryEmbeddingIndexes', { keyPath: 'id' });
         }
       };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error ?? new Error('IndexedDB 打开失败'));
+      request.onsuccess = () => {
+        const database = request.result;
+        if (settled) {
+          database.close();
+          return;
+        }
+        settled = true;
+        database.onversionchange = () => {
+          database.close();
+          if (databasePromise === openingPromise) databasePromise = null;
+        };
+        resolve(database);
+      };
+      request.onerror = () => rejectOpening(request.error ?? new Error('IndexedDB 打开失败'));
+      request.onblocked = () => rejectOpening(new Error('本地存档数据库正被旧页面占用，请关闭其他游戏页面后重试。'));
     });
+    databasePromise = openingPromise;
   }
 
   return databasePromise;

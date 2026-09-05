@@ -21,6 +21,7 @@ export interface BuildNarrativeRenderEntriesOptions {
   currentPlayerInput?: string;
   currentTitle?: string;
   includeLiveEntry?: boolean;
+  includeUnpersistedNarrativeFallback?: boolean;
 }
 
 export function buildNarrativeRenderEntries(
@@ -38,7 +39,19 @@ export function buildNarrativeRenderEntries(
   const entries = persistedEntries.slice(-limit);
 
   if (options.includeLiveEntry === false) {
-    return entries;
+    if (!options.includeUnpersistedNarrativeFallback || !liveText || liveText === latestPersistedText) {
+      return entries;
+    }
+    return [
+      ...entries,
+      {
+        key: 'unpersisted-narrative-fallback',
+        title: options.currentTitle?.trim() || '正文恢复显示',
+        playerInput: '',
+        narrativeText: liveText,
+        isLive: true,
+      },
+    ].slice(-limit);
   }
 
   if (!liveText && !livePlayerInput) {

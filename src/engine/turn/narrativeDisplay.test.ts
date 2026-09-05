@@ -85,6 +85,23 @@ describe('narrativeDisplay', () => {
     });
   });
 
+  it('can keep a completed narrative visible when persistence did not retain its turn log', () => {
+    const entries = buildNarrativeRenderEntries([], {
+      currentNarrativeText: '开场已经生成，但存档提交仍在恢复。',
+      currentTitle: '开场剧情',
+      includeLiveEntry: false,
+      includeUnpersistedNarrativeFallback: true,
+    });
+
+    expect(entries).toEqual([{
+      key: 'unpersisted-narrative-fallback',
+      title: '开场剧情',
+      playerInput: '',
+      narrativeText: '开场已经生成，但存档提交仍在恢复。',
+      isLive: true,
+    }]);
+  });
+
   it('does not show internal true opening commands as player actions', () => {
     const [entry] = buildNarrativeRenderEntries([{
       ...makeTurn(1, 'opening'),
