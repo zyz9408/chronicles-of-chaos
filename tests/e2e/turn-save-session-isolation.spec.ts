@@ -312,8 +312,11 @@ async function cloneCurrentSaveAsB(page: Page): Promise<string> {
       saveB.runtimeState.player.name = 'B档主角';
 
       await new Promise<void>((resolve, reject) => {
-        const tx = db.transaction('saves', 'readwrite');
+        const tx = db.transaction(['saves', 'meta'], 'readwrite');
         tx.objectStore('saves').put(saveB);
+        // Direct fixture insertion bypasses SaveManager's summary update. Let the
+        // real list loader rebuild its index before selecting this seeded save.
+        tx.objectStore('meta').delete('saveSummaryIndexReadyV1');
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
@@ -533,8 +536,10 @@ test('closing an in-game load modal invalidates its pending save read without sw
 
   const completedBReads = await delayedRead.completedReadCount(SAVE_B_ID);
   await page.getByTestId('game-load-progress').click();
-  await expect.poll(() => delayedRead.completedReadCount(SAVE_B_ID)).toBeGreaterThan(completedBReads);
   const saveBItem = page.locator('.save-item').filter({ hasText: 'B档主角' });
+  await expect(saveBItem).toBeVisible();
+  // Listing summaries must not read the full save until the player selects it.
+  expect(await delayedRead.completedReadCount(SAVE_B_ID)).toBe(completedBReads);
   await saveBItem.evaluate((element, saveId) => {
     element.addEventListener('click', () => {
       (window as unknown as { __cocDelayNextSaveReadId?: string }).__cocDelayNextSaveReadId = saveId;

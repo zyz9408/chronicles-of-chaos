@@ -16,7 +16,7 @@ import type { NarratorNpcProfileSuggestion, NarratorWritebackProtocol } from './
 import { stageWarEncounter } from '../encounterV2/WarRuntimeIntegration';
 import { makeWarTroop } from '../encounterV2/WarTestFixtures';
 import type { WarStartIntent } from '../encounterV2/EncounterContracts';
-import { inspectStateWritebackRecovery } from '../state/StateWritebackRecovery';
+import { finalizePendingStateWritebackRecoveryHead, inspectStateWritebackRecovery } from '../state/StateWritebackRecovery';
 import { createStateWritebackRecoveryVerification } from '../state/StateWritebackRecoveryService';
 
 const worldBook: WorldBook = {
@@ -6958,7 +6958,7 @@ describe('executeTurn LLM integration', () => {
     expect(result.statePatches).toHaveLength(1);
     expect(result.statePatches?.[0]?.type).toBe('timeAdvance');
     expect(result.newRuntimeState.stateWritebackRecovery).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       status: 'pending',
       frozenNarrativeText: '你等候通报，正文已经完成，但状态候选含有旧协议字段。',
       quarantinedPatchIndexes: [1],
@@ -6969,5 +6969,33 @@ describe('executeTurn LLM integration', () => {
       result.newRuntimeState,
       createStateWritebackRecoveryVerification(worldBook),
     ).status).toBe('ready');
+
+    // Continue without applying the previous repair, matching the reported UI
+    // sequence: narrative finishes, then first-persistence finalization runs.
+    const previous = result.newRuntimeState;
+    const previousEvidence = structuredClone(previous.stateWritebackRecovery);
+    previous.localSituationNotes.push('失败回合后另有状态更新，旧重整已经失效。');
+    expect(inspectStateWritebackRecovery(previous, createStateWritebackRecoveryVerification(worldBook)).status).toBe('stale_lineage');
+    llmClient.generate.mockResolvedValue({
+      content: JSON.stringify({
+        narrativeText: '你继续观察城门，下一回合已正常完成。',
+        suggestedActions: [],
+        statePatches: [{ type: 'timeAdvance', payload: { minutesAdvanced: 15, reason: '观察', category: 'waiting' }, reason: '观察耗时' }],
+        bundledFeatures: { protocolVersion: 'coc.v2.bundledMain.v1' },
+      }),
+      provider: 'openai_compatible', model: 'main-model',
+    });
+    const continued = await executeTurn(worldBook, previous, '继续观察', {
+      apiConfig, llmClient,
+      featureExecutionModes: {
+        revision: 1,
+        stateWriteback: 'bundledMain', npcCompletion: 'bundledMain', npcSimulation: 'bundledMain',
+        worldEvolution: 'bundledMain', memorySummary: 'bundledMain',
+      },
+    });
+    expect(continued.newRuntimeState.turnLog).toHaveLength(2);
+    expect(continued.newRuntimeState.stateWritebackRecovery).toBeUndefined();
+    expect(() => finalizePendingStateWritebackRecoveryHead(continued.newRuntimeState, createStateWritebackRecoveryVerification(worldBook))).not.toThrow();
+    expect(previous.stateWritebackRecovery).toEqual(previousEvidence);
   });
 });

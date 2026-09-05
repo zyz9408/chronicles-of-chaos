@@ -3,7 +3,9 @@
 // IndexedDB 存档系统
 // ============================================================
 
-import type { SaveData, SaveKind, SaveListItem, RuntimeState, TurnDisplayMeta } from '../types';
+import type { SaveData, SaveKind, SaveListItem, RuntimeState } from '../types';
+import { compactRuntimeStateForPersistence } from './RuntimeStateCompaction';
+export { compactRuntimeStateForPersistence } from './RuntimeStateCompaction';
 import {
   CURRENT_RUNTIME_STATE_MIGRATION_VERSION,
   CURRENT_RUNTIME_STATE_VERSION,
@@ -38,7 +40,6 @@ const LEGACY_MIGRATION_META_KEY = 'legacySavesMigratedFromLocalStorage';
 const SAVE_SUMMARY_INDEX_META_KEY = 'saveSummaryIndexReadyV1';
 const DEVELOPER_OVERRIDE_CHECKPOINT_META_PREFIX = 'developerOverrideCheckpoint:';
 const RUNTIME_VARIABLE_CHECKPOINT_META_PREFIX = 'runtimeVariableCheckpoint:';
-const PERSISTED_FULL_TURN_DIAGNOSTIC_LIMIT = 5;
 
 export interface SaveArchive {
   schema: 'coc.v2.saves';
@@ -1676,58 +1677,6 @@ function buildNormalizedSaveData(
     currentDate: compactedState.currentDate,
     runtimeState: compactedState,
   };
-}
-
-function compactTurnDisplayMeta(displayMeta: TurnDisplayMeta): TurnDisplayMeta {
-  const {
-    rawResponse: _rawResponse,
-    reasoningSummary: _reasoningSummary,
-    promptTokenEstimate: _promptTokenEstimate,
-    processingStages: _processingStages,
-    memoryRecall: _memoryRecall,
-    npcIntentSimulation,
-    ...retained
-  } = displayMeta;
-  const compactedNpcIntentSimulation = npcIntentSimulation
-    ? (() => {
-        const { package: _package, ...summary } = npcIntentSimulation;
-        return summary;
-      })()
-    : undefined;
-  const changed = displayMeta.rawResponse !== undefined
-    || displayMeta.reasoningSummary !== undefined
-    || displayMeta.promptTokenEstimate !== undefined
-    || displayMeta.processingStages !== undefined
-    || displayMeta.memoryRecall !== undefined
-    || npcIntentSimulation?.package !== undefined;
-  if (!changed) return displayMeta;
-  return {
-    ...retained,
-    ...(compactedNpcIntentSimulation
-      ? { npcIntentSimulation: compactedNpcIntentSimulation }
-      : {}),
-  };
-}
-
-/**
- * Keeps gameplay facts and complete narrative text while trimming old, derived
- * diagnostics that can otherwise duplicate large model responses in every save
- * and rollback snapshot. The newest turns retain full diagnostics for support.
- */
-export function compactRuntimeStateForPersistence(runtimeState: RuntimeState): RuntimeState {
-  const compactBeforeIndex = Math.max(
-    0,
-    runtimeState.turnLog.length - PERSISTED_FULL_TURN_DIAGNOSTIC_LIMIT,
-  );
-  let changed = false;
-  const turnLog = runtimeState.turnLog.map((entry, index) => {
-    if (index >= compactBeforeIndex || !entry.displayMeta) return entry;
-    const displayMeta = compactTurnDisplayMeta(entry.displayMeta);
-    if (displayMeta === entry.displayMeta) return entry;
-    changed = true;
-    return { ...entry, displayMeta };
-  });
-  return changed ? { ...runtimeState, turnLog } : runtimeState;
 }
 
 function developerOverrideCheckpointMetaKey(saveId: string): string {

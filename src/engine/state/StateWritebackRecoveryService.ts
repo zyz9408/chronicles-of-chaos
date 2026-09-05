@@ -15,7 +15,7 @@ import { prepareStatePatchTransaction } from '../turn/TurnOrchestrator';
 
 const FROZEN_TOP_LEVEL_KEYS = new Set<keyof RuntimeState>([
   'currentDate', 'currentTime', 'currentLocationId', 'currentPlaceId', 'currentSceneId',
-  'locations', 'routes', 'mapNodes', 'routeEdges', 'turnLog', 'stateWritebackRecovery',
+  'locations', 'routes', 'mapNodes', 'routeEdges', 'turnLog', 'stateWritebackRecovery', 'avgPresentation',
 ]);
 
 export type StateWritebackRecoveryPreparationResult =

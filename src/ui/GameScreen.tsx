@@ -43,7 +43,7 @@ import {
   prepareStateWritebackRecovery,
   type StateWritebackRecoveryPreparationResult,
 } from '../engine/state/StateWritebackRecoveryService';
-import { finalizePendingStateWritebackRecoveryHead } from '../engine/state/StateWritebackRecovery';
+import { finalizePendingStateWritebackRecoveryHead, upgradeLegacyStateWritebackRecovery } from '../engine/state/StateWritebackRecovery';
 import { formatNarrativeWordCountLabel } from './narrativeWordCount';
 import { NarrativeTextView } from './NarrativeTextView';
 import { AvgNarrativeStage } from './AvgNarrativeStage';
@@ -843,7 +843,10 @@ export const GameScreen: React.FC<Props> = ({
   onOpenSettings,
   onBackToStart,
 }) => {
-  const [runtimeState, setRuntimeState] = useState<RuntimeState>(initial);
+  const initialWithRecovery = useMemo(() => upgradeLegacyStateWritebackRecovery(
+    initial, createStateWritebackRecoveryVerification(worldBook),
+  ), [initial, worldBook]);
+  const [runtimeState, setRuntimeState] = useState<RuntimeState>(initialWithRecovery);
   const [isResolvingEncounterOffer, setIsResolvingEncounterOffer] = useState(false);
   const [playerInput, setPlayerInput] = useState('');
   const isRightControlPressedRef = useRef(false);
@@ -1095,12 +1098,19 @@ export const GameScreen: React.FC<Props> = ({
     onRuntimeStateChange?.(runtimeState);
   }, [runtimeState, onRuntimeStateChange]);
 
+  const syncedInitialRef = useRef(initialWithRecovery);
   useEffect(() => {
-    setRuntimeState(initial);
-    runtimeStateRef.current = initial;
-    setSuggestedActions(getLatestSuggestedActions(initial));
+    // The first state was consumed by useState already. Reapplying it during
+    // StrictMode's effect probe discards AVG staging while its save still lands.
+    // Likewise, a parent echo of our own published state is not a new load.
+    if (syncedInitialRef.current === initialWithRecovery) return;
+    syncedInitialRef.current = initialWithRecovery;
+    if (runtimeStateRef.current === initialWithRecovery) return;
+    setRuntimeState(initialWithRecovery);
+    runtimeStateRef.current = initialWithRecovery;
+    setSuggestedActions(getLatestSuggestedActions(initialWithRecovery));
     setStateWritebackRecoveryPreview(null);
-  }, [initial]);
+  }, [initialWithRecovery]);
 
   useEffect(() => {
     setIsResolvingEncounterOffer(false);

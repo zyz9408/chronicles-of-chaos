@@ -1130,6 +1130,10 @@ export async function executeTurn(
       }],
       quarantinedPatchIndexes: recoveryPatchIndexes,
     });
+  } else {
+    // A new turn supersedes the previous turn's repair offer. Keeping the old
+    // pending capsule makes UI finalization validate it against the new turn.
+    delete newState.stateWritebackRecovery;
   }
   if (encounterStartIntent) {
     assertEncounterReferenceIntegrity(

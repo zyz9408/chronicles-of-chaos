@@ -21,7 +21,7 @@ export interface StateWritebackDisposition {
 }
 
 export interface StateWritebackRecoveryAnchor {
-  schemaVersion: 2;
+  schemaVersion: 2 | 3;
   capsuleId: string;
   fullEvidenceIdentity: string;
   sourceHeadFingerprint: string;
@@ -30,7 +30,7 @@ export interface StateWritebackRecoveryAnchor {
 }
 
 export interface StateWritebackRecoveryCapsule {
-  schemaVersion: 2;
+  schemaVersion: 2 | 3;
   capsuleId: string;
   fullEvidenceIdentity: string;
   sourceHeadFingerprint: string;
