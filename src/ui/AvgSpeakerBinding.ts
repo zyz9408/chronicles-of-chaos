@@ -116,14 +116,14 @@ export function freezeAvgSpeakerBindings(
     let actor: StableSpeakerActor | undefined;
 
     const existing = existingBySegment.get(segmentIndex);
-    if (existing?.status === 'frozen' && existing.label.trim() === label && existing.actorId) {
+    if (existing?.status === 'frozen' && typeof existing.label === 'string' && existing.label.trim() === label && existing.actorId) {
       const candidate = actorsById.get(existing.actorId);
       if (candidate && candidate.identityKind === existing.identityKind && hasPortraitSafeSex(candidate)) actor = candidate;
     }
 
     if (!actor && !isNonIndividual(label)) {
       const fact = factsBySegment.get(segmentIndex);
-      if (fact && fact.speakerLabel.trim() === label) {
+      if (fact && typeof fact.speakerLabel === 'string' && fact.speakerLabel.trim() === label) {
         const candidate = actorsById.get(fact.speakerActorId);
         if (candidate && hasPortraitSafeSex(candidate)) actor = candidate;
       }

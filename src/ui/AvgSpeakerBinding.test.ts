@@ -58,4 +58,14 @@ describe('freezeAvgSpeakerBindings', () => {
     expect(result.bindings[0]?.status).toBe('unbound');
     expect(result.bindings[0]?.actorId).toBeUndefined();
   });
+
+  it('ignores incomplete legacy bindings without crashing or guessing an identity', () => {
+    const result = freezeAvgSpeakerBindings('【陌生客】借一步说话。', makeState(), [{
+      segmentIndex: 0, speakerActorId: 'npc_zhaoyun',
+    } as never], [{
+      segmentIndex: 0, status: 'frozen', actorId: 'npc_zhaoyun',
+    } as never]);
+    expect(result.bindings[0]).toMatchObject({ label: '陌生客', status: 'unbound' });
+    expect(result.bindings[0].actorId).toBeUndefined();
+  });
 });

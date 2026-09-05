@@ -53,8 +53,7 @@ import {
   AvgResourcePackManager,
 } from '../engine/avg/AvgResourcePackManager';
 import { materializeAvgPresentation } from '../engine/avg/AvgPresentationMaterializer';
-import { preflightAvgPlayback } from '../engine/avg/AvgPlaybackPreflight';
-import { AVG_VISUAL_OVERRIDES_CHANGED_EVENT } from '../engine/avg/AvgVisualOverrideRepository';
+import { readAvgVisualWithDeadline } from '../engine/avg/AvgVisualRead';
 import { MobileActionEditor } from './MobileActionEditor';
 import { DesktopWeatherAtmosphere } from './DesktopWeatherAtmosphere';
 import { StoryExportPanel } from './StoryExportPanel';
@@ -880,29 +879,26 @@ export const GameScreen: React.FC<Props> = ({
   const avgResourcePackManager = useMemo(() => new AvgResourcePackManager(), []);
   const [avgResourcePackStatus, setAvgResourcePackStatus] = useState<'loading' | 'empty' | 'ready' | 'warning'>('loading');
   const avgResourcePackReady = avgResourcePackStatus === 'ready';
-  const [avgVisualRevision, setAvgVisualRevision] = useState(0);
   const [isAvgImmersive, setIsAvgImmersive] = useState(false);
   const [isAvgImmersiveChoiceOpen, setIsAvgImmersiveChoiceOpen] = useState(false);
   const [avgImmersiveNotice, setAvgImmersiveNotice] = useState('');
   const [avgImmersiveHoveredRail, setAvgImmersiveHoveredRail] = useState<'left' | 'right' | null>(null);
   const [avgImmersivePinnedRail, setAvgImmersivePinnedRail] = useState<'left' | 'right' | null>(null);
   useEffect(() => {
-    let active = true;
+    let controller: AbortController | undefined;
     const refresh = () => {
+      controller?.abort();
+      const readController = new AbortController();
+      controller = readController;
       setAvgResourcePackStatus('loading');
-      void avgResourcePackManager.getActive(runtimeState.worldBookId)
-        .then((pack) => { if (active) setAvgResourcePackStatus(pack ? 'ready' : 'empty'); })
-        .catch(() => { if (active) setAvgResourcePackStatus('warning'); });
+      void readAvgVisualWithDeadline(() => avgResourcePackManager.getActive(runtimeState.worldBookId), { signal: readController.signal })
+        .then((pack) => { if (!readController.signal.aborted) setAvgResourcePackStatus(pack ? 'ready' : 'empty'); })
+        .catch(() => { if (!readController.signal.aborted) setAvgResourcePackStatus('warning'); });
     };
     refresh();
     window.addEventListener(AVG_RESOURCE_PACK_CHANGED_EVENT, refresh);
-    return () => { active = false; window.removeEventListener(AVG_RESOURCE_PACK_CHANGED_EVENT, refresh); };
+    return () => { controller?.abort(); window.removeEventListener(AVG_RESOURCE_PACK_CHANGED_EVENT, refresh); };
   }, [avgResourcePackManager, runtimeState.worldBookId]);
-  useEffect(() => {
-    const refresh = () => setAvgVisualRevision((value) => value + 1);
-    window.addEventListener(AVG_VISUAL_OVERRIDES_CHANGED_EVENT, refresh);
-    return () => window.removeEventListener(AVG_VISUAL_OVERRIDES_CHANGED_EVENT, refresh);
-  }, []);
 
   const [activeBackpackCategory, setActiveBackpackCategory] = useState<BackpackCategoryKey>('all');
   const [selectedBackpackItemId, setSelectedBackpackItemId] = useState<string | null>(null);
@@ -2922,28 +2918,13 @@ export const GameScreen: React.FC<Props> = ({
   const narrativeGenerationFinished = Boolean(narrativeText.trim()) && processingStageEvents.some(
     (event) => event.stage === 'generatingNarrative' && event.status === 'finished',
   );
-  const showAvgPreparing = isProcessing && avgResourcePackReady && avgDecisionMode === 'avg' && !narrativeGenerationFinished;
-  const canAttemptAvgPlayback = !isProcessing && avgResourcePackReady && avgDecisionMode === 'avg' && Boolean(avgPlaybackEntry?.turnNumber);
-  const avgPlaybackTurn = avgPlaybackEntry?.turnNumber
-    ? runtimeState.turnLog.find((turn) => turn.turnNumber === avgPlaybackEntry.turnNumber)
-    : undefined;
-  const [avgPlaybackResourceStatus, setAvgPlaybackResourceStatus] = useState<'idle' | 'loading' | 'ready' | 'warning'>('idle');
-  useEffect(() => {
-    let active = true;
-    if (!canAttemptAvgPlayback || !avgPlaybackTurn) {
-      setAvgPlaybackResourceStatus('idle');
-      return () => { active = false; };
-    }
-    setAvgPlaybackResourceStatus('loading');
-    void preflightAvgPlayback(runtimeState, saveId, avgPlaybackTurn, avgPlayerPortraitMode, { packs: avgResourcePackManager })
-      .then((result) => { if (active) setAvgPlaybackResourceStatus(result.status); })
-      .catch(() => { if (active) setAvgPlaybackResourceStatus('warning'); });
-    return () => { active = false; };
-  }, [avgPlaybackEntry?.key, avgPlaybackTurn, avgPlayerPortraitMode, avgResourcePackManager, avgVisualRevision, canAttemptAvgPlayback, runtimeState, saveId]);
-  const showAvgStage = canAttemptAvgPlayback && avgPlaybackResourceStatus === 'ready';
+  const showAvgPreparing = isProcessing && avgDecisionMode === 'avg' && !narrativeGenerationFinished;
+  // The stage already supports neutral backgrounds and silhouettes. Never gate
+  // its text, navigation or image tools on an all-turn image preflight.
+  const showAvgStage = !isProcessing && avgDecisionMode === 'avg' && Boolean(avgPlaybackEntry);
   useEffect(() => {
     const turnNumber = avgPlaybackEntry?.turnNumber;
-    if (!canAttemptAvgPlayback || !turnNumber) return;
+    if (!showAvgStage || !avgPlaybackEntry || turnNumber === undefined) return;
     const key = `${saveId}:${avgPlaybackEntry.key}`;
     if (avgMaterializationKeysRef.current.has(key)) return;
     const sourceState = runtimeStateRef.current;
@@ -2958,7 +2939,7 @@ export const GameScreen: React.FC<Props> = ({
       avgMaterializationKeysRef.current.delete(key);
       setMessage(`AVG 演出绑定保存失败：${error instanceof Error ? error.message : '未知错误'}`);
     });
-  }, [avgPlaybackEntry?.key, avgPlaybackEntry?.turnNumber, avgPlayerPortraitMode, canAttemptAvgPlayback, saveId]);
+  }, [avgPlaybackEntry?.key, avgPlaybackEntry?.turnNumber, avgPlayerPortraitMode, showAvgStage, saveId]);
   useEffect(() => {
     if (!showAvgStage) setIsAvgImmersive(false);
   }, [showAvgStage]);
@@ -3980,18 +3961,14 @@ export const GameScreen: React.FC<Props> = ({
                       {showAvgPreparing
                         ? 'AVG 舞台正在准备；流式正文将在提交完成后形成安全演出帧。'
                         : showAvgStage
-                          ? narrativePresentation === 'auto' ? '自动：外置资源包与当前演出均已就绪。' : '手动：当前采用 AVG 演出。'
+                          ? narrativePresentation === 'auto' ? '自动：当前采用 AVG 演出，图片按需加载，不影响阅读。' : '手动：当前采用 AVG 演出，缺图可直接生成或上传。'
                           : avgResourcePackStatus === 'loading' && narrativePresentation !== 'classic'
                             ? '正在读取本机外置 AVG 美术包；当前完整显示原正文。'
                             : avgResourcePackStatus === 'empty' && narrativePresentation !== 'classic'
                               ? '尚未安装外置 AVG 美术包，当前完整显示原正文。'
                               : avgResourcePackStatus === 'warning' && narrativePresentation !== 'classic'
                                 ? '本机 AVG 美术包暂时无法读取，当前完整显示原正文。'
-                                : avgPlaybackResourceStatus === 'loading' && canAttemptAvgPlayback
-                                  ? '正在按需读取当前 AVG 画面；当前完整显示原正文。'
-                                  : avgPlaybackResourceStatus === 'warning' && canAttemptAvgPlayback
-                                    ? '当前 AVG 图片缺失或读取失败，已完整回退原正文。'
-                                    : '当前完整显示原正文。'}
+                                : '当前完整显示原正文。'}
                     </span>
                   </div>
                   {isAvgImmersiveChoiceOpen && <div className="avg-immersive-choice-backdrop" role="presentation" onClick={() => setIsAvgImmersiveChoiceOpen(false)}><section className="avg-immersive-choice" role="dialog" aria-modal="true" aria-label="选择沉浸方式" onClick={(event) => event.stopPropagation()}><h4>选择沉浸方式</h4><p>页面沉浸始终可用；浏览器全屏需要浏览器授权，拒绝时仍会保留页面沉浸。</p><div><button type="button" onClick={() => { setIsAvgImmersiveChoiceOpen(false); setAvgImmersiveNotice(''); setIsAvgImmersive(true); }}>页面沉浸</button><button type="button" onClick={() => void enterAvgBrowserFullscreen()}>浏览器全屏</button><button type="button" onClick={() => setIsAvgImmersiveChoiceOpen(false)}>取消</button></div></section></div>}
