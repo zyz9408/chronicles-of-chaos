@@ -12,6 +12,8 @@ export interface AvgPlaybackPreflightResult {
   missingResourceIds: string[];
 }
 
+const DEFAULT_AVG_PLAYBACK_PREFLIGHT_TIMEOUT_MS = 8_000;
+
 function visualPartitionId(state: RuntimeState, saveId: string): string {
   return state.avgPresentation?.visualPartitionId?.trim() || saveId.trim();
 }
@@ -26,7 +28,7 @@ function portraitSubject(state: RuntimeState, actorId: string, fact?: NonNullabl
   return { actorId, name: presentation?.labels[0] ?? fact?.speakerLabel, aliases: presentation?.labels, roleType: presentation?.profileSnapshot.roleFamily, sex: presentation?.profileSnapshot.sex ?? fact?.sex };
 }
 
-export async function preflightAvgPlayback(
+async function runAvgPlaybackPreflight(
   state: RuntimeState,
   saveId: string,
   turn: TurnLogEntry,
@@ -34,7 +36,7 @@ export async function preflightAvgPlayback(
   dependencies: {
     packs?: AvgResourcePackManager;
     overrides?: IndexedDbAvgVisualOverrideRepository;
-  } = {},
+  },
 ): Promise<AvgPlaybackPreflightResult> {
   const packs = dependencies.packs ?? new AvgResourcePackManager();
   const overrides = dependencies.overrides ?? new IndexedDbAvgVisualOverrideRepository();
@@ -42,8 +44,9 @@ export async function preflightAvgPlayback(
   const missing = new Set<string>();
   const sceneResourceId = turn.avgPresentation?.sceneBinding?.sceneResourceId
     ?? (state.worldBookId === 'threeKingdoms' ? resolveThreeKingdomsSceneResource({
-      runtimeSceneId: turn.avgVisualSnapshot?.runtimeSceneId,
-      runtimePlaceId: turn.avgVisualSnapshot?.runtimePlaceId,
+      runtimeSceneId: turn.avgVisualSnapshot?.runtimeSceneId ?? state.currentSceneId,
+      runtimePlaceId: turn.avgVisualSnapshot?.runtimePlaceId ?? state.currentPlaceId,
+      locationId: state.currentLocationId,
       labels: turn.avgVisualSnapshot?.structuredSceneAliases,
     })?.sceneResourceId : undefined);
   if (sceneResourceId) {
@@ -73,4 +76,32 @@ export async function preflightAvgPlayback(
     if (!blob) missing.add(portraitSetId);
   }
   return { status: missing.size ? 'warning' : 'ready', missingResourceIds: [...missing].sort() };
+}
+
+export async function preflightAvgPlayback(
+  state: RuntimeState,
+  saveId: string,
+  turn: TurnLogEntry,
+  playerPortraitMode: 'hidden' | 'show',
+  dependencies: {
+    packs?: AvgResourcePackManager;
+    overrides?: IndexedDbAvgVisualOverrideRepository;
+    timeoutMs?: number;
+  } = {},
+): Promise<AvgPlaybackPreflightResult> {
+  const timeoutMs = dependencies.timeoutMs ?? DEFAULT_AVG_PLAYBACK_PREFLIGHT_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return runAvgPlaybackPreflight(state, saveId, turn, playerPortraitMode, dependencies);
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      runAvgPlaybackPreflight(state, saveId, turn, playerPortraitMode, dependencies),
+      new Promise<AvgPlaybackPreflightResult>((resolve) => {
+        timer = setTimeout(() => resolve({ status: 'warning', missingResourceIds: [] }), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }

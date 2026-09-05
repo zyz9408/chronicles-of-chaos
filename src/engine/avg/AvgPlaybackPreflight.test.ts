@@ -24,4 +24,26 @@ describe('AVG playback visual preflight', () => {
     await expect(preflightAvgPlayback(state, 'save', turn, 'hidden', { packs, overrides })).resolves.toEqual({ status: 'ready', missingResourceIds: [] });
     expect(packs.lookupActiveAsset).not.toHaveBeenCalled();
   });
+
+  it('preflights an older turn without a visual snapshot instead of staying in loading state', async () => {
+    const legacyTurn = { ...turn, avgVisualSnapshot: undefined, avgPresentation: { speakerBindings: [] } };
+    const stateAtScene = {
+      ...state,
+      currentLocationId: 'location_yingchuan',
+      currentPlaceId: 'place_yingchuan_yangdi',
+    } as RuntimeState;
+    const packs = { lookupActiveAsset: vi.fn().mockResolvedValue(new Blob(['scene'])), lookupActiveResource: vi.fn() } as unknown as AvgResourcePackManager;
+    const overrides = { lookup: vi.fn().mockResolvedValue({ status: 'missing' }) } as unknown as IndexedDbAvgVisualOverrideRepository;
+
+    await expect(preflightAvgPlayback(stateAtScene, 'save', legacyTurn, 'hidden', { packs, overrides })).resolves.toEqual({ status: 'ready', missingResourceIds: [] });
+    expect(packs.lookupActiveAsset).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back from a stalled browser resource read within the configured deadline', async () => {
+    const packs = { lookupActiveAsset: vi.fn(), lookupActiveResource: vi.fn() } as unknown as AvgResourcePackManager;
+    const overrides = { lookup: vi.fn().mockReturnValue(new Promise(() => undefined)) } as unknown as IndexedDbAvgVisualOverrideRepository;
+
+    await expect(preflightAvgPlayback(state, 'save', turn, 'hidden', { packs, overrides, timeoutMs: 10 }))
+      .resolves.toEqual({ status: 'warning', missingResourceIds: [] });
+  });
 });

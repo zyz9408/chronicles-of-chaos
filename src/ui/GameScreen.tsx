@@ -2919,8 +2919,8 @@ export const GameScreen: React.FC<Props> = ({
   const [avgPlaybackResourceStatus, setAvgPlaybackResourceStatus] = useState<'idle' | 'loading' | 'ready' | 'warning'>('idle');
   useEffect(() => {
     let active = true;
-    if (!canAttemptAvgPlayback || !avgPlaybackTurn?.avgVisualSnapshot) {
-      setAvgPlaybackResourceStatus(canAttemptAvgPlayback ? 'loading' : 'idle');
+    if (!canAttemptAvgPlayback || !avgPlaybackTurn) {
+      setAvgPlaybackResourceStatus('idle');
       return () => { active = false; };
     }
     setAvgPlaybackResourceStatus('loading');

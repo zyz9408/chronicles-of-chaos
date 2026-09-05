@@ -199,6 +199,27 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
   });
 }
 
+async function runTransaction<T>(
+  database: IDBDatabase,
+  stores: string | string[],
+  mode: IDBTransactionMode,
+  operation: (transaction: IDBTransaction) => Promise<T>,
+): Promise<T> {
+  const transaction = database.transaction(stores, mode);
+  // Attach completion handlers before awaiting any request. Otherwise a very fast
+  // readonly transaction can finish before transactionDone starts listening.
+  const done = transactionDone(transaction);
+  try {
+    const result = await operation(transaction);
+    await done;
+    return result;
+  } catch (error) {
+    try { transaction.abort(); } catch { /* The transaction may already be settled. */ }
+    await done.catch(() => undefined);
+    throw error;
+  }
+}
+
 function hasStores(database: IDBDatabase, names: readonly string[]): boolean {
   return names.every((name) => database.objectStoreNames.contains(name));
 }
@@ -349,11 +370,11 @@ export class AvgResourcePackManager {
     await this.withDatabase(async (database, activeSchema) => {
       const storeName = activeSchema === 'official-v1' ? OFFICIAL_STORES.assets : LEGACY_STORES.assets;
       const indexName = activeSchema === 'official-v1' ? OFFICIAL_STORES.namespaceIndex : LEGACY_STORES.namespaceIndex;
-      const transaction = database.transaction(storeName, 'readwrite');
-      const assets = transaction.objectStore(storeName);
-      const keys = await request<IDBValidKey[]>(assets.index(indexName).getAllKeys(namespace));
-      keys.forEach((key) => assets.delete(key));
-      await transactionDone(transaction);
+      await runTransaction(database, storeName, 'readwrite', async (transaction) => {
+        const assets = transaction.objectStore(storeName);
+        const keys = await request<IDBValidKey[]>(assets.index(indexName).getAllKeys(namespace));
+        keys.forEach((key) => assets.delete(key));
+      });
     });
   }
 
@@ -370,24 +391,24 @@ export class AvgResourcePackManager {
     }
     await this.withDatabase(async (database, activeSchema) => {
       const storeName = activeSchema === 'official-v1' ? OFFICIAL_STORES.assets : LEGACY_STORES.assets;
-      const transaction = database.transaction(storeName, 'readwrite');
-      if (activeSchema === 'official-v1') {
-        transaction.objectStore(storeName).put({
-          key: `${namespace}:${path}`,
-          namespace,
-          path,
-          blob,
-        } satisfies OfficialAssetRow);
-      } else {
-        transaction.objectStore(storeName).put({
-          key: `${namespace}|${path}`,
-          packId: namespace,
-          assetId: path,
-          path,
-          blob,
-        } satisfies LegacyAssetRow);
-      }
-      await transactionDone(transaction);
+      await runTransaction(database, storeName, 'readwrite', async (transaction) => {
+        if (activeSchema === 'official-v1') {
+          transaction.objectStore(storeName).put({
+            key: `${namespace}:${path}`,
+            namespace,
+            path,
+            blob,
+          } satisfies OfficialAssetRow);
+        } else {
+          transaction.objectStore(storeName).put({
+            key: `${namespace}|${path}`,
+            packId: namespace,
+            assetId: path,
+            path,
+            blob,
+          } satisfies LegacyAssetRow);
+        }
+      });
     });
   }
 
@@ -401,15 +422,15 @@ export class AvgResourcePackManager {
     if (backend === 'opfs') return readOpfsAsset(namespace, path, schema);
     return this.withDatabase(async (database, activeSchema) => {
       const storeName = activeSchema === 'official-v1' ? OFFICIAL_STORES.assets : LEGACY_STORES.assets;
-      const transaction = database.transaction(storeName, 'readonly');
-      const store = transaction.objectStore(storeName);
-      const primaryKey = activeSchema === 'official-v1' ? `${namespace}:${path}` : `${namespace}|${path}`;
-      let row = await request<OfficialAssetRow | LegacyAssetRow | undefined>(store.get(primaryKey));
-      if (!row && activeSchema === 'reconstructed-v1' && legacyAssetId) {
-        row = await request<LegacyAssetRow | undefined>(store.get(`${namespace}|${legacyAssetId}`));
-      }
-      await transactionDone(transaction);
-      return row?.blob;
+      return runTransaction(database, storeName, 'readonly', async (transaction) => {
+        const store = transaction.objectStore(storeName);
+        const primaryKey = activeSchema === 'official-v1' ? `${namespace}:${path}` : `${namespace}|${path}`;
+        let row = await request<OfficialAssetRow | LegacyAssetRow | undefined>(store.get(primaryKey));
+        if (!row && activeSchema === 'reconstructed-v1' && legacyAssetId) {
+          row = await request<LegacyAssetRow | undefined>(store.get(`${namespace}|${legacyAssetId}`));
+        }
+        return row?.blob;
+      });
     });
   }
 
@@ -509,33 +530,33 @@ export class AvgResourcePackManager {
       await this.withDatabase(async (database, activeSchema) => {
         const packStoreName = activeSchema === 'official-v1' ? OFFICIAL_STORES.packs : LEGACY_STORES.packs;
         const selectionStoreName = activeSchema === 'official-v1' ? OFFICIAL_STORES.selections : LEGACY_STORES.selections;
-        const transaction = database.transaction([packStoreName, selectionStoreName], 'readwrite');
-        const packs = transaction.objectStore(packStoreName);
-        if (activeSchema === 'official-v1') {
-          const previous = await request<OfficialPackRow | undefined>(packs.get(manifest.packId));
-          const selectionStore = transaction.objectStore(selectionStoreName);
-          const selection = await request<OfficialSelectionRow | undefined>(selectionStore.get(manifest.worldBookId));
-          replacedStorageNamespace = previous?.record.storageNamespace;
-          replacedStorageBackend = previous?.record.storageBackend ?? 'indexeddb';
-          packs.put({ packId: manifest.packId, worldBookId: manifest.worldBookId, record: installed } satisfies OfficialPackRow);
-          selectionStore.put({
-            worldBookId: manifest.worldBookId,
-            packId: !selection?.packId || selection.packId === manifest.packId ? manifest.packId : selection.packId,
-            updatedAt: installedAt,
-          } satisfies OfficialSelectionRow);
-        } else {
-          const previous = await request<LegacyPackRow | undefined>(packs.get(manifest.packId));
-          replacedStorageNamespace = previous?.storagePackId ?? previous?.packId;
-          replacedStorageBackend = previous?.storageBackend ?? 'indexeddb';
-          packs.put({
-            ...installed,
-            packId: manifest.packId,
-            worldBookId: manifest.worldBookId,
-            storagePackId: storageNamespace,
-          } satisfies LegacyPackRow);
-          transaction.objectStore(selectionStoreName).put({ worldBookId: manifest.worldBookId, packId: manifest.packId });
-        }
-        await transactionDone(transaction);
+        await runTransaction(database, [packStoreName, selectionStoreName], 'readwrite', async (transaction) => {
+          const packs = transaction.objectStore(packStoreName);
+          if (activeSchema === 'official-v1') {
+            const previous = await request<OfficialPackRow | undefined>(packs.get(manifest.packId));
+            const selectionStore = transaction.objectStore(selectionStoreName);
+            const selection = await request<OfficialSelectionRow | undefined>(selectionStore.get(manifest.worldBookId));
+            replacedStorageNamespace = previous?.record.storageNamespace;
+            replacedStorageBackend = previous?.record.storageBackend ?? 'indexeddb';
+            packs.put({ packId: manifest.packId, worldBookId: manifest.worldBookId, record: installed } satisfies OfficialPackRow);
+            selectionStore.put({
+              worldBookId: manifest.worldBookId,
+              packId: !selection?.packId || selection.packId === manifest.packId ? manifest.packId : selection.packId,
+              updatedAt: installedAt,
+            } satisfies OfficialSelectionRow);
+          } else {
+            const previous = await request<LegacyPackRow | undefined>(packs.get(manifest.packId));
+            replacedStorageNamespace = previous?.storagePackId ?? previous?.packId;
+            replacedStorageBackend = previous?.storageBackend ?? 'indexeddb';
+            packs.put({
+              ...installed,
+              packId: manifest.packId,
+              worldBookId: manifest.worldBookId,
+              storagePackId: storageNamespace,
+            } satisfies LegacyPackRow);
+            transaction.objectStore(selectionStoreName).put({ worldBookId: manifest.worldBookId, packId: manifest.packId });
+          }
+        });
       });
       if (replacedStorageNamespace && replacedStorageNamespace !== storageNamespace) {
         await this.deleteStoredAssets(replacedStorageNamespace, replacedStorageBackend, schema);
@@ -552,12 +573,12 @@ export class AvgResourcePackManager {
     return this.withDatabase(async (database, schema) => {
       const storeName = schema === 'official-v1' ? OFFICIAL_STORES.packs : LEGACY_STORES.packs;
       const indexName = schema === 'official-v1' ? OFFICIAL_STORES.worldBookIndex : LEGACY_STORES.worldBookIndex;
-      const transaction = database.transaction(storeName, 'readonly');
-      const rows = await request<Array<OfficialPackRow | LegacyPackRow>>(transaction.objectStore(storeName).index(indexName).getAll(worldBookId));
-      await transactionDone(transaction);
-      return schema === 'official-v1'
-        ? (rows as OfficialPackRow[]).map((row) => row.record)
-        : (rows as LegacyPackRow[]).map(({ manifest, installedAt, storageBackend }) => ({ manifest, installedAt, storageBackend }));
+      return runTransaction(database, storeName, 'readonly', async (transaction) => {
+        const rows = await request<Array<OfficialPackRow | LegacyPackRow>>(transaction.objectStore(storeName).index(indexName).getAll(worldBookId));
+        return schema === 'official-v1'
+          ? (rows as OfficialPackRow[]).map((row) => row.record)
+          : (rows as LegacyPackRow[]).map(({ manifest, installedAt, storageBackend }) => ({ manifest, installedAt, storageBackend }));
+      });
     });
   }
 
@@ -574,25 +595,25 @@ export class AvgResourcePackManager {
     return this.withDatabase(async (database, schema) => {
       const packStoreName = schema === 'official-v1' ? OFFICIAL_STORES.packs : LEGACY_STORES.packs;
       const selectionStoreName = schema === 'official-v1' ? OFFICIAL_STORES.selections : LEGACY_STORES.selections;
-      const transaction = database.transaction([selectionStoreName, packStoreName], 'readonly');
-      const active = await request<{ worldBookId: string; packId?: string } | undefined>(transaction.objectStore(selectionStoreName).get(worldBookId));
-      const row = active?.packId
-        ? await request<OfficialPackRow | LegacyPackRow | undefined>(transaction.objectStore(packStoreName).get(active.packId))
-        : undefined;
-      await transactionDone(transaction);
-      if (!row) return undefined;
-      if (schema === 'official-v1') {
-        const record = (row as OfficialPackRow).record;
-        if (record.manifest.worldBookId !== worldBookId || record.validationStatus !== 'valid' || !record.storageNamespace) return undefined;
-        return { record, namespace: record.storageNamespace, schema };
-      }
-      const legacy = row as LegacyPackRow;
-      if (legacy.worldBookId !== worldBookId) return undefined;
-      return {
-        record: { manifest: legacy.manifest, installedAt: legacy.installedAt, storageBackend: legacy.storageBackend },
-        namespace: legacy.storagePackId ?? legacy.packId,
-        schema,
-      };
+      return runTransaction(database, [selectionStoreName, packStoreName], 'readonly', async (transaction) => {
+        const active = await request<{ worldBookId: string; packId?: string } | undefined>(transaction.objectStore(selectionStoreName).get(worldBookId));
+        const row = active?.packId
+          ? await request<OfficialPackRow | LegacyPackRow | undefined>(transaction.objectStore(packStoreName).get(active.packId))
+          : undefined;
+        if (!row) return undefined;
+        if (schema === 'official-v1') {
+          const record = (row as OfficialPackRow).record;
+          if (record.manifest.worldBookId !== worldBookId || record.validationStatus !== 'valid' || !record.storageNamespace) return undefined;
+          return { record, namespace: record.storageNamespace, schema };
+        }
+        const legacy = row as LegacyPackRow;
+        if (legacy.worldBookId !== worldBookId) return undefined;
+        return {
+          record: { manifest: legacy.manifest, installedAt: legacy.installedAt, storageBackend: legacy.storageBackend },
+          namespace: legacy.storagePackId ?? legacy.packId,
+          schema,
+        };
+      });
     });
   }
 
@@ -600,14 +621,14 @@ export class AvgResourcePackManager {
     await this.withDatabase(async (database, schema) => {
       const packStoreName = schema === 'official-v1' ? OFFICIAL_STORES.packs : LEGACY_STORES.packs;
       const selectionStoreName = schema === 'official-v1' ? OFFICIAL_STORES.selections : LEGACY_STORES.selections;
-      const transaction = database.transaction([packStoreName, selectionStoreName], 'readwrite');
-      const row = await request<OfficialPackRow | LegacyPackRow | undefined>(transaction.objectStore(packStoreName).get(packId));
-      const valid = schema === 'official-v1'
-        ? Boolean(row && (row as OfficialPackRow).worldBookId === worldBookId && (row as OfficialPackRow).record.validationStatus === 'valid')
-        : Boolean(row && (row as LegacyPackRow).worldBookId === worldBookId);
-      if (!valid) { transaction.abort(); throw new Error('所选 AVG 资源包不存在、世界不匹配或未通过校验。'); }
-      transaction.objectStore(selectionStoreName).put({ worldBookId, packId, updatedAt: new Date().toISOString() });
-      await transactionDone(transaction);
+      await runTransaction(database, [packStoreName, selectionStoreName], 'readwrite', async (transaction) => {
+        const row = await request<OfficialPackRow | LegacyPackRow | undefined>(transaction.objectStore(packStoreName).get(packId));
+        const valid = schema === 'official-v1'
+          ? Boolean(row && (row as OfficialPackRow).worldBookId === worldBookId && (row as OfficialPackRow).record.validationStatus === 'valid')
+          : Boolean(row && (row as LegacyPackRow).worldBookId === worldBookId);
+        if (!valid) throw new Error('所选 AVG 资源包不存在、世界不匹配或未通过校验。');
+        transaction.objectStore(selectionStoreName).put({ worldBookId, packId, updatedAt: new Date().toISOString() });
+      });
     });
     emitChanged();
   }
@@ -617,22 +638,22 @@ export class AvgResourcePackManager {
     await this.withDatabase(async (database, schema) => {
       const packStoreName = schema === 'official-v1' ? OFFICIAL_STORES.packs : LEGACY_STORES.packs;
       const selectionStoreName = schema === 'official-v1' ? OFFICIAL_STORES.selections : LEGACY_STORES.selections;
-      const transaction = database.transaction([packStoreName, selectionStoreName], 'readwrite');
-      const packs = transaction.objectStore(packStoreName);
-      const row = await request<OfficialPackRow | LegacyPackRow | undefined>(packs.get(packId));
-      if (!row) { await transactionDone(transaction); return; }
-      const record = schema === 'official-v1' ? (row as OfficialPackRow).record : row as LegacyPackRow;
-      const worldBookId = schema === 'official-v1' ? (row as OfficialPackRow).worldBookId : (row as LegacyPackRow).worldBookId;
-      const namespace = schema === 'official-v1' ? record.storageNamespace : (record as LegacyPackRow).storagePackId ?? packId;
-      if (namespace) removedStorage = { namespace, backend: record.storageBackend ?? 'indexeddb', schema };
-      packs.delete(packId);
-      const activeStore = transaction.objectStore(selectionStoreName);
-      const active = await request<OfficialSelectionRow | undefined>(activeStore.get(worldBookId));
-      if (active?.packId === packId) {
-        if (schema === 'official-v1') activeStore.put({ ...active, packId: undefined, updatedAt: new Date().toISOString() });
-        else activeStore.delete(worldBookId);
-      }
-      await transactionDone(transaction);
+      await runTransaction(database, [packStoreName, selectionStoreName], 'readwrite', async (transaction) => {
+        const packs = transaction.objectStore(packStoreName);
+        const row = await request<OfficialPackRow | LegacyPackRow | undefined>(packs.get(packId));
+        if (!row) return;
+        const record = schema === 'official-v1' ? (row as OfficialPackRow).record : row as LegacyPackRow;
+        const worldBookId = schema === 'official-v1' ? (row as OfficialPackRow).worldBookId : (row as LegacyPackRow).worldBookId;
+        const namespace = schema === 'official-v1' ? record.storageNamespace : (record as LegacyPackRow).storagePackId ?? packId;
+        if (namespace) removedStorage = { namespace, backend: record.storageBackend ?? 'indexeddb', schema };
+        packs.delete(packId);
+        const activeStore = transaction.objectStore(selectionStoreName);
+        const active = await request<OfficialSelectionRow | undefined>(activeStore.get(worldBookId));
+        if (active?.packId === packId) {
+          if (schema === 'official-v1') activeStore.put({ ...active, packId: undefined, updatedAt: new Date().toISOString() });
+          else activeStore.delete(worldBookId);
+        }
+      });
     });
     if (removedStorage) await this.deleteStoredAssets(removedStorage.namespace, removedStorage.backend, removedStorage.schema);
     emitChanged();
