@@ -6,11 +6,69 @@ interface BattleBriefingVisualProps {
   card: BattleBriefingCard;
   label?: string;
   testId?: string;
+  enemyCount?: number;
+  playerCount?: number;
 }
 
 type VisualState = 'loading' | 'ready' | 'error';
 
-export function BattleBriefingVisual({ card, label, testId }: BattleBriefingVisualProps) {
+export function normalizeBattleVisualCombatantCount(value: number | undefined): number {
+  if (value === undefined) return 1;
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(0, Math.min(3, Math.trunc(value)));
+}
+
+interface BattleVisualCombatantLayer {
+  url: string;
+  mobileUrl: string;
+}
+
+export function buildBattleVisualCombatantLayers(
+  visual: BattleBriefingVisualAssets | null,
+  enemyCount?: number,
+  playerCount?: number,
+): { enemyLayers: BattleVisualCombatantLayer[]; playerLayers: BattleVisualCombatantLayer[] } {
+  const repeatLayers = (
+    url: string | undefined,
+    mobileUrl: string | undefined,
+    urls: string[] | undefined,
+    mobileUrls: string[] | undefined,
+    count: number,
+  ): BattleVisualCombatantLayer[] => {
+    if (!url || !mobileUrl || count === 0) return [];
+    const displayCandidates = urls?.length ? urls : [url];
+    const mobileCandidates = mobileUrls?.length ? mobileUrls : [mobileUrl];
+    return Array.from({ length: count }, (_, index) => ({
+      url: displayCandidates[index % displayCandidates.length] ?? url,
+      mobileUrl: mobileCandidates[index % mobileCandidates.length] ?? mobileUrl,
+    }));
+  };
+
+  return {
+    enemyLayers: repeatLayers(
+      visual?.enemyLayerUrl,
+      visual?.enemyLayerMobileUrl,
+      visual?.enemyLayerUrls,
+      visual?.enemyLayerMobileUrls,
+      normalizeBattleVisualCombatantCount(enemyCount),
+    ),
+    playerLayers: repeatLayers(
+      visual?.playerLayerUrl,
+      visual?.playerLayerMobileUrl,
+      undefined,
+      undefined,
+      normalizeBattleVisualCombatantCount(playerCount),
+    ),
+  };
+}
+
+export function BattleBriefingVisual({
+  card,
+  label,
+  testId,
+  enemyCount,
+  playerCount,
+}: BattleBriefingVisualProps) {
   const [attempt, setAttempt] = useState(0);
   const [visual, setVisual] = useState<BattleBriefingVisualAssets | null>(null);
   const [state, setState] = useState<VisualState>('loading');
@@ -43,8 +101,13 @@ export function BattleBriefingVisual({ card, label, testId }: BattleBriefingVisu
     };
   }, [attempt, identity]);
 
+  const { enemyLayers, playerLayers } = buildBattleVisualCombatantLayers(
+    visual,
+    enemyCount,
+    playerCount,
+  );
   const expectedLayerCount = visual
-    ? 1 + Number(Boolean(visual.forceLayerUrl)) + Number(Boolean(visual.enemyLayerUrl)) + Number(Boolean(visual.playerLayerUrl))
+    ? 1 + Number(Boolean(visual.forceLayerUrl)) + enemyLayers.length + playerLayers.length
     : 0;
   const markLayerLoaded = (layer: string) => {
     setLoadedLayers((current) => {
@@ -111,38 +174,42 @@ export function BattleBriefingVisual({ card, label, testId }: BattleBriefingVisu
               onError={markLayerError}
             />
           )}
-          {visual.enemyLayerUrl && visual.enemyLayerMobileUrl && (
+          {enemyLayers.map((layer, index) => (
             <img
-              key={`enemy-${attempt}`}
+              key={`enemy-${attempt}-${index}`}
               className="battle-briefing-visual-enemy"
-              src={visual.enemyLayerUrl}
-              srcSet={`${visual.enemyLayerMobileUrl} 360w, ${visual.enemyLayerUrl} 768w`}
+              data-combatant-index={index}
+              data-combatant-count={enemyLayers.length}
+              src={layer.url}
+              srcSet={`${layer.mobileUrl} 360w, ${layer.url} 768w`}
               sizes="(max-width: 760px) 36vw, 320px"
               width={768}
               height={1024}
               decoding="async"
               alt=""
               aria-hidden="true"
-              onLoad={() => markLayerLoaded('enemy')}
+              onLoad={() => markLayerLoaded(`enemy-${index}`)}
               onError={markLayerError}
             />
-          )}
-          {visual.playerLayerUrl && visual.playerLayerMobileUrl && (
+          ))}
+          {playerLayers.map((layer, index) => (
             <img
-              key={`player-${attempt}`}
+              key={`player-${attempt}-${index}`}
               className="battle-briefing-visual-player"
-              src={visual.playerLayerUrl}
-              srcSet={`${visual.playerLayerMobileUrl} 360w, ${visual.playerLayerUrl} 768w`}
+              data-combatant-index={index}
+              data-combatant-count={playerLayers.length}
+              src={layer.url}
+              srcSet={`${layer.mobileUrl} 360w, ${layer.url} 768w`}
               sizes="(max-width: 760px) 44vw, 400px"
               width={768}
               height={1024}
               decoding="async"
               alt=""
               aria-hidden="true"
-              onLoad={() => markLayerLoaded('player')}
+              onLoad={() => markLayerLoaded(`player-${index}`)}
               onError={markLayerError}
             />
-          )}
+          ))}
           {visual.effects.length > 0 && (
             <div className="battle-briefing-effect-layer" aria-hidden="true">
               {visual.effects.map((effect) => (

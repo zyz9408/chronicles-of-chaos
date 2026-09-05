@@ -97,6 +97,9 @@ export interface BattleBriefingVisualAssets {
   playerLayerMobileUrl?: string;
   enemyLayerUrl?: string;
   enemyLayerMobileUrl?: string;
+  /** Ordered enemy variants for live encounters with more than one combatant. */
+  enemyLayerUrls?: string[];
+  enemyLayerMobileUrls?: string[];
   sceneLabel: string;
   forceLabel?: string;
   playerLabel?: string;
@@ -157,6 +160,8 @@ export function resolveBattleBriefingVisualAssets(card: BattleBriefingCard): Bat
     playerLayerMobileUrl: resolveMobileUrl(player.url),
     enemyLayerUrl: enemy.url,
     enemyLayerMobileUrl: resolveMobileUrl(enemy.url),
+    enemyLayerUrls: enemy.urls,
+    enemyLayerMobileUrls: enemy.urls.map(resolveMobileUrl),
     sceneLabel: scene.label,
     playerLabel: player.label,
     enemyLabel: enemy.label,
@@ -492,10 +497,13 @@ function selectPlayerLayer(source: string): { url: string; label: string } {
   return { url: playerSwordUrl, label: '刀剑越肩' };
 }
 
-function selectEnemyLayer(source: string, seed: string): { url: string; label: string } {
+function selectEnemyLayer(source: string, seed: string): { url: string; urls: string[]; label: string } {
   const enemy = selectEnemyCandidates(source);
+  const firstIndex = stableIndex(seed, enemy.urls.length);
+  const urls = enemy.urls.map((_, offset) => enemy.urls[(firstIndex + offset) % enemy.urls.length]);
   return {
-    url: selectStableCandidate(enemy.urls, seed),
+    url: urls[0] ?? '',
+    urls,
     label: enemy.label,
   };
 }

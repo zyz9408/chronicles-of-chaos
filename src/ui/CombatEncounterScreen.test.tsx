@@ -10,6 +10,7 @@ import {
 } from '../engine/encounterV2/EncounterRuntimeIntegration';
 import { makeCombatIntent } from '../engine/encounterV2/CombatTestFixtures';
 import { CombatEncounterScreen, combatUniqueArtName } from './CombatEncounterScreen';
+import { normalizeBattleVisualCombatantCount } from './BattleBriefingVisual';
 
 function makeBaseState(): RuntimeState {
   return {
@@ -94,6 +95,13 @@ function makeNarrativePendingState(): RuntimeState {
 }
 
 describe('CombatEncounterScreen', () => {
+  it('keeps the live battlefield portrait count aligned with each side roster', () => {
+    expect(normalizeBattleVisualCombatantCount(undefined)).toBe(1);
+    expect(normalizeBattleVisualCombatantCount(2)).toBe(2);
+    expect(normalizeBattleVisualCombatantCount(5)).toBe(3);
+    expect(normalizeBattleVisualCombatantCount(0)).toBe(0);
+  });
+
   it('resolves combat art controls to the authored Chinese name instead of exposing an internal id', () => {
     const state = makeBaseState();
     state.player.uniqueArts = [{

@@ -514,7 +514,15 @@ export function CombatEncounterScreen({
       </div>
 
       <div className="combat-v2-stage">
-        {briefingCard && <BattleBriefingVisual card={briefingCard} label="个人战场" testId="combat-v2-stage-visual" />}
+        {briefingCard && (
+          <BattleBriefingVisual
+            card={briefingCard}
+            label="个人战场"
+            testId="combat-v2-stage-visual"
+            enemyCount={enemyIds.length}
+            playerCount={playerIds.length}
+          />
+        )}
         <div className="combat-v2-side combat-v2-side--enemy" data-testid="combat-side-enemy">
           <h2>敌方</h2>
           <div className="combat-v2-slot-list">

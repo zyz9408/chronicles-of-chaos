@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BattleBriefingCard } from './battleBriefingQueueModel';
 import { resolveBattleBriefingVisualAssets } from './combatVisualAssets';
+import { buildBattleVisualCombatantLayers } from './BattleBriefingVisual';
 
 function combatCard(overrides: Partial<BattleBriefingCard>): BattleBriefingCard {
   return {
@@ -67,6 +68,14 @@ describe('combatVisualAssets', () => {
     expect(visual.playerLayerUrl).toContain('.webp');
     expect(visual.enemyLayerUrl).toContain('combat_enemy_han_soldier_spear_front_v0');
     expect(visual.enemyLayerUrl).toContain('.webp');
+    expect(visual.enemyLayerUrls).toHaveLength(2);
+    expect(new Set(visual.enemyLayerUrls).size).toBe(2);
+    expect(visual.enemyLayerUrls?.[0]).toBe(visual.enemyLayerUrl);
+
+    const layers = buildBattleVisualCombatantLayers(visual, 2, 2);
+    expect(layers.enemyLayers).toHaveLength(2);
+    expect(new Set(layers.enemyLayers.map((layer) => layer.url)).size).toBe(2);
+    expect(layers.playerLayers).toHaveLength(2);
   });
 
   it('resolves battle-scale effects from conflict tags without adding character layers', () => {
