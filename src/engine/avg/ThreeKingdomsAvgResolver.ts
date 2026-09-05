@@ -68,6 +68,7 @@ export interface ThreeKingdomsPortraitSubject {
 
 export function resolveThreeKingdomsPortraitSet(
   subject: ThreeKingdomsPortraitSubject,
+  options: { strict?: boolean; preferredPortraitSetId?: string } = {},
 ): PortraitSet | undefined {
   const actorId = normalize(subject.actorId);
   const labels = new Set([subject.name, ...(subject.aliases ?? [])].map(normalize).filter(Boolean));
@@ -85,17 +86,28 @@ export function resolveThreeKingdomsPortraitSet(
   const sex = normalizedSex(subject.sex);
   if (!sex) return undefined;
   const roleText = normalize([subject.roleType, subject.name, ...(subject.aliases ?? [])].filter(Boolean).join('|'));
-  const compatible = registry.genericPortraitSets.filter((set) => normalizedSex(set.profile.sex) === sex);
+  const ages = ['child', 'teen', 'young_adult', 'adult', 'middle_aged', 'elderly'];
+  const ageIndex = ages.indexOf(subject.ageBand ?? '');
+  if (options.strict && ageIndex < 0) return undefined;
+  const compatible = registry.genericPortraitSets.filter((set) => {
+    if (normalizedSex(set.profile.sex) !== sex) return false;
+    if (!options.strict) return true;
+    const candidateAge = ages.indexOf(set.profile.ageBand ?? '');
+    return candidateAge >= 0 && (ageIndex < 2 || candidateAge < 2 ? ageIndex === candidateAge : Math.abs(ageIndex - candidateAge) <= 1);
+  });
   if (compatible.length === 0) return undefined;
   const scored = compatible.map((set) => ({
     set,
-    score: [...set.runtimeRoleAliases, ...(set.profile.professionTags ?? [])]
+    score: [...set.runtimeRoleAliases, ...(set.profile.professionTags ?? []),
+      ...((set.profile.professionTags ?? []).some((tag) => /^(soldier|guard|city_guard|gate_guard|infantry|infantry_spearman|infantry_swordsman_shield|constable|female_guard)$/u.test(tag))
+        ? ['军士', '守卒', '守军', '守卫', '卫兵', '士卒', '士兵', '步卒', '差役', '门卒', '什长'] : [])]
       .reduce((score, tag) => score + (normalize(tag) && roleText.includes(normalize(tag)) ? 1 : 0), 0)
-      + (subject.ageBand && normalize(subject.ageBand) === normalize(set.profile.ageBand) ? 1 : 0),
+      + (!options.strict && subject.ageBand && normalize(subject.ageBand) === normalize(set.profile.ageBand) ? 1 : 0),
   }));
+  if (options.strict && !scored.some((entry) => entry.score > 0)) return undefined;
   const bestScore = Math.max(...scored.map((entry) => entry.score));
   const pool = scored.filter((entry) => entry.score === bestScore).map((entry) => entry.set);
-  return pool[stableIndex(subject.actorId, pool.length)];
+  return pool.find((set) => set.portraitSetId === options.preferredPortraitSetId) ?? pool[stableIndex(subject.actorId, pool.length)];
 }
 
 export interface ThreeKingdomsSceneContext {

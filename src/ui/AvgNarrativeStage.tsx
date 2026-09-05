@@ -199,12 +199,16 @@ export function AvgNarrativeStage(props: AvgNarrativeStageProps): React.ReactEle
       );
       const actorId = actorTarget.kind === 'actor' ? actorTarget.actorId : '';
       const acceptedPortrait = worldBookId === 'threeKingdoms'
-        ? resolveThreeKingdomsPortraitSet(portraitSubject(runtimeState, actorId) ?? {
+        ? resolveThreeKingdomsPortraitSet({
+            ...portraitSubject(runtimeState, actorId),
             actorId,
-            sex: speakerFact?.sex,
-          })
+            name: actorContext?.name ?? speakerFact?.speakerLabel,
+            sex: actorContext?.portraitProfile?.sex ?? speakerFact?.sex,
+            ageBand: actorContext?.portraitProfile?.ageBand ?? speakerFact?.ageBand,
+            roleType: actorContext?.portraitProfile?.roleFamily ?? speakerFact?.roleFamily,
+          }, { strict: true, preferredPortraitSetId: binding?.portraitSetId })
         : undefined;
-      const portraitSetId = binding?.portraitSetId ?? acceptedPortrait?.portraitSetId;
+      const portraitSetId = acceptedPortrait?.portraitSetId;
       const variant = acceptedPortrait?.defaultVariant ?? 'default';
       if (portraitSetId) {
         const blob = await resourcePacks.lookupActiveAsset(worldBookId, `${portraitSetId}:${variant}`);
@@ -216,9 +220,9 @@ export function AvgNarrativeStage(props: AvgNarrativeStageProps): React.ReactEle
           variant,
         );
       }
-      return actorTarget.kind === 'actor'
-        ? resourcePacks.lookupActivePortrait(worldBookId, actorTarget.actorId, speakerFact?.sex)
-        : undefined;
+      // No compatible structured match means a silhouette, never an arbitrary
+      // resource from the whole pack (including other sexes and professions).
+      return undefined;
     }, { signal: controller.signal }).then((blob) => {
       if (controller.signal.aborted) return;
       url = blob ? URL.createObjectURL(blob) : undefined;

@@ -705,6 +705,7 @@ export class AvgResourcePackManager {
       : normalizedSex === '男' || normalizedSex === 'male'
         ? '_male_'
         : '';
+    if (!marker) return undefined;
     const resources = [...new Set(active.manifest.assets
       .filter((asset) => asset.kind === 'generic-portrait' && (!marker || asset.resourceId.includes(marker)))
       .map((asset) => asset.resourceId))].sort();

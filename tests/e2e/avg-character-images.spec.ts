@@ -55,6 +55,57 @@ async function readVisuals(page: Page) {
   });
 }
 
+for (const hasGuard of [true, false]) test(`unregistered guard with installed pack ${hasGuard ? 'uses compatible guard' : 'never borrows female artwork'}`, async ({ page }) => {
+  await mountStage(page, false, true);
+  await page.evaluate(async (hasGuard) => {
+    const load = (path: string) => import(/* @vite-ignore */ path);
+    const { AvgResourcePackManager, AVG_RESOURCE_PACK_DATABASE, THREE_KINGDOMS_AVG_REGISTRY_MANIFEST_ID, AVG_RESOURCE_PACK_CHANGED_EVENT } = await load('/src/engine/avg/AvgResourcePackManager.ts');
+    const { resolveThreeKingdomsPortraitSet } = await load('/src/engine/avg/ThreeKingdomsAvgResolver.ts');
+    const actorId = `avg-local:${encodeURIComponent('集市')}:${encodeURIComponent('城头守卒')}`;
+    const selected = resolveThreeKingdomsPortraitSet({ actorId, name: '城头守卒', roleType: '军士', sex: 'male', ageBand: 'adult' }, { strict: true });
+    if (!selected) throw new Error('Expected compatible soldier registry entry');
+    const manager = new AvgResourcePackManager(); await manager.list('threeKingdoms');
+    const namespace = 'guard-pack-regression';
+    const packs = await (await navigator.storage.getDirectory()).getDirectoryHandle(AVG_RESOURCE_PACK_DATABASE, { create: true });
+    const directory = await (await packs.getDirectoryHandle(namespace, { create: true })).getDirectoryHandle('assets', { create: true });
+    const assets = [];
+    for (const [resourceId, width, variant] of [
+      ['avg:threeKingdoms:generic:camp_cook_female_individual_a', 128, 'default'],
+      ...(hasGuard ? [[selected.portraitSetId, 64, selected.defaultVariant]] : []),
+    ] as [string, number, string][]) {
+      const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = 160;
+      canvas.getContext('2d')!.fillRect(0, 0, width, 160);
+      const blob = await new Promise<Blob>(resolve => canvas.toBlob(value => resolve(value!), 'image/webp'));
+      const path = `assets/portrait-${width}.webp`;
+      const writer = await (await directory.getFileHandle(`portrait-${width}.webp`, { create: true })).createWritable();
+      await writer.write(blob); await writer.close();
+      assets.push({ assetId: `${resourceId}:${variant}`, path, byteLength: blob.size, width, height: 160, mediaType: 'image/webp', kind: 'generic-portrait', resourceId, variant });
+    }
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { const req = indexedDB.open(AVG_RESOURCE_PACK_DATABASE, 1); req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(['installed-packs', 'selections'], 'readwrite');
+      tx.objectStore('installed-packs').put({ packId: namespace, worldBookId: 'threeKingdoms', record: {
+        manifest: { schemaVersion: 1, packId: namespace, displayName: '守卒回归包', version: '1', worldBookId: 'threeKingdoms', registryManifestId: THREE_KINGDOMS_AVG_REGISTRY_MANIFEST_ID, assetCount: assets.length, totalByteLength: assets.reduce((sum, asset) => sum + asset.byteLength, 0), assets },
+        storageNamespace: namespace, storageBackend: 'opfs', validationStatus: 'valid', installedAt: new Date().toISOString(),
+      } });
+      tx.objectStore('selections').put({ worldBookId: 'threeKingdoms', packId: namespace });
+      tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
+    }); db.close();
+    if (await manager.lookupActivePortrait('threeKingdoms', actorId)) throw new Error('Unknown sex must not borrow from the pack');
+    window.dispatchEvent(new CustomEvent(AVG_RESOURCE_PACK_CHANGED_EVENT));
+  }, hasGuard);
+  await page.getByRole('button', { name: '→', exact: true }).click();
+  if (hasGuard) {
+    await expect(page.locator('.avg-stage-portrait img')).toHaveAttribute('alt', '城头守卒');
+    await expect.poll(() => page.locator('.avg-stage-portrait img').evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(64);
+  } else {
+    await expect(page.getByTestId('avg-narrative-stage')).toHaveAttribute('data-avg-portrait', 'silhouette');
+    await expect(page.getByTestId('avg-narrative-stage')).not.toContainText('人物图加载中');
+    await expect(page.locator('.avg-stage-portrait img')).toHaveCount(0);
+  }
+  expect((await readVisuals(page)).actorCount).toBe(0);
+});
+
 test('homepage buttons generate, preview, bind, reuse and persist character pictures', async ({ page }) => {
   await mountStage(page);
   let requests = 0;
