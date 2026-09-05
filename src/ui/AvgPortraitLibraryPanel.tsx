@@ -2,6 +2,11 @@ import React, { useEffect, useState } from 'react';
 import type { RuntimeState } from '../engine/types';
 import type { AvgVisualPartitionSnapshot } from '../engine/avg/AvgVisualOverrideRepository';
 
+function localActorName(id?: string): string | undefined {
+  if (!id?.startsWith('avg-local:')) return undefined;
+  try { return decodeURIComponent(id.slice(id.lastIndexOf(':') + 1)); } catch { return undefined; }
+}
+
 export function AvgPortraitLibraryPanel({ snapshot, state }: { snapshot: AvgVisualPartitionSnapshot; state: RuntimeState }): React.ReactElement {
   const [urls, setUrls] = useState<Map<string, string>>(new Map());
   useEffect(() => {
@@ -16,6 +21,7 @@ export function AvgPortraitLibraryPanel({ snapshot, state }: { snapshot: AvgVisu
     : state.npcs?.find((npc) => npc.npcId === id)?.name
       ?? state.knownActors.find((actor) => actor.id === id)?.name
       ?? state.avgPresentation?.speakerActors?.find((actor) => actor.actorId === id)?.labels[0]
+      ?? localActorName(id)
       ?? '已存人物';
   return <section aria-label="AVG 人物图库" className="avg-portrait-library">
     <h3>AVG 人物图库</h3>
@@ -26,5 +32,12 @@ export function AvgPortraitLibraryPanel({ snapshot, state }: { snapshot: AvgVisu
       <figcaption><strong>{nameFor(record.actorId)}</strong><span>{candidates.some((candidate) => candidate.sourceActorId === record.actorId)
         ? '人物绑定 · 允许相似人物复用' : record.sourceActorId && record.sourceActorId !== record.actorId ? '相似匹配 · 已固定' : '人物专属绑定'}</span></figcaption>
     </figure>)}</div>
+    {candidates.length > 0 && <section aria-label="通用候选图库">
+      <h4>通用候选图库</h4><p>新人物从相近候选中首次随机选图并固定；添加候选不会改变已有绑定。</p>
+      <div className="avg-portrait-library-grid">{candidates.map((record) => <figure key={record.key}>
+        {urls.get(record.assetId) && <img src={urls.get(record.assetId)} alt={`${nameFor(record.sourceActorId)}的通用候选图`} loading="lazy" />}
+        <figcaption>{record.portraitProfile?.roleFamily || '同类人物'} · {nameFor(record.sourceActorId)}</figcaption>
+      </figure>)}</div>
+    </section>}
   </section>;
 }

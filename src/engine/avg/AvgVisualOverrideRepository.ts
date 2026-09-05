@@ -390,7 +390,7 @@ export class IndexedDbAvgVisualOverrideRepository {
         const rows = await request<AvgVisualOverrideRecord[]>(overrides.index('visualPartitionId').getAll(target.visualPartitionId));
         const candidates = rows.filter((row) => row.worldBookId === target.worldBookId && row.portraitScope === 'adaptive-candidate');
         while (candidates.length) {
-          const candidate = selectSimilarAvgPortraitCandidate(options.actorProfile, target.actorId, candidates);
+          const candidate = selectSimilarAvgPortraitCandidate(options.actorProfile, target.actorId, candidates, options.rememberMatch ? Math.random : undefined);
           if (!candidate) break;
           const asset = await request<AvgVisualAsset | undefined>(transaction.objectStore('assets').get(candidate.assetId));
           if (assetMatches(candidate, asset)) {
@@ -454,7 +454,9 @@ export class IndexedDbAvgVisualOverrideRepository {
       await request(overrideStore.put(bound));
       await request(transaction.objectStore('outfitSelections').delete(actorKey(target)));
       for (const candidate of previousCandidates) {
-        if (candidate.key !== adaptiveCandidate?.key) await request(overrideStore.delete(candidate.key));
+        // Additional generations expand the pool. Existing borrowers keep their
+        // actor-bound asset; making the source exclusive removes only candidates.
+        if (!adaptiveCandidate) await request(overrideStore.delete(candidate.key));
       }
       if (adaptiveCandidate) await request(overrideStore.put(adaptiveCandidate));
       for (const assetId of staleAssetIds) await this.deleteAssetIfOrphaned(transaction, assetId);

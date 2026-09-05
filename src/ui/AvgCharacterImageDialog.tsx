@@ -26,16 +26,18 @@ export function AvgCharacterImageDialog(props: Props): React.ReactElement {
   return <div className="avg-ai-modal" role="dialog" aria-modal="true" aria-label="生成人物图" onClick={(event) => event.stopPropagation()}>
     <header><strong>生成人物图 · AVG 人物图库</strong><button type="button" onClick={onClose} aria-label="关闭人物图生成">×</button></header>
     <p>选择本回合人物，确认图片后立即显示并保存；以后出场会使用已绑定的人物图。</p>
+    <p>统一使用三国志式手绘立绘，不使用真人摄影风格。切换下方人物可为 NPC 或路人生成图片。</p>
     <label className="avg-character-picker">当前人物
       <select aria-label="生成图片的人物" value={actor?.actorId ?? ''} disabled={busy || !actors.length} onChange={(event) => { setActorId(event.target.value); setExclusive(false); }}>
         {actors.map((item) => <option value={item.actorId} key={item.actorId}>{item.name} · {item.bindingReason}</option>)}
       </select>
     </label>
     {actor && <>
+      {actor.visualOnly && <p>该角色尚无明确人物档案，以当前地点和称呼固定形象；不会新增或修改游戏人物事实。</p>}
       <label className="avg-character-exclusive"><input type="checkbox" checked={actor.dedicated || exclusive} disabled={actor.dedicated || busy} onChange={(event) => setExclusive(event.target.checked)} />特殊人物专属绑定</label>
       <p className="avg-visual-modal-notice">{actor.dedicated || exclusive
         ? '图片只绑定这个人物，其他人物不会借用。'
-        : reusable ? '图片绑定当前人物，并加入通用人物图库。同一存档中性别、年龄和职业相近的人物会自动匹配。'
+        : reusable ? '图片绑定当前人物，并加入同类图库；多次生成会保留多张候选。新角色首次从相近图库随机选图并固定，已有角色不会自动换脸。再次应用只主动替换当前人物的图。'
           : '人物资料不足以进行相似匹配，图片将只绑定当前人物。'}</p>
       <AvgImageCandidateControl key={actor.actorId}
         targetSignature={`character:${visualPartitionId}:${worldBookId}:${actor.actorId}`}

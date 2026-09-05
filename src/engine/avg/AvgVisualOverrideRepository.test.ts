@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAvgPortraitMatchProfile } from './AvgPortraitLibrary';
 import { createAvgVisualPartitionArchive, parseAvgVisualPartitionArchive } from './AvgVisualPartitionArchive';
 import {
@@ -23,6 +23,34 @@ async function image(seed = 0) {
 }
 
 describe('IndexedDbAvgVisualOverrideRepository', () => {
+  it('retains multiple generated candidates while pinning each borrower once, including concurrent reads and reloads', async () => {
+    const repository = new IndexedDbAvgVisualOverrideRepository(databaseName);
+    const source = createAvgActorTarget('save-a', 'threeKingdoms', 'guard-source');
+    const profile = createAvgPortraitMatchProfile({ sex: '男', age: 30, roleFamily: '守卒' })!;
+    await repository.saveGeneratedActorPortrait(source, await image(1), { portraitProfile: profile, registerAdaptiveCandidate: true });
+    await repository.saveGeneratedActorPortrait(source, await image(2), { portraitProfile: profile, registerAdaptiveCandidate: true });
+    expect((await repository.exportPartition('save-a')).records.filter((row) => row.portraitScope === 'adaptive-candidate')).toHaveLength(2);
+    const random = vi.spyOn(Math, 'random').mockReturnValueOnce(0).mockReturnValue(0.999);
+    try {
+      const a = createAvgActorTarget('save-a', 'threeKingdoms', 'guard-a');
+      const b = createAvgActorTarget('save-a', 'threeKingdoms', 'guard-b');
+      const [first, duplicate] = await Promise.all([repository.lookup(a, { actorProfile: profile, rememberMatch: true }), repository.lookup(a, { actorProfile: profile, rememberMatch: true })]);
+      expect(duplicate).toEqual(first);
+      const second = await repository.lookup(b, { actorProfile: profile, rememberMatch: true });
+      expect(first.status === 'found' && second.status === 'found' && first.record.sha256 !== second.record.sha256).toBe(true);
+      await repository.saveGeneratedActorPortrait(source, await image(3), { portraitProfile: profile, registerAdaptiveCandidate: true });
+      expect((await repository.exportPartition('save-a')).records.filter((row) => row.portraitScope === 'adaptive-candidate')).toHaveLength(3);
+      expect(await new IndexedDbAvgVisualOverrideRepository(databaseName).lookup(a, { actorProfile: profile, rememberMatch: true })).toEqual(first);
+      expect(await repository.lookup(b)).toEqual(second);
+      const archive = await createAvgVisualPartitionArchive(await repository.exportPartition('save-a'));
+      const restored = await parseAvgVisualPartitionArchive(archive!.archiveBytes, { expectedSummary: archive!.summary, decodeDimensions: async () => ({ width: 1024, height: 1536 }) });
+      await repository.clear();
+      await repository.replacePartitions([restored]);
+      expect((await repository.exportPartition('save-a')).records.filter((row) => row.portraitScope === 'adaptive-candidate')).toHaveLength(3);
+      expect(await repository.lookup(a)).toEqual(first);
+      expect(await repository.lookup(b)).toEqual(second);
+    } finally { random.mockRestore(); }
+  });
   beforeEach(async () => {
     await resetAvgVisualDatabaseForTests(databaseName);
   });

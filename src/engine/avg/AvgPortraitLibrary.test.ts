@@ -7,6 +7,14 @@ import {
 } from './AvgPortraitLibrary';
 
 describe('AVG generated portrait library matching', () => {
+  it('matches synonymous soldier roles and supports a random first choice', () => {
+    const subject = createAvgPortraitMatchProfile({ sex: '男', age: 30, roleFamily: '城门守卒' })!;
+    const profile = createAvgPortraitMatchProfile({ sex: '男', age: 30, roleFamily: '卫兵' })!;
+    const candidates = [{ key: 'a', portraitProfile: profile }, { key: 'b', portraitProfile: profile }];
+    expect(scoreAvgPortraitSimilarity(subject, profile)).toBeGreaterThan(0);
+    expect(selectSimilarAvgPortraitCandidate(subject, 'guard', candidates, () => 0)?.key).toBe('a');
+    expect(selectSimilarAvgPortraitCandidate(subject, 'guard', candidates, () => 0.999)?.key).toBe('b');
+  });
   it('requires a structured binary sex and normalizes reusable profile facts', () => {
     expect(createAvgPortraitMatchProfile({ sex: '其他', roleFamily: '军士' })).toBeUndefined();
     expect(createAvgPortraitMatchProfile({

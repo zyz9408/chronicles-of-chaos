@@ -23,7 +23,7 @@ import { AvgOutfitManager } from './AvgOutfitManager';
 import { AvgImageCandidateControl } from './AvgImageCandidateControl';
 import { buildAvgActorImagePrompt, buildAvgSceneImagePrompt } from '../engine/avg/AvgImagePrompt';
 import { deriveActorCurrentAge, deriveNpcCurrentAge } from '../engine/time/npcAge';
-import { collectAvgCurrentActors, getAvgActorVisualContext } from '../engine/avg/AvgActorVisualContext';
+import { collectAvgCurrentActors, getAvgActorVisualContext, resolveAvgDialogueActor } from '../engine/avg/AvgActorVisualContext';
 import { AvgCharacterImageDialog } from './AvgCharacterImageDialog';
 import { readAvgVisualWithDeadline } from '../engine/avg/AvgVisualRead';
 
@@ -120,13 +120,23 @@ export function AvgNarrativeStage(props: AvgNarrativeStageProps): React.ReactEle
   [avgPresentation?.sceneBinding?.sceneResourceId, runtimeState.currentLocationId, runtimeState.currentPlaceId, runtimeState.currentSceneId, visualSnapshot, worldBookId]);
   const currentSegment = segments[Math.min(frameIndex, Math.max(segments.length - 1, 0))];
   const currentBinding = currentSegment?.type === 'dialogue' ? bindingBySegment.get(frameIndex) : undefined;
-  const displayedActorId = previewActorId ?? currentBinding?.actorId;
+  const dialogueActors = useMemo(() => new Map(segments.flatMap((segment) => {
+    if (segment.type !== 'dialogue') return [];
+    const actor = resolveAvgDialogueActor(runtimeState, segment.speaker, displayMeta,
+      visualSnapshot?.runtimePlaceId);
+    return actor ? [[segment.speaker, actor] as const] : [];
+  })), [segments, runtimeState, displayMeta, visualSnapshot?.runtimePlaceId]);
+  const dialogueActor = currentSegment?.type === 'dialogue' ? dialogueActors.get(currentSegment.speaker) : undefined;
+  const displayedActorId = previewActorId ?? currentBinding?.actorId ?? dialogueActor?.actorId;
   const isPlayer = displayedActorId === runtimeState.player.id;
   const showPortrait = Boolean(previewActorId) || (currentSegment?.type === 'dialogue' && (!isPlayer || playerPortraitMode === 'show'));
-  const actorContext = useMemo(() => displayedActorId ? getAvgActorVisualContext(runtimeState, displayedActorId, displayMeta) : undefined,
-    [displayMeta, displayedActorId, runtimeState]);
-  const currentActors = useMemo(() => collectAvgCurrentActors(runtimeState, displayMeta, visualSnapshot, { speakerBindings: bindingResult.bindings }),
-    [bindingResult.bindings, displayMeta, runtimeState, visualSnapshot]);
+  const currentActors = useMemo(() => [...new Map([
+    ...collectAvgCurrentActors(runtimeState, displayMeta, visualSnapshot, { speakerBindings: bindingResult.bindings }),
+    ...dialogueActors.values(),
+  ].map((actor) => [actor.actorId, actor])).values()],
+  [bindingResult.bindings, dialogueActors, displayMeta, runtimeState, visualSnapshot]);
+  const actorContext = useMemo(() => currentActors.find((actor) => actor.actorId === displayedActorId),
+    [currentActors, displayedActorId]);
   const actorTarget = useMemo(() => displayedActorId && showPortrait
     ? createAvgActorTarget(visualPartitionId, worldBookId, displayedActorId)
     : undefined,
@@ -245,13 +255,13 @@ export function AvgNarrativeStage(props: AvgNarrativeStageProps): React.ReactEle
       const npc = runtimeState.npcs?.find((candidate) => candidate.npcId === currentTarget.actorId);
       if (npc) return buildAvgActorImagePrompt({ name: npc.name, sex: npc.sex, age: deriveNpcCurrentAge(npc, runtimeState.currentDate), identity: npc.currentIdentity, occupation: npc.role, appearance: npc.appearance, outfit: selectedOutfit ? { name: selectedOutfit.name, note: selectedOutfit.note } : undefined });
       const known = runtimeState.knownActors.find((candidate) => candidate.id === currentTarget.actorId);
-      if (!selectedOutfit) return getAvgActorVisualContext(runtimeState, currentTarget.actorId, displayMeta)?.prompt ?? buildAvgActorImagePrompt({ name: speakerName });
+      if (!selectedOutfit) return actorContext?.prompt ?? getAvgActorVisualContext(runtimeState, currentTarget.actorId, displayMeta)?.prompt ?? buildAvgActorImagePrompt({ name: speakerName });
       return buildAvgActorImagePrompt({ name: known?.name ?? speakerName, sex: known?.sex, age: known ? deriveActorCurrentAge(known, runtimeState.currentDate) : undefined, occupation: known?.roleType, appearance: known?.appearance, outfit: { name: selectedOutfit.name, note: selectedOutfit.note } });
     }
     return buildAvgSceneImagePrompt({ name: visualSnapshot?.structuredSceneAliases?.[0] || visualSnapshot?.runtimePlaceId?.trim() || runtimeState.currentPlaceId?.trim() || runtimeState.currentLocationId,
       environment: visualSnapshot?.sceneSemantic?.environment, publicFunction: visualSnapshot?.sceneSemantic?.function,
       signature: visualSnapshot?.sceneSemantic?.placeSignature, tags: visualSnapshot?.sceneSemantic?.tags });
-  }, [currentBinding?.actorId, currentSegment, currentTarget, displayMeta, runtimeState, selectedOutfit, visualSnapshot]);
+  }, [actorContext, currentBinding?.actorId, currentSegment, currentTarget, displayMeta, runtimeState, selectedOutfit, visualSnapshot]);
   const replaceCurrentVisual = async (file: File) => {
     if (!currentTarget) return;
     setNotice('正在校验图片…');
@@ -347,7 +357,7 @@ export function AvgNarrativeStage(props: AvgNarrativeStageProps): React.ReactEle
         {previewActorId && <span>人物预览：{actorContext?.name ?? '当前人物'} · 下一帧返回剧情</span>}
         {background.status !== 'found' && <span>{background.status === 'loading' ? '背景加载中，不影响阅读' : background.status === 'error' ? '背景读取超时或失败，可点“重试图片”' : '场景未匹配，已使用中性背景'}</span>}
         {showPortrait && portrait.status !== 'found' && <span>{portrait.status === 'loading' ? '人物图加载中，不影响阅读' : portrait.status === 'error' ? '人物图读取超时或失败，可点“重试图片”' : '人物立绘未匹配，已使用中性剪影'}</span>}
-        {currentSegment?.type === 'dialogue' && currentBinding?.status !== 'frozen' && <span>人物身份未绑定，未自动选择立绘</span>}
+        {currentSegment?.type === 'dialogue' && currentBinding?.status !== 'frozen' && <span>{dialogueActor ? '使用固定本地视觉身份，不修改人物事实' : '人物身份不明确，未自动选择立绘'}</span>}
         {notice && <span>{notice}</span>}
       </div>
       {isCharacterGeneratorOpen && <AvgCharacterImageDialog
@@ -376,6 +386,12 @@ export function AvgNarrativeStage(props: AvgNarrativeStageProps): React.ReactEle
           onOpenSettings={onOpenAvgSettings}
           onApply={async (file) => {
             if (currentTarget.kind === 'actor' && selectedOutfit) await repository.replaceOutfitImage(currentTarget, selectedOutfit.outfitId, file);
+            else if (currentTarget.kind === 'actor') await repository.saveGeneratedActorPortrait(currentTarget, file, {
+              portraitProfile: actorContext?.portraitProfile,
+              registerAdaptiveCandidate: Boolean(actorContext && !actorContext.dedicated && actorContext.portraitProfile
+                && actorContext.portraitProfile.ageBand !== 'unknown'
+                && (actorContext.portraitProfile.roleFamily || actorContext.portraitProfile.professionTags.length)),
+            });
             else await repository.replace(currentTarget, file);
             setRefresh((value) => value + 1);
           }} />

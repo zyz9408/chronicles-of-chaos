@@ -115,6 +115,12 @@ function partialRoleMatch(left: string, right: string): boolean {
   return left.length >= 2 && right.length >= 2 && (left.includes(right) || right.includes(left));
 }
 
+function roleGroup(value: string): string {
+  if (/守卒|守军|守卫|卫兵|士卒|军士|士兵|步卒|差役|门卒|什长|soldier|guard/u.test(value)) return 'soldier';
+  if (/掌柜|商贩|商人|店家|伙计|merchant|shopkeeper/u.test(value)) return 'merchant';
+  return value;
+}
+
 function overlap(left: string[], right: string[]): number {
   const rightSet = new Set(right);
   return left.filter((tag) => rightSet.has(tag)).length;
@@ -127,7 +133,7 @@ export function scoreAvgPortraitSimilarity(subject: AvgPortraitMatchProfile, can
   const minor = (band: AvgPortraitAgeBand) => band === 'child' || band === 'teen';
   if ((minor(subject.ageBand) || minor(candidate.ageBand)) && subject.ageBand !== candidate.ageBand) return undefined;
   const roleMatches = Boolean(subject.roleFamily && candidate.roleFamily
-    && (subject.roleFamily === candidate.roleFamily || partialRoleMatch(subject.roleFamily, candidate.roleFamily)));
+    && (roleGroup(subject.roleFamily) === roleGroup(candidate.roleFamily) || partialRoleMatch(subject.roleFamily, candidate.roleFamily)));
   const professionMatches = overlap(subject.professionTags, candidate.professionTags);
   if (!roleMatches && professionMatches === 0) return undefined;
   let score = 100;
@@ -146,6 +152,7 @@ export function selectSimilarAvgPortraitCandidate<T extends { key: string; portr
   subject: AvgPortraitMatchProfile,
   actorId: string,
   candidates: readonly T[],
+  random?: () => number,
 ): T | undefined {
   const scored = candidates.flatMap((candidate) => {
     if (!candidate.portraitProfile || !isAvgPortraitMatchProfile(candidate.portraitProfile)) return [];
@@ -158,5 +165,5 @@ export function selectSimilarAvgPortraitCandidate<T extends { key: string; portr
     .filter((entry) => entry.score === bestScore)
     .map((entry) => entry.candidate)
     .sort((left, right) => left.key.localeCompare(right.key));
-  return best[stableIndex(actorId, best.length)];
+  return best[random ? Math.min(best.length - 1, Math.max(0, Math.floor(random() * best.length))) : stableIndex(actorId, best.length)];
 }

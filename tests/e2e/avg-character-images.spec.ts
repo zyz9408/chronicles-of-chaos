@@ -1,10 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
 import { assertE2eStorageIsolation } from './e2eStorage';
 
-async function mountStage(page: Page, setup = true) {
+async function mountStage(page: Page, setup = true, unregistered = false) {
   await page.goto('/');
   await assertE2eStorageIsolation(page);
-  await page.evaluate(async (setupProfile) => {
+  await page.evaluate(async ({ setupProfile, unregistered }) => {
     const load = (path: string) => import(/* @vite-ignore */ path);
     const [{ default: React }, { default: ReactDOM }, { AvgNarrativeStage }, profiles] = await Promise.all([
       load('/node_modules/.vite/deps/react.js'), load('/node_modules/.vite/deps/react-dom_client.js'),
@@ -23,25 +23,27 @@ async function mountStage(page: Page, setup = true) {
       npcs: ['甲', '乙'].map((suffix, index) => ({ npcId: `guard-${index}`, name: `差役${suffix}`, sex: '男', age: 30, role: '差役', isPresent: true, isFocused: false })),
       avgPresentation: { visualPartitionId: 'test-avg-partition' },
     };
+    if (unregistered) { state.npcs = []; state.knownActors = []; }
     document.getElementById('root')!.hidden = true;
     const host = document.createElement('div');
     host.id = 'avg-test-host'; host.style.padding = '16px'; document.body.append(host);
     ReactDOM.createRoot(host).render(React.createElement(AvgNarrativeStage, {
-      entryKey: 'test-turn', narrativeText: '【旁白】市集晨雾散去。\n【差役甲】来者何人？\n【差役乙】请出示凭证。\n【关羽】在下关羽。',
+      entryKey: 'test-turn', narrativeText: unregistered ? '【旁白】城门缓缓打开。\n【城头守卒】下面何事？\n【守卒乙】请进城。' : '【旁白】市集晨雾散去。\n【差役甲】来者何人？\n【差役乙】请出示凭证。\n【关羽】在下关羽。',
+      ...(unregistered ? { visualSnapshot: { presentActorIds: [], runtimePlaceId: '集市' } } : {}),
       runtimeState: state, saveId: 'test-save', worldBookId: 'threeKingdoms', playerPortraitMode: 'hidden', onReturnClassic: () => undefined,
     }));
-  }, setup);
+  }, { setupProfile: setup, unregistered });
   await expect(page.getByTestId('avg-narrative-stage')).toBeVisible();
 }
 
-async function imageResponse(page: Page) {
-  return page.evaluate(() => {
+async function imageResponse(page: Page, color = '#566878') {
+  return page.evaluate((color) => {
     const canvas = document.createElement('canvas'); canvas.width = 300; canvas.height = 480;
     const context = canvas.getContext('2d')!;
-    context.fillStyle = '#566878'; context.fillRect(65, 150, 170, 320);
+    context.fillStyle = color; context.fillRect(65, 150, 170, 320);
     context.fillStyle = '#d4b58c'; context.beginPath(); context.arc(150, 95, 55, 0, Math.PI * 2); context.fill();
     return canvas.toDataURL('image/png').split(',')[1];
-  });
+  }, color);
 }
 
 async function readVisuals(page: Page) {
@@ -121,11 +123,56 @@ test('homepage buttons generate, preview, bind, reuse and persist character pict
   });
   expect(libraryData).toBe(3);
   await expect(page.getByRole('region', { name: 'AVG 人物图库' })).toContainText('已绑定 3 人 · 通用人物图 1 张');
-  await expect(page.getByRole('region', { name: 'AVG 人物图库' }).getByRole('img')).toHaveCount(3);
+  await expect(page.getByRole('region', { name: 'AVG 人物图库' }).getByRole('img')).toHaveCount(4);
   await page.screenshot({ path: 'output/playwright/avg-character-library-desktop.png', fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(buttons.getByRole('button', { name: '生成人物图', exact: true })).toBeInViewport();
   await page.screenshot({ path: 'output/playwright/avg-character-library-mobile.png', fullPage: true });
+});
+
+test('unregistered speaking guards can be generated instead of the player, accumulate candidates and stay bound after reload', async ({ page }) => {
+  await mountStage(page, true, true);
+  const pictures = [await imageResponse(page, '#667788'), await imageResponse(page, '#996633'), await imageResponse(page, '#446644')];
+  let requests = 0;
+  await page.route('https://images.example.test/v1/images/generations', async (route) => {
+    const prompt = route.request().postDataJSON().prompt as string;
+    expect(prompt).toContain('人物：城头守卒');
+    expect(prompt).not.toContain('彭亮');
+    expect(prompt).toContain('三国志式');
+    expect(prompt).toContain('禁止真人摄影');
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ data: [{ b64_json: pictures[requests++] }] }) });
+  });
+  await page.getByRole('button', { name: '→', exact: true }).click();
+  const generate = async () => {
+    await page.getByRole('button', { name: '生成人物图', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '生成人物图', exact: true });
+    await expect(dialog.getByLabel('生成图片的人物').locator('option:checked')).toContainText('城头守卒');
+    await expect(dialog.getByLabel('生成图片的人物').locator('option')).toHaveCount(3);
+    await dialog.getByRole('button', { name: '生成候选图', exact: true }).click();
+    await expect(dialog.getByAltText(/AI 候选图预览/)).toBeVisible();
+    await dialog.getByRole('button', { name: '应用并加入 AVG 图库' }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator('.avg-stage-portrait img')).toHaveAttribute('alt', '城头守卒');
+  };
+  await generate();
+  await generate();
+  const stored = await readVisuals(page);
+  expect(stored.records.filter((row: { portraitScope?: string }) => row.portraitScope === 'adaptive-candidate')).toHaveLength(2);
+  expect(stored.records.some((row: { actorId?: string }) => row.actorId === 'player')).toBe(false);
+  await page.getByRole('button', { name: '→', exact: true }).click();
+  await expect(page.locator('.avg-stage-portrait img')).toHaveAttribute('alt', '守卒乙');
+  await expect.poll(async () => (await readVisuals(page)).actorCount).toBe(2);
+  const boundBefore = (await readVisuals(page)).records.find((row: { portraitScope?: string; actorId?: string }) => row.portraitScope === 'actor-bound' && decodeURIComponent(row.actorId ?? '').endsWith(':守卒乙'));
+  expect(boundBefore).toBeTruthy();
+  await page.getByRole('button', { name: '←', exact: true }).click();
+  await generate();
+  await mountStage(page, false, true);
+  await page.getByRole('button', { name: '→', exact: true }).click();
+  await page.getByRole('button', { name: '→', exact: true }).click();
+  await expect(page.locator('.avg-stage-portrait img')).toHaveAttribute('alt', '守卒乙');
+  expect((await readVisuals(page)).records.find((row: { key: string }) => row.key === boundBefore.key)).toEqual(boundBefore);
+  expect(requests).toBe(3);
+  await page.screenshot({ path: 'output/playwright/avg-unregistered-guard.png', fullPage: true });
 });
 
 test('failed and cancelled image requests keep existing pictures and do not create bindings', async ({ page }) => {
