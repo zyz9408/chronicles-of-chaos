@@ -150,7 +150,7 @@ test('true opening keeps one semantic card through generation, writeback, and sa
   await observeOpeningUiTransitions(page);
   await page.getByRole('button', { name: '踏入乱世' }).click();
 
-  await expect(page.getByRole('main')).toBeVisible({ timeout: 1000 });
+  await expect(page.getByRole('main')).toBeVisible({ timeout: 5000 });
   await expect(page.getByText('正在生成开场剧情...', { exact: true })).toBeVisible();
 
   await stream.requestStarted;

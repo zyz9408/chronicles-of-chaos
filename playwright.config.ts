@@ -1,7 +1,11 @@
 import { defineConfig, devices } from '@playwright/test';
+import { existsSync } from 'node:fs';
 
 const playwrightPort = process.env.PLAYWRIGHT_PORT ?? '41731';
 const playwrightBaseUrl = `http://127.0.0.1:${playwrightPort}`;
+const defaultWindowsChrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROME_PATH
+  || (process.platform === 'win32' && existsSync(defaultWindowsChrome) ? defaultWindowsChrome : undefined);
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -28,7 +32,10 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        ...(chromiumExecutablePath ? { launchOptions: { executablePath: chromiumExecutablePath } } : {}),
+      },
     },
   ],
 });

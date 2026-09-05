@@ -2,6 +2,7 @@ import threeKingdomsRegistryJson from './ThreeKingdomsAvgRegistry.generated.json
 
 export const AVG_RESOURCE_PACK_FORMAT = 'chronicles-of-chaos-v2-avg-resource-pack';
 export const AVG_RESOURCE_PACK_DATABASE = 'chronicles-of-chaos-v2-avg-resource-packs';
+export const AVG_RESOURCE_PACK_DATABASE_VERSION = 1;
 export const AVG_RESOURCE_PACK_CHANGED_EVENT = 'coc-v2:avg-external-pack-changed';
 export const THREE_KINGDOMS_AVG_REGISTRY_MANIFEST_ID = 'avg:threeKingdoms:accepted-resources:portrait-922-scene-200:2026-08-24';
 export const MAX_AVG_RESOURCE_ARCHIVE_BYTES = 3 * 1024 * 1024 * 1024;
@@ -40,6 +41,10 @@ export interface InstalledAvgResourcePack {
   manifest: AvgResourcePackManifest;
   installedAt: string;
   storageBackend: 'opfs' | 'indexeddb';
+  /** Official v1.8.4 binary namespace. Older reconstructed builds used storagePackId instead. */
+  storageNamespace?: string;
+  archiveByteLength?: number;
+  validationStatus?: 'valid';
 }
 
 export interface AvgResourcePackProgress {
@@ -49,9 +54,28 @@ export interface AvgResourcePackProgress {
   entriesRead: number;
 }
 
-type PackRow = InstalledAvgResourcePack & { packId: string; worldBookId: string; storagePackId?: string };
-type AssetRow = { key: string; packId: string; assetId: string; path?: string; blob: Blob };
-const stores = ['packs', 'assets', 'active'] as const;
+type OfficialPackRow = { packId: string; worldBookId: string; record: InstalledAvgResourcePack };
+type OfficialSelectionRow = { worldBookId: string; packId?: string; updatedAt: string };
+type OfficialAssetRow = { key: string; namespace: string; path: string; blob: Blob };
+type LegacyPackRow = InstalledAvgResourcePack & { packId: string; worldBookId: string; storagePackId?: string };
+type LegacyAssetRow = { key: string; packId: string; assetId: string; path?: string; blob: Blob };
+type ResourceDatabaseSchema = 'official-v1' | 'reconstructed-v1';
+
+const OFFICIAL_STORES = {
+  packs: 'installed-packs',
+  selections: 'selections',
+  assets: 'resource-files',
+  worldBookIndex: 'by-worldbook',
+  namespaceIndex: 'by-namespace',
+} as const;
+
+const LEGACY_STORES = {
+  packs: 'packs',
+  selections: 'active',
+  assets: 'assets',
+  worldBookIndex: 'worldBookId',
+  namespaceIndex: 'packId',
+} as const;
 
 function requireText(value: unknown, label: string): string {
   const text = typeof value === 'string' ? value.trim() : '';
@@ -175,18 +199,53 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
   });
 }
 
-async function openDatabase(name: string): Promise<IDBDatabase> {
+function hasStores(database: IDBDatabase, names: readonly string[]): boolean {
+  return names.every((name) => database.objectStoreNames.contains(name));
+}
+
+function detectDatabaseSchema(database: IDBDatabase): ResourceDatabaseSchema {
+  if (hasStores(database, [OFFICIAL_STORES.packs, OFFICIAL_STORES.selections, OFFICIAL_STORES.assets])) {
+    return 'official-v1';
+  }
+  if (hasStores(database, [LEGACY_STORES.packs, LEGACY_STORES.selections, LEGACY_STORES.assets])) {
+    return 'reconstructed-v1';
+  }
+  throw new Error('AVG 资源数据库结构不完整；请重新载入页面后再试。');
+}
+
+async function openDatabase(name: string): Promise<{ database: IDBDatabase; schema: ResourceDatabaseSchema }> {
   if (typeof indexedDB === 'undefined') throw new Error('当前浏览器不支持本地 AVG 资源包。');
   return new Promise((resolve, reject) => {
-    const opening = indexedDB.open(name, 1);
+    const opening = indexedDB.open(name, AVG_RESOURCE_PACK_DATABASE_VERSION);
     opening.onupgradeneeded = () => {
       const database = opening.result;
-      if (!database.objectStoreNames.contains('packs')) database.createObjectStore('packs', { keyPath: 'packId' }).createIndex('worldBookId', 'worldBookId');
-      if (!database.objectStoreNames.contains('assets')) database.createObjectStore('assets', { keyPath: 'key' }).createIndex('packId', 'packId');
-      if (!database.objectStoreNames.contains('active')) database.createObjectStore('active', { keyPath: 'worldBookId' });
+      const transaction = opening.transaction;
+      const packs = database.objectStoreNames.contains(OFFICIAL_STORES.packs)
+        ? transaction?.objectStore(OFFICIAL_STORES.packs)
+        : database.createObjectStore(OFFICIAL_STORES.packs, { keyPath: 'packId' });
+      if (packs && !packs.indexNames.contains(OFFICIAL_STORES.worldBookIndex)) {
+        packs.createIndex(OFFICIAL_STORES.worldBookIndex, 'worldBookId');
+      }
+      if (!database.objectStoreNames.contains(OFFICIAL_STORES.selections)) {
+        database.createObjectStore(OFFICIAL_STORES.selections, { keyPath: 'worldBookId' });
+      }
+      const assets = database.objectStoreNames.contains(OFFICIAL_STORES.assets)
+        ? transaction?.objectStore(OFFICIAL_STORES.assets)
+        : database.createObjectStore(OFFICIAL_STORES.assets, { keyPath: 'key' });
+      if (assets && !assets.indexNames.contains(OFFICIAL_STORES.namespaceIndex)) {
+        assets.createIndex(OFFICIAL_STORES.namespaceIndex, 'namespace');
+      }
     };
-    opening.onsuccess = () => resolve(opening.result);
+    opening.onsuccess = () => {
+      try {
+        resolve({ database: opening.result, schema: detectDatabaseSchema(opening.result) });
+      } catch (error) {
+        opening.result.close();
+        reject(error);
+      }
+    };
     opening.onerror = () => reject(opening.error ?? new Error('无法打开 AVG 资源包数据库。'));
+    opening.onblocked = () => reject(new Error('AVG 资源数据库正被其他页面占用，请关闭旧页面后重试。'));
   });
 }
 
@@ -194,11 +253,11 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((value) => value.toString(16).padStart(2, '0')).join('').toUpperCase();
 }
 
-function createStoragePackId(): string {
+function createStorageNamespace(): string {
   const suffix = typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `__install__:${suffix}`;
+  return `cocv2-avg-${suffix}`;
 }
 
 function emitChanged(): void {
@@ -207,19 +266,28 @@ function emitChanged(): void {
 
 const OPFS_DIRECTORY = 'chronicles-of-chaos-v2-avg-resource-packs';
 
-async function openOpfsNamespace(namespace: string, create: boolean): Promise<FileSystemDirectoryHandle | undefined> {
+function assertSafeNamespace(namespace: string): void {
+  if (!/^[a-zA-Z0-9._-]{1,180}$/u.test(namespace)) throw new Error('AVG 资源命名空间不安全。');
+}
+
+async function openOpfsNamespace(
+  namespace: string,
+  create: boolean,
+  schema: ResourceDatabaseSchema = 'official-v1',
+): Promise<FileSystemDirectoryHandle | undefined> {
   if (typeof navigator === 'undefined' || typeof navigator.storage?.getDirectory !== 'function') return undefined;
   try {
+    if (schema === 'official-v1') assertSafeNamespace(namespace);
     const root = await navigator.storage.getDirectory();
     const packs = await root.getDirectoryHandle(OPFS_DIRECTORY, { create });
-    return await packs.getDirectoryHandle(encodeURIComponent(namespace), { create });
+    return await packs.getDirectoryHandle(schema === 'official-v1' ? namespace : encodeURIComponent(namespace), { create });
   } catch {
     return undefined;
   }
 }
 
-async function writeOpfsAsset(namespace: string, path: string, blob: Blob): Promise<void> {
-  let directory = await openOpfsNamespace(namespace, true);
+async function writeOpfsAsset(namespace: string, path: string, blob: Blob, schema: ResourceDatabaseSchema): Promise<void> {
+  let directory = await openOpfsNamespace(namespace, true, schema);
   if (!directory) throw new Error('浏览器文件存储暂时不可用。');
   const segments = path.split('/');
   const fileName = segments.pop();
@@ -230,8 +298,8 @@ async function writeOpfsAsset(namespace: string, path: string, blob: Blob): Prom
   try { await writable.write(blob); } finally { await writable.close(); }
 }
 
-async function readOpfsAsset(namespace: string, path: string): Promise<Blob | undefined> {
-  let directory = await openOpfsNamespace(namespace, false);
+async function readOpfsAsset(namespace: string, path: string, schema: ResourceDatabaseSchema): Promise<Blob | undefined> {
+  let directory = await openOpfsNamespace(namespace, false, schema);
   if (!directory) return undefined;
   const segments = path.split('/');
   const fileName = segments.pop();
@@ -244,12 +312,12 @@ async function readOpfsAsset(namespace: string, path: string): Promise<Blob | un
   }
 }
 
-async function removeOpfsNamespace(namespace: string): Promise<void> {
+async function removeOpfsNamespace(namespace: string, schema: ResourceDatabaseSchema): Promise<void> {
   if (typeof navigator === 'undefined' || typeof navigator.storage?.getDirectory !== 'function') return;
   try {
     const root = await navigator.storage.getDirectory();
     const packs = await root.getDirectoryHandle(OPFS_DIRECTORY);
-    await packs.removeEntry(encodeURIComponent(namespace), { recursive: true });
+    await packs.removeEntry(schema === 'official-v1' ? namespace : encodeURIComponent(namespace), { recursive: true });
   } catch {
     // Missing namespaces are already clean.
   }
@@ -258,57 +326,88 @@ async function removeOpfsNamespace(namespace: string): Promise<void> {
 export class AvgResourcePackManager {
   constructor(private readonly databaseName = AVG_RESOURCE_PACK_DATABASE) {}
 
-  private async withDatabase<T>(operation: (database: IDBDatabase) => Promise<T>): Promise<T> {
-    const database = await openDatabase(this.databaseName);
-    try { return await operation(database); } finally { database.close(); }
+  private async withDatabase<T>(
+    operation: (database: IDBDatabase, schema: ResourceDatabaseSchema) => Promise<T>,
+  ): Promise<T> {
+    const opened = await openDatabase(this.databaseName);
+    try { return await operation(opened.database, opened.schema); } finally { opened.database.close(); }
   }
 
-  private async deleteStoredAssets(storagePackId: string, backend: InstalledAvgResourcePack['storageBackend'] = 'indexeddb'): Promise<void> {
+  private async currentSchema(): Promise<ResourceDatabaseSchema> {
+    return this.withDatabase(async (_database, schema) => schema);
+  }
+
+  private async deleteStoredAssets(
+    namespace: string,
+    backend: InstalledAvgResourcePack['storageBackend'] = 'indexeddb',
+    schema: ResourceDatabaseSchema,
+  ): Promise<void> {
     if (backend === 'opfs') {
-      await removeOpfsNamespace(storagePackId);
+      await removeOpfsNamespace(namespace, schema);
       return;
     }
-    await this.withDatabase(async (database) => {
-      const transaction = database.transaction('assets', 'readwrite');
-      const assets = transaction.objectStore('assets');
-      const keys = await request<IDBValidKey[]>(assets.index('packId').getAllKeys(storagePackId));
+    await this.withDatabase(async (database, activeSchema) => {
+      const storeName = activeSchema === 'official-v1' ? OFFICIAL_STORES.assets : LEGACY_STORES.assets;
+      const indexName = activeSchema === 'official-v1' ? OFFICIAL_STORES.namespaceIndex : LEGACY_STORES.namespaceIndex;
+      const transaction = database.transaction(storeName, 'readwrite');
+      const assets = transaction.objectStore(storeName);
+      const keys = await request<IDBValidKey[]>(assets.index(indexName).getAllKeys(namespace));
       keys.forEach((key) => assets.delete(key));
       await transactionDone(transaction);
     });
   }
 
   private async storeTemporaryAsset(
-    storagePackId: string,
+    namespace: string,
     path: string,
     blob: Blob,
     backend: InstalledAvgResourcePack['storageBackend'],
+    schema: ResourceDatabaseSchema,
   ): Promise<void> {
     if (backend === 'opfs') {
-      await writeOpfsAsset(storagePackId, path, blob);
+      await writeOpfsAsset(namespace, path, blob, schema);
       return;
     }
-    await this.withDatabase(async (database) => {
-      const transaction = database.transaction('assets', 'readwrite');
-      transaction.objectStore('assets').put({
-        key: `${storagePackId}|${path}`,
-        packId: storagePackId,
-        assetId: path,
-        path,
-        blob,
-      } satisfies AssetRow);
+    await this.withDatabase(async (database, activeSchema) => {
+      const storeName = activeSchema === 'official-v1' ? OFFICIAL_STORES.assets : LEGACY_STORES.assets;
+      const transaction = database.transaction(storeName, 'readwrite');
+      if (activeSchema === 'official-v1') {
+        transaction.objectStore(storeName).put({
+          key: `${namespace}:${path}`,
+          namespace,
+          path,
+          blob,
+        } satisfies OfficialAssetRow);
+      } else {
+        transaction.objectStore(storeName).put({
+          key: `${namespace}|${path}`,
+          packId: namespace,
+          assetId: path,
+          path,
+          blob,
+        } satisfies LegacyAssetRow);
+      }
       await transactionDone(transaction);
     });
   }
 
   private async readTemporaryAsset(
-    storagePackId: string,
+    namespace: string,
     path: string,
     backend: InstalledAvgResourcePack['storageBackend'],
+    schema: ResourceDatabaseSchema,
+    legacyAssetId?: string,
   ): Promise<Blob | undefined> {
-    if (backend === 'opfs') return readOpfsAsset(storagePackId, path);
-    return this.withDatabase(async (database) => {
-      const transaction = database.transaction('assets', 'readonly');
-      const row = await request<AssetRow | undefined>(transaction.objectStore('assets').get(`${storagePackId}|${path}`));
+    if (backend === 'opfs') return readOpfsAsset(namespace, path, schema);
+    return this.withDatabase(async (database, activeSchema) => {
+      const storeName = activeSchema === 'official-v1' ? OFFICIAL_STORES.assets : LEGACY_STORES.assets;
+      const transaction = database.transaction(storeName, 'readonly');
+      const store = transaction.objectStore(storeName);
+      const primaryKey = activeSchema === 'official-v1' ? `${namespace}:${path}` : `${namespace}|${path}`;
+      let row = await request<OfficialAssetRow | LegacyAssetRow | undefined>(store.get(primaryKey));
+      if (!row && activeSchema === 'reconstructed-v1' && legacyAssetId) {
+        row = await request<LegacyAssetRow | undefined>(store.get(`${namespace}|${legacyAssetId}`));
+      }
       await transactionDone(transaction);
       return row?.blob;
     });
@@ -317,8 +416,9 @@ export class AvgResourcePackManager {
   async install(file: Blob, options: { archiveLabel?: string; onProgress?: (progress: AvgResourcePackProgress) => void } = {}): Promise<InstalledAvgResourcePack> {
     if (file.size <= 0 || file.size > MAX_AVG_RESOURCE_ARCHIVE_BYTES) throw new Error('资源包 ZIP 大小不正确或超过 3 GiB。');
     options.onProgress?.({ phase: 'reading', archiveBytesRead: 0, archiveByteLength: file.size, entriesRead: 0 });
-    const storagePackId = createStoragePackId();
-    const storageBackend: InstalledAvgResourcePack['storageBackend'] = await openOpfsNamespace(storagePackId, true)
+    const schema = await this.currentSchema();
+    const storageNamespace = createStorageNamespace();
+    const storageBackend: InstalledAvgResourcePack['storageBackend'] = await openOpfsNamespace(storageNamespace, true, schema)
       ? 'opfs'
       : 'indexeddb';
     let archiveBytesRead = 0;
@@ -360,7 +460,7 @@ export class AvgResourcePackManager {
             if (entry.name === 'manifest.json') {
               manifestBytes = new Uint8Array(await blob.arrayBuffer());
             } else if (/^assets\/[A-Za-z0-9._/-]+\.webp$/u.test(entry.name) && !entry.name.includes('..')) {
-              await this.storeTemporaryAsset(storagePackId, entry.name, blob, storageBackend);
+              await this.storeTemporaryAsset(storageNamespace, entry.name, blob, storageBackend, schema);
             }
           })().then(resolveEntry, rejectEntry);
         };
@@ -385,7 +485,7 @@ export class AvgResourcePackManager {
       const extra = [...entryNames].find((path) => !allowedPaths.has(path));
       if (extra) throw new Error(`资源包包含未登记文件：${extra}`);
       for (const [index, asset] of manifest.assets.entries()) {
-        const blob = await this.readTemporaryAsset(storagePackId, asset.path, storageBackend);
+        const blob = await this.readTemporaryAsset(storageNamespace, asset.path, storageBackend, schema);
         if (!blob || blob.size !== asset.byteLength) throw new Error(`资源包图片缺失或大小不符：${asset.path}`);
         const entry = new Uint8Array(await blob.arrayBuffer());
         const dimensions = readWebpSize(entry);
@@ -395,106 +495,160 @@ export class AvgResourcePackManager {
         options.onProgress?.({ phase: 'validating', archiveBytesRead, archiveByteLength: file.size, entriesRead: index + 1 });
       }
       options.onProgress?.({ phase: 'committing', archiveBytesRead, archiveByteLength: file.size, entriesRead: manifest.assets.length });
-      const installed: InstalledAvgResourcePack = { manifest, installedAt: new Date().toISOString(), storageBackend };
-      let replacedStoragePackId: string | undefined;
+      const installedAt = new Date().toISOString();
+      const installed: InstalledAvgResourcePack = {
+        manifest,
+        installedAt,
+        storageBackend,
+        storageNamespace,
+        archiveByteLength: file.size,
+        validationStatus: 'valid',
+      };
+      let replacedStorageNamespace: string | undefined;
       let replacedStorageBackend: InstalledAvgResourcePack['storageBackend'] = 'indexeddb';
-      await this.withDatabase(async (database) => {
-        const transaction = database.transaction(['packs', 'active'], 'readwrite');
-        const packs = transaction.objectStore('packs');
-        const previous = await request<PackRow | undefined>(packs.get(manifest.packId));
-        replacedStoragePackId = previous?.storagePackId ?? previous?.packId;
-        replacedStorageBackend = previous?.storageBackend ?? 'indexeddb';
-        packs.put({ ...installed, packId: manifest.packId, worldBookId: manifest.worldBookId, storagePackId } satisfies PackRow);
-        transaction.objectStore('active').put({ worldBookId: manifest.worldBookId, packId: manifest.packId });
+      await this.withDatabase(async (database, activeSchema) => {
+        const packStoreName = activeSchema === 'official-v1' ? OFFICIAL_STORES.packs : LEGACY_STORES.packs;
+        const selectionStoreName = activeSchema === 'official-v1' ? OFFICIAL_STORES.selections : LEGACY_STORES.selections;
+        const transaction = database.transaction([packStoreName, selectionStoreName], 'readwrite');
+        const packs = transaction.objectStore(packStoreName);
+        if (activeSchema === 'official-v1') {
+          const previous = await request<OfficialPackRow | undefined>(packs.get(manifest.packId));
+          const selectionStore = transaction.objectStore(selectionStoreName);
+          const selection = await request<OfficialSelectionRow | undefined>(selectionStore.get(manifest.worldBookId));
+          replacedStorageNamespace = previous?.record.storageNamespace;
+          replacedStorageBackend = previous?.record.storageBackend ?? 'indexeddb';
+          packs.put({ packId: manifest.packId, worldBookId: manifest.worldBookId, record: installed } satisfies OfficialPackRow);
+          selectionStore.put({
+            worldBookId: manifest.worldBookId,
+            packId: !selection?.packId || selection.packId === manifest.packId ? manifest.packId : selection.packId,
+            updatedAt: installedAt,
+          } satisfies OfficialSelectionRow);
+        } else {
+          const previous = await request<LegacyPackRow | undefined>(packs.get(manifest.packId));
+          replacedStorageNamespace = previous?.storagePackId ?? previous?.packId;
+          replacedStorageBackend = previous?.storageBackend ?? 'indexeddb';
+          packs.put({
+            ...installed,
+            packId: manifest.packId,
+            worldBookId: manifest.worldBookId,
+            storagePackId: storageNamespace,
+          } satisfies LegacyPackRow);
+          transaction.objectStore(selectionStoreName).put({ worldBookId: manifest.worldBookId, packId: manifest.packId });
+        }
         await transactionDone(transaction);
       });
-      if (replacedStoragePackId && replacedStoragePackId !== storagePackId) {
-        await this.deleteStoredAssets(replacedStoragePackId, replacedStorageBackend);
+      if (replacedStorageNamespace && replacedStorageNamespace !== storageNamespace) {
+        await this.deleteStoredAssets(replacedStorageNamespace, replacedStorageBackend, schema);
       }
       emitChanged();
       return installed;
     } catch (error) {
-      await this.deleteStoredAssets(storagePackId, storageBackend).catch(() => undefined);
+      await this.deleteStoredAssets(storageNamespace, storageBackend, schema).catch(() => undefined);
       throw error;
     }
   }
 
   async list(worldBookId: string): Promise<InstalledAvgResourcePack[]> {
-    return this.withDatabase(async (database) => {
-      const transaction = database.transaction('packs', 'readonly');
-      const rows = await request<PackRow[]>(transaction.objectStore('packs').index('worldBookId').getAll(worldBookId));
+    return this.withDatabase(async (database, schema) => {
+      const storeName = schema === 'official-v1' ? OFFICIAL_STORES.packs : LEGACY_STORES.packs;
+      const indexName = schema === 'official-v1' ? OFFICIAL_STORES.worldBookIndex : LEGACY_STORES.worldBookIndex;
+      const transaction = database.transaction(storeName, 'readonly');
+      const rows = await request<Array<OfficialPackRow | LegacyPackRow>>(transaction.objectStore(storeName).index(indexName).getAll(worldBookId));
       await transactionDone(transaction);
-      return rows.map(({ manifest, installedAt, storageBackend }) => ({ manifest, installedAt, storageBackend }));
+      return schema === 'official-v1'
+        ? (rows as OfficialPackRow[]).map((row) => row.record)
+        : (rows as LegacyPackRow[]).map(({ manifest, installedAt, storageBackend }) => ({ manifest, installedAt, storageBackend }));
     });
   }
 
   async getActive(worldBookId: string): Promise<InstalledAvgResourcePack | undefined> {
-    return this.withDatabase(async (database) => {
-      const transaction = database.transaction(['active', 'packs'], 'readonly');
-      const active = await request<{ worldBookId: string; packId: string } | undefined>(transaction.objectStore('active').get(worldBookId));
-      const row = active ? await request<PackRow | undefined>(transaction.objectStore('packs').get(active.packId)) : undefined;
+    const details = await this.getActiveDetails(worldBookId);
+    return details?.record;
+  }
+
+  private async getActiveDetails(worldBookId: string): Promise<{
+    record: InstalledAvgResourcePack;
+    namespace: string;
+    schema: ResourceDatabaseSchema;
+  } | undefined> {
+    return this.withDatabase(async (database, schema) => {
+      const packStoreName = schema === 'official-v1' ? OFFICIAL_STORES.packs : LEGACY_STORES.packs;
+      const selectionStoreName = schema === 'official-v1' ? OFFICIAL_STORES.selections : LEGACY_STORES.selections;
+      const transaction = database.transaction([selectionStoreName, packStoreName], 'readonly');
+      const active = await request<{ worldBookId: string; packId?: string } | undefined>(transaction.objectStore(selectionStoreName).get(worldBookId));
+      const row = active?.packId
+        ? await request<OfficialPackRow | LegacyPackRow | undefined>(transaction.objectStore(packStoreName).get(active.packId))
+        : undefined;
       await transactionDone(transaction);
-      return row ? { manifest: row.manifest, installedAt: row.installedAt, storageBackend: row.storageBackend } : undefined;
+      if (!row) return undefined;
+      if (schema === 'official-v1') {
+        const record = (row as OfficialPackRow).record;
+        if (record.manifest.worldBookId !== worldBookId || record.validationStatus !== 'valid' || !record.storageNamespace) return undefined;
+        return { record, namespace: record.storageNamespace, schema };
+      }
+      const legacy = row as LegacyPackRow;
+      if (legacy.worldBookId !== worldBookId) return undefined;
+      return {
+        record: { manifest: legacy.manifest, installedAt: legacy.installedAt, storageBackend: legacy.storageBackend },
+        namespace: legacy.storagePackId ?? legacy.packId,
+        schema,
+      };
     });
   }
 
   async select(worldBookId: string, packId: string): Promise<void> {
-    await this.withDatabase(async (database) => {
-      const transaction = database.transaction(['packs', 'active'], 'readwrite');
-      const row = await request<PackRow | undefined>(transaction.objectStore('packs').get(packId));
-      if (!row || row.worldBookId !== worldBookId) { transaction.abort(); throw new Error('所选资源包不存在。'); }
-      transaction.objectStore('active').put({ worldBookId, packId });
+    await this.withDatabase(async (database, schema) => {
+      const packStoreName = schema === 'official-v1' ? OFFICIAL_STORES.packs : LEGACY_STORES.packs;
+      const selectionStoreName = schema === 'official-v1' ? OFFICIAL_STORES.selections : LEGACY_STORES.selections;
+      const transaction = database.transaction([packStoreName, selectionStoreName], 'readwrite');
+      const row = await request<OfficialPackRow | LegacyPackRow | undefined>(transaction.objectStore(packStoreName).get(packId));
+      const valid = schema === 'official-v1'
+        ? Boolean(row && (row as OfficialPackRow).worldBookId === worldBookId && (row as OfficialPackRow).record.validationStatus === 'valid')
+        : Boolean(row && (row as LegacyPackRow).worldBookId === worldBookId);
+      if (!valid) { transaction.abort(); throw new Error('所选 AVG 资源包不存在、世界不匹配或未通过校验。'); }
+      transaction.objectStore(selectionStoreName).put({ worldBookId, packId, updatedAt: new Date().toISOString() });
       await transactionDone(transaction);
     });
     emitChanged();
   }
 
   async uninstall(packId: string): Promise<void> {
-    let removedStorage: { namespace: string; backend: InstalledAvgResourcePack['storageBackend'] } | undefined;
-    await this.withDatabase(async (database) => {
-      const transaction = database.transaction([...stores], 'readwrite');
-      const packs = transaction.objectStore('packs');
-      const row = await request<PackRow | undefined>(packs.get(packId));
+    let removedStorage: { namespace: string; backend: InstalledAvgResourcePack['storageBackend']; schema: ResourceDatabaseSchema } | undefined;
+    await this.withDatabase(async (database, schema) => {
+      const packStoreName = schema === 'official-v1' ? OFFICIAL_STORES.packs : LEGACY_STORES.packs;
+      const selectionStoreName = schema === 'official-v1' ? OFFICIAL_STORES.selections : LEGACY_STORES.selections;
+      const transaction = database.transaction([packStoreName, selectionStoreName], 'readwrite');
+      const packs = transaction.objectStore(packStoreName);
+      const row = await request<OfficialPackRow | LegacyPackRow | undefined>(packs.get(packId));
       if (!row) { await transactionDone(transaction); return; }
-      const namespace = row.storagePackId ?? packId;
-      const backend = row.storageBackend ?? 'indexeddb';
-      removedStorage = { namespace, backend };
-      if (backend === 'indexeddb') {
-        const assets = transaction.objectStore('assets');
-        const keys = await request<IDBValidKey[]>(assets.index('packId').getAllKeys(namespace));
-        keys.forEach((key) => assets.delete(key));
-      }
+      const record = schema === 'official-v1' ? (row as OfficialPackRow).record : row as LegacyPackRow;
+      const worldBookId = schema === 'official-v1' ? (row as OfficialPackRow).worldBookId : (row as LegacyPackRow).worldBookId;
+      const namespace = schema === 'official-v1' ? record.storageNamespace : (record as LegacyPackRow).storagePackId ?? packId;
+      if (namespace) removedStorage = { namespace, backend: record.storageBackend ?? 'indexeddb', schema };
       packs.delete(packId);
-      const activeStore = transaction.objectStore('active');
-      const active = await request<{ worldBookId: string; packId: string } | undefined>(activeStore.get(row.worldBookId));
-      if (active?.packId === packId) activeStore.delete(row.worldBookId);
+      const activeStore = transaction.objectStore(selectionStoreName);
+      const active = await request<OfficialSelectionRow | undefined>(activeStore.get(worldBookId));
+      if (active?.packId === packId) {
+        if (schema === 'official-v1') activeStore.put({ ...active, packId: undefined, updatedAt: new Date().toISOString() });
+        else activeStore.delete(worldBookId);
+      }
       await transactionDone(transaction);
     });
-    if (removedStorage?.backend === 'opfs') await removeOpfsNamespace(removedStorage.namespace);
+    if (removedStorage) await this.deleteStoredAssets(removedStorage.namespace, removedStorage.backend, removedStorage.schema);
     emitChanged();
   }
 
   async lookupActiveAsset(worldBookId: string, assetId: string): Promise<Blob | undefined> {
-    return this.withDatabase(async (database) => {
-      const transaction = database.transaction(['active', 'assets', 'packs'], 'readonly');
-      const active = await request<{ worldBookId: string; packId: string } | undefined>(transaction.objectStore('active').get(worldBookId));
-      const pack = active
-        ? await request<PackRow | undefined>(transaction.objectStore('packs').get(active.packId))
-        : undefined;
-      const manifestAsset = pack?.manifest.assets.find((asset) => asset.assetId === assetId);
-      const storagePackId = pack?.storagePackId ?? active?.packId;
-      const key = storagePackId && manifestAsset && pack?.storagePackId
-        ? `${storagePackId}|${manifestAsset.path}`
-        : storagePackId ? `${storagePackId}|${assetId}` : undefined;
-      const row = pack?.storageBackend !== 'opfs' && key
-        ? await request<AssetRow | undefined>(transaction.objectStore('assets').get(key))
-        : undefined;
-      await transactionDone(transaction);
-      if (row?.blob) return row.blob;
-      return pack?.storageBackend === 'opfs' && storagePackId && manifestAsset
-        ? readOpfsAsset(storagePackId, manifestAsset.path)
-        : undefined;
-    });
+    const active = await this.getActiveDetails(worldBookId);
+    const manifestAsset = active?.record.manifest.assets.find((asset) => asset.assetId === assetId);
+    if (!active || !manifestAsset) return undefined;
+    return this.readTemporaryAsset(
+      active.namespace,
+      manifestAsset.path,
+      active.record.storageBackend,
+      active.schema,
+      assetId,
+    );
   }
 
   async lookupActiveResource(

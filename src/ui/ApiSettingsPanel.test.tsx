@@ -172,6 +172,10 @@ describe('ApiSettingsPanel', () => {
     expect(avgMarkup).toContain('no-referrer');
     expect(avgMarkup).toContain('AI 候选图');
     expect(avgMarkup).toContain('1122 项清单');
+    expect(avgMarkup).toContain('当前存档人物与场景状态');
+    expect(avgMarkup).toContain('人物绑定');
+    expect(avgMarkup).toContain('历史说话人');
+    expect(avgMarkup).toContain('历史场景');
   });
 
   it('persists encounter difficulty to only the selected save field', async () => {
@@ -341,6 +345,20 @@ describe('ApiSettingsPanel', () => {
     expect(markup).toContain('启用 NPC 动态模拟');
     expect(markup).toContain('每回合最多模拟 NPC 数');
     expect(markup).toContain('失败时自动跳过');
+  });
+
+  it('exposes reference-compatible execution modes for state writeback and other bundled features', () => {
+    const markup = renderToStaticMarkup(
+      <ApiSettingsPanel onClose={() => undefined} initialTab="stateWriteback" />,
+    );
+
+    expect(markup).toContain('功能执行与 API');
+    expect(markup).toContain('状态写回主要 API执行模式');
+    expect(markup).toContain('跟随主 API（合并到主回合）');
+    expect(markup).toContain('使用独立 API');
+    expect(markup).toContain('额外调用 0');
+    expect(markup).toContain('结构化结果合并到同一次主回合请求。');
+    expect(markup).not.toContain('状态写回备用 API');
   });
 
   it('warns only for non-local HTTP API base URLs', () => {

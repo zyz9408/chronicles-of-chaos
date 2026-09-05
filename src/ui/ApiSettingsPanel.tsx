@@ -2,11 +2,14 @@ import React, { useEffect, useMemo, useState } from 'react';
 import type { GameDifficultyLevel, NarrativePerspective, RuntimeState } from '../engine/types';
 import {
   API_MAX_OUTPUT_TOKEN_PRESETS,
+  API_FEATURE_EXECUTION_TASK_IDS,
   API_PROVIDER_OPTIONS,
   API_TASKS,
   createApiConfigDraft,
+  defaultApiFeatureExecutionModes,
   deleteApiConfigAsync,
   exportApiSettings,
+  getApiFeatureExecutionModesAsync,
   getApiConfigModels,
   getApiMaxOutputTokenGuidance,
   getApiMaxOutputTokenPresetId,
@@ -17,8 +20,12 @@ import {
   importApiSettings,
   listApiConfigsAsync,
   setApiTaskRouteAsync,
+  setApiFeatureExecutionModeAsync,
   upsertApiConfigAsync,
   type ApiConfigArchive,
+  type ApiFeatureExecutionMode,
+  type ApiFeatureExecutionModes,
+  type ApiFeatureExecutionTaskId,
   type ApiProviderId,
   type ApiTaskId,
   type ApiTaskRoute,
@@ -161,6 +168,11 @@ const cloneConfig = (config: ApiConfigArchive): ApiConfigArchive => ({
   models: [...getApiConfigModels(config)],
 });
 const emptyRoutes = (): ApiTaskRoutes => Object.fromEntries(API_TASKS.map((task) => [task.id, null])) as ApiTaskRoutes;
+const featureExecutionTaskIds = new Set<ApiTaskId>(API_FEATURE_EXECUTION_TASK_IDS);
+const featureFallbackParents: Partial<Record<ApiTaskId, ApiFeatureExecutionTaskId>> = {
+  stateWritebackFallback: 'stateWriteback',
+  npcCompletionFallback: 'npcCompletion',
+};
 
 export function pickApiEditorConfig(
   configs: ApiConfigArchive[],
@@ -270,6 +282,9 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
   const [featureNotice, setFeatureNotice] = useState('');
   const [configs, setConfigs] = useState<ApiConfigArchive[]>([]);
   const [routes, setRoutes] = useState<ApiTaskRoutes>(() => emptyRoutes());
+  const [featureExecutionModes, setFeatureExecutionModes] = useState<ApiFeatureExecutionModes>(
+    defaultApiFeatureExecutionModes,
+  );
   const [editing, setEditing] = useState<ApiConfigArchive>(() => createApiConfigDraft());
   const [modelsText, setModelsText] = useState('');
   const [modelStatus, setModelStatus] = useState('');
@@ -378,10 +393,14 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
   };
 
   const refresh = async (nextEditing?: ApiConfigArchive) => {
-    const nextConfigs = await listApiConfigsAsync();
-    const nextRoutes = await getApiTaskRoutesAsync();
+    const [nextConfigs, nextRoutes, nextFeatureExecutionModes] = await Promise.all([
+      listApiConfigsAsync(),
+      getApiTaskRoutesAsync(),
+      getApiFeatureExecutionModesAsync(),
+    ]);
     setConfigs(nextConfigs);
     setRoutes(nextRoutes);
+    setFeatureExecutionModes(nextFeatureExecutionModes);
     if (nextEditing) {
       selectEditingConfig(
         nextConfigs.find((config) => config.id === nextEditing.id) ?? nextEditing,
@@ -478,6 +497,14 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
     setRoutes(await getApiTaskRoutesAsync());
   };
 
+  const handleFeatureExecutionModeChange = async (
+    taskId: ApiFeatureExecutionTaskId,
+    mode: ApiFeatureExecutionMode,
+  ) => {
+    await setApiFeatureExecutionModeAsync(taskId, mode);
+    setFeatureExecutionModes(await getApiFeatureExecutionModesAsync());
+  };
+
   const handleExportSettings = async () => {
     try {
       downloadJsonFile(`coc-v2-api-settings-${dateStamp()}.json`, await exportApiSettings());
@@ -543,8 +570,7 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
     }
   };
 
-  const renderRouteRows = (taskIds: ApiTaskId[]) => (
-    taskIds.map((taskId) => {
+  const renderDedicatedRouteRow = (taskId: ApiTaskId) => {
       const task = taskById.get(taskId);
       if (!task) return null;
       const route = routes[task.id];
@@ -573,14 +599,7 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
                   void handleRouteChange(task.id, config ? { configId: config.id, model } : null);
                 }}
               >
-                <option value="">
-                  {task.id === 'npcSimulation'
-                    || task.id === 'stateWritebackFallback'
-                    || task.id === 'npcCompletionFallback'
-                    || task.id === 'letterPolish'
-                    ? '未配置'
-                    : '自动回退'}
-                </option>
+                <option value="">未配置</option>
                 {configOptions.map((config) => (
                   <option key={config.id} value={config.id}>{config.label}</option>
                 ))}
@@ -607,8 +626,72 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
           </div>
         </div>
       );
-    })
-  );
+  };
+
+  const renderBundledMainSummary = (taskId: ApiFeatureExecutionTaskId) => {
+    const mainRoute = routes.mainNarrative;
+    const mainConfig = mainRoute
+      ? configs.find((config) => config.id === mainRoute.configId)
+      : configs[0];
+    const mainModel = mainRoute?.model || (mainConfig ? getApiConfigModels(mainConfig)[0] ?? '' : '');
+    const summary = mainConfig
+      ? `${mainConfig.name} · ${getProviderLabel(mainConfig.provider)}${mainModel ? ` · ${mainModel}` : ''}`
+      : '尚未配置主 API';
+
+    return (
+      <div className="route-row bundled-main-summary" key={`${taskId}-bundled-summary`}>
+        <div>
+          <strong>主 API 配置</strong>
+          <p>{summary}</p>
+        </div>
+        <div className="route-selectors" aria-label={`${taskId} 跟随主 API 摘要`}>
+          <strong>额外调用 0</strong>
+          <span>结构化结果合并到同一次主回合请求。</span>
+        </div>
+      </div>
+    );
+  };
+
+  const renderRouteRows = (taskIds: ApiTaskId[]) => taskIds.flatMap((taskId) => {
+    const fallbackParent = featureFallbackParents[taskId];
+    if (fallbackParent && featureExecutionModes[fallbackParent] !== 'dedicated') return [];
+    if (!featureExecutionTaskIds.has(taskId)) return [renderDedicatedRouteRow(taskId)];
+
+    const executionTaskId = taskId as ApiFeatureExecutionTaskId;
+    const mode = featureExecutionModes[executionTaskId];
+    const task = taskById.get(taskId);
+    if (!task) return [];
+    const modeRow = (
+      <div className="route-row feature-execution-mode-row" key={`${taskId}-execution-mode`}>
+        <div>
+          <strong>{task.label}执行模式</strong>
+          <p>选择合并到主回合，或使用独立 API 执行该功能。</p>
+        </div>
+        <div className="route-selectors">
+          <label>
+            执行模式
+            <select
+              aria-label={`${task.label}执行模式`}
+              value={mode}
+              onChange={(event) => {
+                void handleFeatureExecutionModeChange(
+                  executionTaskId,
+                  event.target.value as ApiFeatureExecutionMode,
+                );
+              }}
+            >
+              <option value="bundledMain">跟随主 API（合并到主回合）</option>
+              <option value="dedicated">使用独立 API</option>
+            </select>
+          </label>
+        </div>
+      </div>
+    );
+
+    return mode === 'bundledMain'
+      ? [modeRow, renderBundledMainSummary(executionTaskId)]
+      : [modeRow, renderDedicatedRouteRow(taskId)];
+  });
 
   const renderApiEditor = (onCancel?: () => void) => (
     <div className="api-editor">
@@ -1341,8 +1424,8 @@ export const ApiSettingsPanel: React.FC<ApiSettingsPanelProps> = ({
 
               {activeFunctionPanel.routeTaskIds.length > 0 ? (
                 <div className="task-routing feature-task-routing">
-                  <h3>功能 API 路由</h3>
-                  <p>这里只选择该功能使用的 API 档案与模型；接口地址和密钥统一保存在 API 配置中。</p>
+                  <h3>功能执行与 API</h3>
+                  <p>跟随模式合并到同一次主回合请求；独立模式才选择专用 API 档案与模型。</p>
                   {renderRouteRows(activeFunctionPanel.routeTaskIds)}
                 </div>
               ) : (
