@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.8.4';
+export const APP_VERSION = '1.8.7';
 export const APP_VERSION_LABEL = `v${APP_VERSION}`;
 export const CHANGELOG_DAILY_VIEW_KEY = 'coc_v2_changelog_daily_view';
 export const LEGACY_RELEASE_NOTE_SEEN_KEY = 'coc_v2_seen_release_note';
@@ -19,6 +19,21 @@ export interface ReleaseNoteEntry {
 }
 
 export const RELEASE_NOTES: readonly ReleaseNoteEntry[] = [
+  {
+    id: '2026-09-09', date: '2026年9月9日', updates: [{
+      id: '2026-09-09-v1.8.7-compatible-custom', time: '00:26', version: 'v1.8.7',
+      title: '1.8.7 兼容升级 · 保留定制功能',
+      summary: '对齐参考网页 1.8.5～1.8.7 的存档与人物稳定性改进；保留本项目的战斗规则、玩家权威能力和 AVG 生图图库。',
+      items: [
+        '失败回合的恢复任务在后续成功回合后退出，历史诊断仍保留；当前失败回合的完整性校验继续有效。',
+        '固定历史人物的展示身份与 NPC 身份分开管理，仅在唯一一致时桥接；保留生日、父母关系、后台演化与战斗状态。',
+        '换装、卸装、移除物品和成长点操作保存成功后再更新界面；拒绝过期回合覆盖较新状态，回合提交减少全量存档读取。',
+        'OPFS 被安全策略阻断时改用 IndexedDB 并重新校验；流式请求收到普通 JSON 正文时可直接读取，不额外调用模型。',
+        '保留三国志式手绘生图、可选 NPC 与路人、同类图库随机后固定绑定和严格资源包选图；不自动重生成旧图片。',
+        '这是基于公开发布行为重建的可编辑定制版，不是原作者 1.8.7 源码；GitHub Pages 不提供 Cloudflare 云存档后端。',
+      ],
+    }],
+  },
   {
     id: '2026-09-05', date: '2026年9月5日', updates: [{
       id: '2026-09-05-v1.8.4-combat-authority-rules', time: '01:45', version: 'v1.8.4',

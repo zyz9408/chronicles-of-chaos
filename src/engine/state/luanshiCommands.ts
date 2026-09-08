@@ -994,6 +994,13 @@ export function validateLuanShiCommand(
   const errors: string[] = [];
   const warnings: string[] = [];
 
+  const hasVisualNpcReference = (value: unknown, field = ''): boolean => {
+    if (typeof value === 'string') return /^(npcId|targetNpcId|targetNpcIds|motherNpcId|fatherCharacterId|characterId|presentNpcIds|involvedNpcIds)$/u.test(field) && /^(avg-presentation:|avg-local:)/u.test(value);
+    if (Array.isArray(value)) return value.some((item) => hasVisualNpcReference(item, field));
+    return Boolean(value && typeof value === 'object' && Object.entries(value).some(([key, item]) => hasVisualNpcReference(item, key)));
+  };
+  if (hasVisualNpcReference(command)) return { valid: false, errors: ['AVG 展示身份不能直接写入人物志或世界状态；必须先解析为唯一合法 NPC ID。'], warnings };
+
   if (command.action === 'recordTurnEvent') {
     validateRecordTurnEventCommand(normalized, command, errors);
     return { valid: errors.length === 0, errors, warnings };

@@ -348,7 +348,7 @@ export class IndexedDbAvgVisualOverrideRepository {
     }
   }
 
-  async lookup(target: AvgVisualTarget, options: { actorProfile?: AvgPortraitMatchProfile; rememberMatch?: boolean } = {}): Promise<
+  async lookup(target: AvgVisualTarget, options: { actorProfile?: AvgPortraitMatchProfile; rememberMatch?: boolean; actorAliases?: string[] } = {}): Promise<
     | { status: 'missing' }
     | { status: 'asset-missing'; record: AvgVisualOverrideRecord }
     | { status: 'found'; record: AvgVisualOverrideRecord; blob: Blob }
@@ -385,6 +385,18 @@ export class IndexedDbAvgVisualOverrideRepository {
         return assetMatches(record, asset)
           ? { status: 'found', record, blob: asset!.blob }
           : { status: 'asset-missing', record };
+      }
+      if (target.kind === 'actor' && options.actorAliases?.length === 1) {
+        const aliasTarget = { ...target, actorId: options.actorAliases[0] };
+        const previous = await request<AvgVisualOverrideRecord | undefined>(overrides.get(avgVisualTargetKey(aliasTarget)));
+        if (previous) {
+          const asset = await request<AvgVisualAsset | undefined>(transaction.objectStore('assets').get(previous.assetId));
+          if (assetMatches(previous, asset)) {
+            const linked: AvgVisualOverrideRecord = { ...previous, key: avgVisualTargetKey(target), actorId: target.actorId, sourceActorId: aliasTarget.actorId, portraitScope: 'actor-bound' };
+            if (options.rememberMatch) await request(overrides.put(linked));
+            return { status: 'found', record: linked, blob: asset!.blob };
+          }
+        }
       }
       if (target.kind === 'actor' && options.actorProfile) {
         const rows = await request<AvgVisualOverrideRecord[]>(overrides.index('visualPartitionId').getAll(target.visualPartitionId));

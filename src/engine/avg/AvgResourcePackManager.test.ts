@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { strToU8, zipSync } from 'fflate';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AVG_RESOURCE_PACK_FORMAT,
   AvgResourcePackManager,
@@ -142,6 +142,26 @@ async function seedBrokenReconstructedDatabase(): Promise<void> {
 afterEach(async () => resetAvgResourcePackDatabaseForTests(databaseName));
 
 describe('AvgResourcePackManager', () => {
+  it('revalidates in IndexedDB after OPFS policy denial, including denial during file creation', async () => {
+    for (const late of [false, true]) {
+      const directory = { getDirectoryHandle: async () => directory, getFileHandle: async () => { throw new DOMException('Blocked', 'SecurityError'); } };
+      vi.stubGlobal('navigator', { storage: { getDirectory: async () => { if (!late) throw new DOMException('Blocked', 'SecurityError'); return directory; } } });
+      try {
+        const installed = await new AvgResourcePackManager(databaseName).install(await archive());
+        expect(installed.storageBackend).toBe('indexeddb');
+        expect(await new AvgResourcePackManager(databaseName).lookupActiveAsset('testWorldBook', 'avg:threeKingdoms:scene:place_test:base')).toBeInstanceOf(Blob);
+      } finally { vi.unstubAllGlobals(); }
+    }
+  });
+  it('does not disguise quota failure as fallback success or remove the prior pack', async () => {
+    const manager = new AvgResourcePackManager(databaseName);
+    const original = await manager.install(await archive());
+    vi.stubGlobal('navigator', { storage: { getDirectory: async () => { throw new DOMException('Full', 'QuotaExceededError'); } } });
+    try {
+      await expect(manager.install(await archive())).rejects.toThrow('Full');
+      expect((await manager.getActive('testWorldBook'))?.storageNamespace).toBe(original.storageNamespace);
+    } finally { vi.unstubAllGlobals(); }
+  });
   it('reads the exact IndexedDB schema used by cocsg.pages.dev v1.8.4', async () => {
     await seedOnlineV184Database();
     const manager = new AvgResourcePackManager(databaseName);

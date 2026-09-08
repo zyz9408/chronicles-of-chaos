@@ -59,6 +59,16 @@ const baseState: RuntimeState = {
 };
 
 describe('applyLuanShiCommand', () => {
+  it('profile completion preserves fixed identity, parent links, background evolution and combat state', () => {
+    const current = { ...baseState.npcs![0], worldBookIdentity: { worldBookId: 'threeKingdoms', canonicalId: 'test-fixed' }, parentLinks: { motherNpcId: 'mother' }, backgroundEvolutionMeta: { lastEvolvedAt: 'before' }, combatStatuses: ['wounded'] };
+    const result = applyLuanShiCommand({ ...baseState, npcs: [current] } as RuntimeState, { ...baseState.npcs![0], action: 'upsertNpcProfile', summary: '完整补档' } as never);
+    expect(result.npcs[0]).toMatchObject({ worldBookIdentity: current.worldBookIdentity, parentLinks: current.parentLinks, backgroundEvolutionMeta: current.backgroundEvolutionMeta, combatStatuses: ['wounded'] });
+  });
+  it('ordinary bond updates preserve members without a full NPC profile', () => {
+    const state = { ...baseState, bondThreads: [{ bondThreadId: 'bond', targetNames: ['陈达', '未建档友人'], targetNpcIds: ['npc_guard'], bondType: 'sworn' as const, status: 'active' as const, summary: '约定', lastUpdatedAt: baseState.currentDate }] };
+    const next = applyLuanShiCommand(state, { action: 'upsertBondThread', bondThreadId: 'bond', summary: '更新约定' });
+    expect(next.bondThreads[0].targetNames).toEqual(['陈达', '未建档友人']);
+  });
   it('rejects an incomplete identity change and preserves the stable profile', () => {
     const state = {
       ...baseState,

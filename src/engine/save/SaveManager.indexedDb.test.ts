@@ -308,6 +308,14 @@ async function injectNthPutFailure(
 }
 
 describe('SaveManager IndexedDB persistence', () => {
+  it('rejects a stale state mutation and turn without overwriting a newer save', async () => {
+    const save = await createSave(makeState('旧状态'));
+    const updated = { ...save.runtimeState, player: { ...save.runtimeState.player, name: '新状态' } };
+    await saveManager.saveCurrentState(save.id, updated, { expectedRuntimeState: save.runtimeState });
+    await expect(saveManager.saveCurrentState(save.id, save.runtimeState, { expectedRuntimeState: save.runtimeState })).rejects.toThrow('存档已发生变化');
+    await expect(saveManager.commitSuccessfulTurn({ saveId: save.id, runtimeState: makeStateWithTurns('过期回合', 1), expectedRuntimeState: save.runtimeState, turnNumber: 1, snapshot: { beforeState: save.runtimeState, actionText: '继续', createdAt: new Date().toISOString() }, maxDepth: 3 })).rejects.toThrow('存档已发生变化');
+    expect((await loadSave(save.id))?.runtimeState.player.name).toBe('新状态');
+  });
   beforeEach(async () => {
     await resetLocalDatabaseForTests();
     registerWorldBook({

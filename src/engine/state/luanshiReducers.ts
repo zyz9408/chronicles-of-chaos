@@ -1302,7 +1302,8 @@ function applyBondThreadUpsert(
     }
   }
   if (nextEntry.targetNpcIds?.length) {
-    nextEntry.targetNames = nextEntry.targetNpcIds.map((targetNpcId) => state.npcs.find((npc) => npc.npcId === targetNpcId)!.name);
+    const preservedNames = command.targetNpcIds === undefined ? existing?.targetNames ?? [] : [];
+    nextEntry.targetNames = cleanUniqueStringList([...preservedNames, ...nextEntry.targetNpcIds.map((targetNpcId) => state.npcs.find((npc) => npc.npcId === targetNpcId)!.name)]);
   }
   if (hasOwnField(command, 'tags') && command.tags !== undefined) {
     if (!command.tags || command.tags.length === 0) delete nextEntry.tags;
@@ -1519,6 +1520,7 @@ function applyNpcProfileUpsert(
   });
   const currentAge = deriveCurrentAgeFromBirthDate(birthDate, state.currentDate) ?? command.age;
   const nextNpc: LuanShiNpc = {
+    ...(existing ? structuredClone(existing) : {}),
     npcId: command.npcId.trim(),
     name: command.name.trim(),
     ...optionalStringField('courtesyName', command.courtesyName),
@@ -1578,6 +1580,7 @@ function applyNpcProfileUpsert(
       : {}),
     memories: existing?.memories ? [...existing.memories] : [],
   };
+  delete nextNpc.ageKnownAtDate;
 
   return {
     ...state,

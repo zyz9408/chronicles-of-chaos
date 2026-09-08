@@ -400,6 +400,7 @@ export interface LuanShiNpcFemaleProfile {
 }
 
 export interface LuanShiNpc {
+  worldBookIdentity?: { worldBookId: string; canonicalId: string };
   npcId: string;
   name: string;
   courtesyName?: string;

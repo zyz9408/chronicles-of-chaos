@@ -3,6 +3,7 @@
 // 回合流程编排器 - 统一协调整个回合流程
 // ============================================================
 
+import { bridgeFixedNpcResponse } from '../identity/FixedNpcIdentityBridge';
 import type {
   WorldBook,
   RuntimeState,
@@ -577,7 +578,7 @@ export async function executeTurn(
     (event) => event.stage === 'generatingNarrative' && event.status === 'finished',
   )?.elapsedMs;
   turnLlmBudget.throwIfExceeded();
-  let narratorResponse = generation.response;
+  let narratorResponse = bridgeFixedNpcResponse(runtimeState, generation.response);
   if (featureExecutionModes.npcSimulation === 'bundledMain') {
     npcIntentSimulation = resolveBundledNpcSimulation(
       narratorResponse,
@@ -3002,6 +3003,7 @@ async function generateNarratorResponse(input: GenerateNarratorResponseInput): P
         );
       }
     }
+    response = bridgeFixedNpcResponse(input.runtimeState, response);
     response = materializeStructuredTurnSummaryStatePatches(
       response,
       input.runtimeState,

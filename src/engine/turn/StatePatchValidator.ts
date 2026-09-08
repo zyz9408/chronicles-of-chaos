@@ -104,6 +104,12 @@ export function validatePatch(
 
   // Global restrictions inspect the raw payload so contract canonicalization cannot discard forbidden writes.
   validateRawPayloadGlobalRestrictions(patch, errors);
+  const hasVisualWorldReference = (value: unknown, key = ''): boolean => {
+    if (typeof value === 'string') return /^(?:id|.*Id|.*Ids)$/u.test(key) && /^(avg-presentation:|avg-local:)/u.test(value);
+    if (Array.isArray(value)) return value.some((item) => hasVisualWorldReference(item, key));
+    return Boolean(value && typeof value === 'object' && Object.entries(value).some(([field, item]) => hasVisualWorldReference(item, field)));
+  };
+  if (hasVisualWorldReference(patch.payload)) errors.push('AVG 展示 ID 不能直接写入世界状态；需要唯一合法的人物身份。');
   const normalizedPatch = normalizeStatePatchContract(normalizeLuanShiCommandPatch(patch));
 
   // 1. patch 类型是否在白名单内

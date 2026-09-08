@@ -970,6 +970,7 @@ export const GameScreen: React.FC<Props> = ({
   const shouldFollowNarrativeBottomRef = useRef(true);
   const mountedRef = useRef(false);
   const activeExecutionRef = useRef<TurnExecutionContext | null>(null);
+  const playerMutationBusyRef = useRef(false);
   const processingStageEventsRef = useRef<TurnProcessingStageEvent[]>([]);
   const runtimeStateRef = useRef(runtimeState);
   const avgMaterializationKeysRef = useRef(new Set<string>());
@@ -1454,6 +1455,7 @@ export const GameScreen: React.FC<Props> = ({
     actionText: string,
     parentExecution?: TurnExecutionContext,
   ): Promise<'success' | 'failed' | 'cancelled'> => {
+    if (playerMutationBusyRef.current) return 'cancelled';
     const execution = parentExecution ?? beginExecution();
     const ownsExecution = !parentExecution;
     let preserveProcessingTrace = false;
@@ -1626,6 +1628,7 @@ export const GameScreen: React.FC<Props> = ({
           runtimeState: committedRuntimeState,
           turnNumber: snapshotTurnNumber,
           snapshot: rollbackCandidate,
+          expectedRuntimeState: baseState,
           maxDepth: loadSnapshotDepthFromStorage(),
           autoSave: {
             intervalTurns: loadAutoSaveIntervalTurnsFromStorage(),
@@ -1861,6 +1864,7 @@ export const GameScreen: React.FC<Props> = ({
           runtimeState: completed,
           turnNumber,
           snapshot: rollbackCandidate,
+          expectedRuntimeState: baseState,
           maxDepth: loadSnapshotDepthFromStorage(),
           autoSave: {
             intervalTurns: loadAutoSaveIntervalTurnsFromStorage(),
@@ -2057,6 +2061,7 @@ export const GameScreen: React.FC<Props> = ({
           runtimeState: completed,
           turnNumber,
           snapshot: rollbackCandidate,
+          expectedRuntimeState: baseState,
           maxDepth: loadSnapshotDepthFromStorage(),
           autoSave: {
             intervalTurns: loadAutoSaveIntervalTurnsFromStorage(),
@@ -2617,7 +2622,29 @@ export const GameScreen: React.FC<Props> = ({
     setActiveSystemPanel('backpack');
   }, []);
 
+  const commitPlayerMutation = useCallback(async (nextState: RuntimeState, onCommitted: () => void) => {
+    if (isProcessing || isMemorySummaryProcessing || playerMutationBusyRef.current) return;
+    playerMutationBusyRef.current = true;
+    const expected = runtimeStateRef.current;
+    const execution = beginExecution();
+    setIsProcessing(true);
+    try {
+      const saved = await saveCurrentState(saveId, nextState, { signal: execution.signal, expectedRuntimeState: expected });
+      assertExecutionCurrent(execution);
+      if (!saved) throw new Error('当前存档不存在。');
+      runtimeStateRef.current = saved.runtimeState;
+      setRuntimeState(saved.runtimeState);
+      onCommitted();
+    } catch (error) {
+      if (isExecutionCurrent(execution)) setMessage(`保存失败，未应用修改：${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      playerMutationBusyRef.current = false;
+      if (isExecutionCurrent(execution)) { setIsProcessing(false); executionOwner.finish(execution); }
+    }
+  }, [isProcessing, isMemorySummaryProcessing, beginExecution, saveId, assertExecutionCurrent, isExecutionCurrent, executionOwner]);
+
   const handleEquipInventoryItem = useCallback((itemId: string, slot?: EquipmentSlot, treasureIndex?: number) => {
+    if (isProcessing || isMemorySummaryProcessing || playerMutationBusyRef.current) return;
     const nextPlayer = equipInventoryItem(runtimeState.player, itemId, { slot, treasureIndex });
     if (nextPlayer === runtimeState.player) {
       setMessage('该物品不能装备到这个槽位。');
@@ -2627,12 +2654,8 @@ export const GameScreen: React.FC<Props> = ({
       ...runtimeState,
       player: nextPlayer,
     };
-    setRuntimeState(nextState);
-    setEquipmentChooserSlot(null);
-    void saveCurrentState(saveId, nextState).catch((error) => {
-      setMessage(`换装保存失败：${error instanceof Error ? error.message : '未知错误'}`);
-    });
-  }, [runtimeState, saveId]);
+    void commitPlayerMutation(nextState, () => { setEquipmentChooserSlot(null); setMessage('换装已保存。'); });
+  }, [runtimeState, isProcessing, isMemorySummaryProcessing, commitPlayerMutation]);
 
   const handleUnequipInventoryItem = useCallback((
     itemId: string,
@@ -2640,6 +2663,7 @@ export const GameScreen: React.FC<Props> = ({
     itemName?: string,
     treasureIndex?: number,
   ) => {
+    if (isProcessing || isMemorySummaryProcessing || playerMutationBusyRef.current) return;
     const nextPlayer = unequipInventoryItem(runtimeState.player, itemId, {
       slot,
       itemName,
@@ -2653,14 +2677,12 @@ export const GameScreen: React.FC<Props> = ({
       ...runtimeState,
       player: nextPlayer,
     };
-    setRuntimeState(nextState);
-    setEquipmentChooserSlot(null);
-    setSelectedBackpackItemId(null);
-    setMessage(`已卸下「${itemName ?? '装备'}」，物品仍保留在背包。`);
-    void saveCurrentState(saveId, nextState).catch((error) => {
-      setMessage(`卸装保存失败：${error instanceof Error ? error.message : '未知错误'}`);
+    void commitPlayerMutation(nextState, () => {
+      setEquipmentChooserSlot(null);
+      setSelectedBackpackItemId(null);
+      setMessage(`已卸下「${itemName ?? '装备'}」，物品仍保留在背包。`);
     });
-  }, [runtimeState, saveId]);
+  }, [runtimeState, isProcessing, isMemorySummaryProcessing, commitPlayerMutation]);
 
   const commitCorrespondenceState = useCallback(async (
     nextState: RuntimeState,
@@ -2782,7 +2804,7 @@ export const GameScreen: React.FC<Props> = ({
   ]);
 
   const handleConfirmInventoryRemoval = useCallback(() => {
-    if (!pendingInventoryRemoval) return;
+    if (!pendingInventoryRemoval || isProcessing || isMemorySummaryProcessing || playerMutationBusyRef.current) return;
     const nextPlayer = removePlayerItem(runtimeState.player, pendingInventoryRemoval.id);
     if (nextPlayer === runtimeState.player) {
       setPendingInventoryRemoval(null);
@@ -2796,14 +2818,12 @@ export const GameScreen: React.FC<Props> = ({
       player: nextPlayer,
     };
     const removedName = pendingInventoryRemoval.name;
-    setRuntimeState(nextState);
-    setPendingInventoryRemoval(null);
-    setSelectedBackpackItemId(null);
-    setMessage(`已移除「${removedName}」。`);
-    void saveCurrentState(saveId, nextState).catch((error) => {
-      setMessage(`物品移除保存失败：${error instanceof Error ? error.message : '未知错误'}`);
+    void commitPlayerMutation(nextState, () => {
+      setPendingInventoryRemoval(null);
+      setSelectedBackpackItemId(null);
+      setMessage(`已移除「${removedName}」。`);
     });
-  }, [pendingInventoryRemoval, runtimeState, saveId]);
+  }, [pendingInventoryRemoval, runtimeState, isProcessing, isMemorySummaryProcessing, commitPlayerMutation]);
 
   const handleUseRestorativeItem = useCallback(async (itemId: string) => {
     if (usingBackpackItemId || isProcessing || isMemorySummaryProcessing) return;
@@ -2843,6 +2863,7 @@ export const GameScreen: React.FC<Props> = ({
   ]);
 
   const handleAllocateGrowthPoint = useCallback((abilityKey: string) => {
+    if (isProcessing || isMemorySummaryProcessing || playerMutationBusyRef.current) return;
     const result = allocatePlayerGrowthPoint(runtimeState.player, abilityKey);
     if (!result.applied) {
       setMessage(result.reason === 'no_growth_points' ? '没有可分配的成长点。' : '该能力不能通过成长点提升。');
@@ -2852,12 +2873,8 @@ export const GameScreen: React.FC<Props> = ({
       ...runtimeState,
       player: result.player,
     };
-    setRuntimeState(nextState);
-    setMessage(`已将 1 点成长点分配到${abilityKey}。`);
-    void saveCurrentState(saveId, nextState).catch((error) => {
-      setMessage(`成长点保存失败：${error instanceof Error ? error.message : '未知错误'}`);
-    });
-  }, [runtimeState, saveId]);
+    void commitPlayerMutation(nextState, () => setMessage(`已将 1 点成长点分配到${abilityKey}。`));
+  }, [runtimeState, isProcessing, isMemorySummaryProcessing, commitPlayerMutation]);
 
   /* 渲染层数（仅 UI 显示，不影响 LLM/状态） */
   const dismissBattleBriefing = useCallback(() => {
@@ -2948,7 +2965,7 @@ export const GameScreen: React.FC<Props> = ({
     avgMaterializationKeysRef.current.add(key);
     runtimeStateRef.current = materialized.state;
     setRuntimeState(materialized.state);
-    void saveCurrentState(saveId, materialized.state).then((saved) => {
+    void saveCurrentState(saveId, materialized.state, { expectedRuntimeState: sourceState }).then((saved) => {
       if (!saved) throw new Error('当前存档不存在');
     }).catch((error) => {
       avgMaterializationKeysRef.current.delete(key);
@@ -4948,7 +4965,7 @@ export const GameScreen: React.FC<Props> = ({
                               <button
                                 type="button"
                                 className="player-ability-plus"
-                                disabled={!canAllocate}
+                                disabled={!canAllocate || isProcessing || isMemorySummaryProcessing}
                                 title={canAllocate ? `消耗 1 点成长点提升${key}` : '没有可分配的成长点'}
                                 onClick={() => handleAllocateGrowthPoint(key)}
                               >

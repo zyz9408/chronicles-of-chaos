@@ -3,12 +3,13 @@ import {
   APP_VERSION,
   APP_VERSION_LABEL,
   CHANGELOG_DAILY_VIEW_KEY,
-  RELEASE_NOTES as RAW_RELEASE_NOTES,
+  RELEASE_NOTES as VERSIONED_RELEASE_NOTES,
   formatLocalDateKey,
   recordDailyReleaseNotesView,
   shouldShowDailyReleaseNotes,
 } from './releaseNotes';
 
+const RAW_RELEASE_NOTES = VERSIONED_RELEASE_NOTES.slice(1);
 const ALL_RELEASE_NOTES = RAW_RELEASE_NOTES.slice(16);
 const RELEASE_NOTES = RAW_RELEASE_NOTES.slice(21);
 
@@ -25,9 +26,11 @@ class MemoryStorage {
 }
 
 describe('releaseNotes', () => {
-  it('exposes the current release and its exact publication time', () => {
-    expect(APP_VERSION).toBe('1.8.4');
-    expect(APP_VERSION_LABEL).toBe('v1.8.4');
+  it('exposes the compatible custom release and retains historical publication details', () => {
+    expect(APP_VERSION).toBe('1.8.7');
+    expect(APP_VERSION_LABEL).toBe('v1.8.7');
+    expect(VERSIONED_RELEASE_NOTES[0].updates[0].title).toContain('兼容升级');
+    expect(VERSIONED_RELEASE_NOTES[0].updates[0].items.join('')).toContain('不是原作者');
     expect(RAW_RELEASE_NOTES).toHaveLength(26);
     expect(RAW_RELEASE_NOTES[0]?.id).toBe('2026-09-05');
     expect(RAW_RELEASE_NOTES[0]?.date).toBe('2026年9月5日');

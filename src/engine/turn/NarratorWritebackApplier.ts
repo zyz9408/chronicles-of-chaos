@@ -1,3 +1,4 @@
+import { bridgeFixedNpcResponse } from '../identity/FixedNpcIdentityBridge';
 import type {
   MemoryImportance,
   NpcAwarenessSourceType,
@@ -372,6 +373,8 @@ export function applyNarratorWriteback(
       diagnostics: [],
     };
   }
+
+  writeback = bridgeFixedNpcResponse(state, { narrativeText: '', suggestedActions: [], statePatch: null, writeback }).writeback!;
 
   let nextState: RuntimeState = ensureLuanShiState(JSON.parse(JSON.stringify(state)));
   const appliedSummaries: string[] = [];

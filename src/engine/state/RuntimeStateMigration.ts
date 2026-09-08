@@ -20,6 +20,8 @@ import {
   findExistingHoldingByLedgerIdentity,
 } from './createInitialRuntimeState';
 import { recoverRejectedCurrentSceneNpcMemories } from './NpcMemoryWritebackRecovery';
+import { retireSupersededStateWritebackRecovery } from './StateWritebackRecovery';
+import { linkFixedNpcIdentities } from '../identity/FixedNpcIdentityBridge';
 import { parseNarratorResponse } from '../turn/NarratorResponseParser';
 import { resolveNpcBackgroundActivityAgainstCurrentMatters } from './currentMatterLifecycle';
 import { normalizeLoadoutOwner } from '../character/loadoutIdentity';
@@ -99,7 +101,7 @@ export function migrateRuntimeStateForPersistence(
     });
   }
   return {
-    state: normalizeRuntimeState(state, worldBook, diagnostics, context.metrics),
+    state: linkFixedNpcIdentities(retireSupersededStateWritebackRecovery(normalizeRuntimeState(state, worldBook, diagnostics, context.metrics))),
     complete: !seedDependentMigrationUnavailable,
     diagnostics,
   };

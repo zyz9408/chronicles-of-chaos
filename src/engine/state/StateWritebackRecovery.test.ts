@@ -8,6 +8,7 @@ import {
   inspectStateWritebackRecovery,
   previewStateWritebackRecovery,
   upgradeLegacyStateWritebackRecovery,
+  retireSupersededStateWritebackRecovery,
 } from './StateWritebackRecovery';
 import { materializeAvgPresentation } from '../avg/AvgPresentationMaterializer';
 import { compactRuntimeStateForPersistence } from '../save/RuntimeStateCompaction';
@@ -77,6 +78,17 @@ function makeCapsuleState(schemaVersion: 2 | 3 = 3) {
 }
 
 describe('StateWritebackRecovery', () => {
+  it('retires only a superseded repair while keeping frozen historical diagnostics', () => {
+    const { post } = makeCapsuleState();
+    const frozen = structuredClone(post.turnLog[0]);
+    post.turnLog.push({ ...post.turnLog[0], turnNumber: 2, timestamp: 'new', displayMeta: undefined });
+    const retired = retireSupersededStateWritebackRecovery(post);
+    expect(retired.stateWritebackRecovery).toBeUndefined();
+    expect(retired.turnLog[0]).toEqual(frozen);
+    expect(inspectStateWritebackRecovery(retired, verifier).status).toBe('none');
+    const pending = makeCapsuleState().post;
+    expect(retireSupersededStateWritebackRecovery(pending)).toBe(pending);
+  });
   it('creates a v3 capsule anchored to the committed source turn', () => {
     const { post, capsule } = makeCapsuleState();
 
@@ -204,7 +216,7 @@ describe('StateWritebackRecovery', () => {
     const { post } = makeCapsuleState();
     post.turnLog.push({ ...post.turnLog[0], turnNumber: 2, timestamp: 'later', displayMeta: undefined });
     expect(finalizePendingStateWritebackRecoveryHead(post, verifier)).toBe(post);
-    expect(inspectStateWritebackRecovery(post, verifier).status).toBe('stale_lineage');
+    expect(inspectStateWritebackRecovery(post, verifier).status).toBe('none');
     const sameTurn = makeCapsuleState().post;
     sameTurn.stateWritebackRecovery!.frozenNarrativeText = '损坏';
     expect(() => finalizePendingStateWritebackRecoveryHead(sameTurn, verifier)).toThrow('完整性校验失败');

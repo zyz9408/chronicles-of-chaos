@@ -60,6 +60,14 @@ function makeFailingReaderResponse(error: Error): {
 }
 
 describe('BrowserLlmClient', () => {
+  it('accepts plain JSON returned to a streaming request without another call', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: '正常正文' } }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } }), { headers: { 'Content-Type': 'application/json' } }));
+    const onContentDelta = vi.fn();
+    const result = await new BrowserLlmClient(fetchImpl).generate({ config: makeConfig(), messages: [{ role: 'user', content: '继续' }], onContentDelta });
+    expect(result.content).toBe('正常正文');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(onContentDelta).toHaveBeenCalledWith('正常正文');
+  });
   it('does not call fetch when the external signal is already aborted', async () => {
     const fetchImpl = vi.fn();
     const client = new BrowserLlmClient(fetchImpl);

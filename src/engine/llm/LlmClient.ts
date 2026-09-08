@@ -683,6 +683,7 @@ async function readOpenAiCompatibleStream(
   let finishReason: string | undefined;
   let usage: LlmTokenUsage | undefined;
   const raw: string[] = [];
+  let jsonFallback = '';
   let cancellation: Promise<void> | undefined;
 
   const consumeEventBlock = (block: string): void => {
@@ -726,7 +727,9 @@ async function readOpenAiCompatibleStream(
       if (done) break;
       throwIfSignalAborted(signal);
 
-      buffer += decoder.decode(value, { stream: true });
+      const decoded = decoder.decode(value, { stream: true });
+      if (raw.length === 0) jsonFallback += decoded;
+      buffer += decoded;
       const blocks = buffer.split(/\r?\n\r?\n/);
       buffer = blocks.pop() ?? '';
 
@@ -739,6 +742,16 @@ async function readOpenAiCompatibleStream(
     if (trailingData) consumeEventBlock(trailingData);
 
     if (!content.trim()) {
+      if (raw.length === 0 && jsonFallback.trim().startsWith('{')) {
+        const payload = parseJsonOrText(jsonFallback);
+        usage = parseOpenAiCompatibleUsage(payload);
+        content = parseOpenAiCompatibleContent(payload, usage);
+        const choice = isRecord(payload) && Array.isArray(payload.choices) ? payload.choices[0] : undefined;
+        finishReason = isRecord(choice) && typeof choice.finish_reason === 'string' ? choice.finish_reason : undefined;
+        throwIfSignalAborted(signal);
+        onContentDelta?.(content);
+        return { content, finishReason, usage, raw: [jsonFallback] };
+      }
       throw new LlmEmptyContentError('API 流式返回缺少正文内容', usage);
     }
 

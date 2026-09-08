@@ -173,6 +173,7 @@ export function inspectStateWritebackRecovery(
     return { status: 'stale_lineage', code: 'state-head-changed', message: '存档世界或恢复证据版本已变化，未应用重整。' };
   }
   const latest = state.turnLog[state.turnLog.length - 1];
+  if (isSupersededRecovery(state)) return { status: 'none' };
   if (latest?.turnNumber !== capsule.sourceTurnNumber || latest.timestamp !== capsule.sourceTurnTimestamp) {
     return { status: 'stale_lineage', code: 'state-head-changed', message: '已经进入其他回合，旧回合重整不再应用；可以继续正常行动。' };
   }
@@ -185,6 +186,23 @@ export function inspectStateWritebackRecovery(
     return { status: 'stale_lineage', code: 'state-head-changed', message: '存档已在失败回合后发生变化，未应用过期重整。' };
   }
   return { status: 'ready', capsule, preTurnState: validated };
+}
+
+function isSupersededRecovery(state: RuntimeState): boolean {
+  const capsule = state.stateWritebackRecovery;
+  const latest = state.turnLog[state.turnLog.length - 1];
+  return Boolean(capsule && capsule.worldBookId === state.worldBookId && latest
+    && latest.turnNumber > capsule.sourceTurnNumber
+    && state.turnLog.some((turn) => turn.turnNumber === capsule.sourceTurnNumber && turn.timestamp === capsule.sourceTurnTimestamp)
+    && !latest.displayMeta?.stateWriteback);
+}
+
+export function retireSupersededStateWritebackRecovery(state: RuntimeState): RuntimeState {
+  if (!isSupersededRecovery(state)) return state;
+  const next = { ...state };
+  delete next.stateWritebackRecovery;
+  if (next.lastPatchValidation?.valid === false) delete next.lastPatchValidation;
+  return next;
 }
 
 /**

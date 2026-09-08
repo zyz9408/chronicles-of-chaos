@@ -6,9 +6,11 @@
 
 An LLM-driven interactive narrative RPG where characters and the Three Kingdoms world persist and evolve through validated local state.
 
-[简体中文](README.md) · **v1.8.4** · [Play online](https://cocsg.pages.dev/)
+[简体中文](README.md) · **v1.8.7 compatible custom build** · [Play this fork](https://zyz9408.github.io/chronicles-of-chaos/) · [Upstream reference](https://cocsg.pages.dev/)
 
 </div>
+
+This editable fork implements the observable v1.8.5–v1.8.7 stability changes while preserving its custom combat, player-authority and AVG portrait library features. Upstream public source remains v1.7.24; this is not the original v1.8.7 source. See [upgrade evidence and scope](docs/upgrade-v1.8.7.md). GitHub Pages does not run the upstream Cloudflare cloud-save backend.
 
 ![The home screen of Chronicles of Chaos](docs/media/home.png)
 

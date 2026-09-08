@@ -26,6 +26,7 @@ import { deriveActorCurrentAge, deriveNpcCurrentAge } from '../engine/time/npcAg
 import { collectAvgCurrentActors, getAvgActorVisualContext, resolveAvgDialogueActor } from '../engine/avg/AvgActorVisualContext';
 import { AvgCharacterImageDialog } from './AvgCharacterImageDialog';
 import { readAvgVisualWithDeadline } from '../engine/avg/AvgVisualRead';
+import { fixedNpcVisualAliases } from '../engine/identity/FixedNpcIdentityBridge';
 
 export interface AvgNarrativeStageProps {
   entryKey: string;
@@ -188,6 +189,7 @@ export function AvgNarrativeStage(props: AvgNarrativeStageProps): React.ReactEle
       const result = await repository.lookup(actorTarget, {
         actorProfile: actorContext?.dedicated ? undefined : actorContext?.portraitProfile,
         rememberMatch: true,
+        actorAliases: actorTarget.kind === 'actor' ? fixedNpcVisualAliases(runtimeState, actorTarget.actorId) : [],
       });
       signal.throwIfAborted();
       if (result.status === 'found') return result.blob;

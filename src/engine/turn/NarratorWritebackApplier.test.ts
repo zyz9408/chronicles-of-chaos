@@ -212,6 +212,18 @@ function makeProtagonistCloneSuggestion(): NarratorNpcProfileSuggestion {
 }
 
 describe('NPC 人物志长期准入合同', () => {
+  it('bridges a fixed AVG identity into a valid NPC profile and reuses it on subsequent completion', () => {
+    const state = { ...makeState(), worldBookId: 'threeKingdoms', currentDate: '公元200年01月01日', avgPresentation: { speakerActors: [{ actorId: 'avg-presentation:qiao', identitySource: 'presentation_only', labels: ['大乔'], profileSnapshot: { sex: 'female' }, firstSeenTurnNumber: 1, lastSeenTurnNumber: 1 }] } } as RuntimeState;
+    const profile = makeNpcProfileSuggestion({ npcId: 'avg-presentation:qiao', name: '大乔', aliases: [], sex: '女', age: 30, birthDate: '公元170年01月01日', persistenceReason: 'historical_figure', persistenceEvidence: '固定历史人物长期参与本局事项。' });
+    const writeback = { protagonistMemory: null, npcProfileSuggestions: [profile], npcMemorySuggestions: [], locationWriteSuggestions: [], routeWriteSuggestions: [], questChanges: [], worldEventSummary: null, debugNotes: [] };
+    const applied = applyNarratorWriteback(state, writeback, worldBook);
+    expect(applied.state.npcs).toHaveLength(1);
+    expect(applied.state.npcs![0].npcId).toMatch(/^npc:fixed:threeKingdoms:/);
+    expect(applied.state.npcs![0].birthDate).toBe('公元170年01月01日');
+    const again = applyNarratorWriteback(applied.state, writeback, worldBook);
+    expect(again.state.npcs).toHaveLength(1);
+    expect(again.state.npcs![0].npcId).toBe(applied.state.npcs![0].npcId);
+  });
   it('拒绝没有长期准入理由和事实证据的新人物档案', () => {
     const application = applyNarratorWriteback(makeState(), {
       protagonistMemory: null,

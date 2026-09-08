@@ -302,8 +302,9 @@ async function openOpfsNamespace(
     const root = await navigator.storage.getDirectory();
     const packs = await root.getDirectoryHandle(OPFS_DIRECTORY, { create });
     return await packs.getDirectoryHandle(schema === 'official-v1' ? namespace : encodeURIComponent(namespace), { create });
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (!create && error instanceof Error && error.name === 'NotFoundError') return undefined;
+    throw error;
   }
 }
 
@@ -328,7 +329,8 @@ async function readOpfsAsset(namespace: string, path: string, schema: ResourceDa
   try {
     for (const segment of segments) directory = await directory.getDirectoryHandle(segment);
     return await (await directory.getFileHandle(fileName)).getFile();
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && ['SecurityError', 'NotAllowedError', 'QuotaExceededError'].includes(error.name)) throw error;
     return undefined;
   }
 }
@@ -435,21 +437,30 @@ export class AvgResourcePackManager {
   }
 
   async install(file: Blob, options: { archiveLabel?: string; onProgress?: (progress: AvgResourcePackProgress) => void } = {}): Promise<InstalledAvgResourcePack> {
+    return this.installAttempt(file, options, false);
+  }
+
+  private async installAttempt(file: Blob, options: { archiveLabel?: string; onProgress?: (progress: AvgResourcePackProgress) => void }, forceIndexedDb: boolean): Promise<InstalledAvgResourcePack> {
     if (file.size <= 0 || file.size > MAX_AVG_RESOURCE_ARCHIVE_BYTES) throw new Error('资源包 ZIP 大小不正确或超过 3 GiB。');
     options.onProgress?.({ phase: 'reading', archiveBytesRead: 0, archiveByteLength: file.size, entriesRead: 0 });
     const schema = await this.currentSchema();
     const storageNamespace = createStorageNamespace();
-    const storageBackend: InstalledAvgResourcePack['storageBackend'] = await openOpfsNamespace(storageNamespace, true, schema)
-      ? 'opfs'
-      : 'indexeddb';
+    let storageBackend: InstalledAvgResourcePack['storageBackend'] = 'indexeddb';
+    const isStoragePolicyError = (error: unknown) => error instanceof Error && ['SecurityError', 'NotAllowedError'].includes(error.name);
+    if (!forceIndexedDb) {
+      try { if (await openOpfsNamespace(storageNamespace, true, schema)) storageBackend = 'opfs'; }
+      catch (error) { if (!isStoragePolicyError(error)) throw error; }
+    }
     let archiveBytesRead = 0;
     let expandedBytes = 0;
     let entriesRead = 0;
     let manifestBytes: Uint8Array | undefined;
     const entryNames = new Set<string>();
+    const pendingEntries: Promise<void>[] = [];
+    let committed = false;
+    let archiveComplete = false;
     try {
       const { AsyncUnzipInflate, Unzip, UnzipInflate, strFromU8 } = await import('fflate');
-      const pendingEntries: Promise<void>[] = [];
       const unzip = new Unzip((entry) => {
         if (entry.name.endsWith('/')) {
           entry.ondata = (error) => { if (error) throw error; };
@@ -467,7 +478,9 @@ export class AvgResourcePackManager {
         let entryBytes = 0;
         let resolveEntry!: () => void;
         let rejectEntry!: (reason: unknown) => void;
-        pendingEntries.push(new Promise<void>((resolve, reject) => { resolveEntry = resolve; rejectEntry = reject; }));
+        const pending = new Promise<void>((resolve, reject) => { resolveEntry = resolve; rejectEntry = reject; });
+        void pending.catch(() => undefined);
+        pendingEntries.push(pending);
         entry.ondata = (error, chunk, final) => {
           if (error) { rejectEntry(error); return; }
           entryBytes += chunk.byteLength;
@@ -498,6 +511,7 @@ export class AvgResourcePackManager {
         options.onProgress?.({ phase: 'reading', archiveBytesRead, archiveByteLength: file.size, entriesRead });
       }
       unzip.push(new Uint8Array(), true);
+      archiveComplete = true;
       await Promise.all(pendingEntries);
       if (!manifestBytes) throw new Error('资源包 ZIP 缺少 manifest.json。');
       const manifest = parseManifest(JSON.parse(strFromU8(manifestBytes)));
@@ -558,13 +572,16 @@ export class AvgResourcePackManager {
           }
         });
       });
+      committed = true;
       if (replacedStorageNamespace && replacedStorageNamespace !== storageNamespace) {
-        await this.deleteStoredAssets(replacedStorageNamespace, replacedStorageBackend, schema);
+        await this.deleteStoredAssets(replacedStorageNamespace, replacedStorageBackend, schema).catch(() => undefined);
       }
       emitChanged();
       return installed;
     } catch (error) {
-      await this.deleteStoredAssets(storageNamespace, storageBackend, schema).catch(() => undefined);
+      if (archiveComplete) await Promise.allSettled(pendingEntries);
+      if (!committed) await this.deleteStoredAssets(storageNamespace, storageBackend, schema).catch(() => undefined);
+      if (!committed && storageBackend === 'opfs' && isStoragePolicyError(error)) return this.installAttempt(file, options, true);
       throw error;
     }
   }

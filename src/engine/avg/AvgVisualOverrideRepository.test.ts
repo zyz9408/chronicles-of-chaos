@@ -23,6 +23,16 @@ async function image(seed = 0) {
 }
 
 describe('IndexedDbAvgVisualOverrideRepository', () => {
+  it('promotes a unique fixed portrait alias once without replacing an explicit NPC portrait', async () => {
+    const repository = new IndexedDbAvgVisualOverrideRepository(databaseName);
+    const alias = createAvgActorTarget('save-a', 'threeKingdoms', 'avg-presentation:qiao');
+    const npc = createAvgActorTarget('save-a', 'threeKingdoms', 'npc-qiao');
+    const first = await image(7);
+    await repository.replace(alias, first);
+    expect(await repository.lookup(npc, { actorAliases: [alias.actorId], rememberMatch: true })).toMatchObject({ status: 'found', record: { actorId: npc.actorId, sha256: first.sha256 } });
+    const explicit = await image(8); await repository.replace(npc, explicit);
+    expect(await repository.lookup(npc, { actorAliases: [alias.actorId], rememberMatch: true })).toMatchObject({ status: 'found', record: { sha256: explicit.sha256 } });
+  });
   it('retains multiple generated candidates while pinning each borrower once, including concurrent reads and reloads', async () => {
     const repository = new IndexedDbAvgVisualOverrideRepository(databaseName);
     const source = createAvgActorTarget('save-a', 'threeKingdoms', 'guard-source');

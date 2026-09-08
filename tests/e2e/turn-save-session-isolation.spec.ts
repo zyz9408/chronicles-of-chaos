@@ -589,6 +589,40 @@ test('cancelling a turn queued behind an IndexedDB write lock leaves all persist
     .toEqual(persistenceBeforeTurn);
 });
 
+test('growth point UI changes only after a successful save and can retry after failure', async ({ page }) => {
+  await seedMainNarrativeApi(page);
+  await enterDebugGame(page);
+  await page.evaluate(async () => {
+    const path = '/src/engine/save/SaveManager.ts';
+    const manager = await import(/* @vite-ignore */ path);
+    const save = await manager.continueLastSave();
+    if (!save) throw new Error('Missing test save');
+    await manager.saveCurrentState(save.id, { ...save.runtimeState, player: { ...save.runtimeState.player, growthPoints: 2 } });
+  });
+  await page.reload();
+  await page.getByRole('button', { name: '兵戈再起' }).click();
+  await page.getByRole('button', { name: '读取最近存档' }).click();
+  await page.getByTitle('查看主角档案').click();
+  await expect(page.locator('.player-profile-growth-points')).toContainText('可分配成长点 2');
+  await page.evaluate(() => {
+    const original = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (...args: Parameters<IDBObjectStore['put']>) {
+      if (this.name === 'saves') { IDBObjectStore.prototype.put = original; throw new DOMException('模拟存储不足', 'QuotaExceededError'); }
+      return original.apply(this, args);
+    };
+  });
+  await page.getByTitle('消耗 1 点成长点提升武力').click();
+  await expect(page.locator('.message-box')).toContainText('保存失败，未应用修改');
+  await expect(page.locator('.player-profile-growth-points')).toContainText('可分配成长点 2');
+  await page.getByTitle('消耗 1 点成长点提升武力').click();
+  await expect(page.locator('.player-profile-growth-points')).toContainText('可分配成长点 1');
+  await page.reload();
+  await page.getByRole('button', { name: '兵戈再起' }).click();
+  await page.getByRole('button', { name: '读取最近存档' }).click();
+  await page.getByTitle('查看主角档案').click();
+  await expect(page.locator('.player-profile-growth-points')).toContainText('可分配成长点 1');
+});
+
 test('a normal single-save turn autosaves its full state and survives a reload', async ({ page }) => {
   const stream = await installLateResponseStream(page);
   await seedMainNarrativeApi(page);

@@ -56,6 +56,25 @@ export interface ImportSavesOptions {
 
 export interface SaveMutationOptions {
   signal?: AbortSignal;
+  expectedRuntimeState?: RuntimeState;
+}
+
+function assertExpectedSaveState(existing: SaveData, expected?: RuntimeState): void {
+  if (!expected) return;
+  const normalize = (state: RuntimeState) => {
+    const normalized = compactRuntimeStateForPersistence(migrateRuntimeStateForPersistence(state).state);
+    // AVG materialization is presentation-only and may finish during a turn.
+    delete normalized.avgPresentation;
+    for (const turn of normalized.turnLog) { delete turn.avgPresentation; delete turn.avgVisualSnapshot; }
+    return normalized;
+  };
+  if (hasPersistenceValueChanged(normalize(existing.runtimeState), normalize(expected))) {
+    throw new Error('存档已发生变化，未覆盖较新的状态；请重新载入后再操作。');
+  }
+}
+
+function snapshotKeyRange(saveId: string): IDBKeyRange {
+  return IDBKeyRange.bound(`${saveId}:`, `${saveId}:\uffff`);
 }
 
 export interface AtomicTurnCommitResult {
@@ -195,7 +214,7 @@ export async function saveCurrentState(
     async ({ store, request }) => {
       const existing = await request<SaveData | undefined>(store('saves').get(saveId));
       if (!existing) return null;
-
+      assertExpectedSaveState(existing, options.expectedRuntimeState);
       const next = buildUpdatedSave(existing, runtimeState);
       await Promise.all([
         request(store('saves').put(next)),
@@ -220,15 +239,22 @@ export async function commitSuccessfulTurn(
       const saveSummaries = store('saveSummaries');
       const snapshots = store('turnSnapshots');
       const meta = store('meta');
-      const [existing, allSaves, allSnapshots] = await Promise.all([
+      const [existing, summaries, rangeSnapshots, summaryIndex] = await Promise.all([
         request<SaveData | undefined>(saves.get(input.saveId)),
-        request<SaveData[]>(saves.getAll()),
-        request<StoredTurnSnapshot[]>(snapshots.getAll()),
+        request<SaveListItem[]>(saveSummaries.getAll()),
+        request<StoredTurnSnapshot[]>(snapshots.getAll(snapshotKeyRange(input.saveId))),
+        request<{ value: boolean } | undefined>(meta.get(SAVE_SUMMARY_INDEX_META_KEY)),
       ]);
       if (!existing) return null;
+      assertExpectedSaveState(existing, input.expectedRuntimeState);
+      const currentSnapshots = rangeSnapshots.filter((snapshot) => snapshot.saveId === input.saveId);
+      const allSaves = summaryIndex?.value ? summaries : (await request<SaveData[]>(saves.getAll())).map(toSaveListItem);
+      if (!summaryIndex?.value) {
+        await Promise.all(allSaves.map((summary) => request(saveSummaries.put(summary))));
+        await request(meta.put({ key: SAVE_SUMMARY_INDEX_META_KEY, value: true }));
+      }
 
       const nextSave = buildUpdatedSave(existing, input.runtimeState);
-      const currentSnapshots = allSnapshots.filter((snapshot) => snapshot.saveId === input.saveId);
       const nextSnapshot = buildStoredTurnSnapshot(input);
       const candidates = [
         ...currentSnapshots.filter((snapshot) => snapshot.id !== nextSnapshot.id),
@@ -273,12 +299,12 @@ export async function commitSuccessfulTurn(
       const retainedAutoSave = autoSaveCreated && retainedAutoSaveIds.has(autoSaveCreated.id)
         ? autoSaveCreated
         : undefined;
+      const expiredSnapshotKeys = (await Promise.all([...expiredAutoSaveIds].map(async (id) => (await request<IDBValidKey[]>(snapshots.getAllKeys(snapshotKeyRange(id))))
+        .filter((key) => typeof key === 'string' && /^\d+$/u.test(key.slice(id.length + 1)))))).flat();
 
       await Promise.all([
         ...snapshotWrites,
-        ...allSnapshots
-          .filter((snapshot) => expiredAutoSaveIds.has(snapshot.saveId))
-          .map((snapshot) => request(snapshots.delete(snapshot.id))),
+        ...expiredSnapshotKeys.map((key) => request(snapshots.delete(key))),
         ...[...expiredAutoSaveIds].map((saveId) => request(saves.delete(saveId))),
         ...[...expiredAutoSaveIds].map((saveId) => request(saveSummaries.delete(saveId))),
         request(saves.put(nextSave)),
@@ -1470,7 +1496,7 @@ function normalizePositiveInteger(value: unknown, fallback: number): number {
 }
 
 function selectRetainedAutoSaveIds(
-  autoSaves: SaveData[],
+  autoSaves: Array<Pick<SaveData, 'id' | 'updatedAt'>>,
   limit: number,
   protectedSaveId?: string,
   preferredSaveId?: string,

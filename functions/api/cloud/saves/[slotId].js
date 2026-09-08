@@ -179,6 +179,7 @@ export async function onRequestPut(context) {
   }
 
   let objectWritten = false;
+  let committed = false;
   try {
     await env.CLOUD_SAVE_BUCKET.put(objectKey, body, {
       httpMetadata: { contentType: 'application/zip' },
@@ -229,8 +230,9 @@ export async function onRequestPut(context) {
       ).bind(reservationId),
     ]);
 
+    committed = true;
     if (existing?.object_key && existing.object_key !== objectKey) {
-      await env.CLOUD_SAVE_BUCKET.delete(existing.object_key);
+      await env.CLOUD_SAVE_BUCKET.delete(existing.object_key).catch(() => undefined);
     }
     return cloudJsonResponse({
       ok: true,
@@ -246,7 +248,7 @@ export async function onRequestPut(context) {
       usageDelta,
     });
   } catch (error) {
-    if (objectWritten) {
+    if (objectWritten && !committed) {
       try { await env.CLOUD_SAVE_BUCKET.delete(objectKey); } catch { /* best-effort */ }
     }
     try {
