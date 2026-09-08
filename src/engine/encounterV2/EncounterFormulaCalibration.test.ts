@@ -65,6 +65,7 @@ function runCombat(seed: string, scenario: CombatScenario) {
   const playerKits = playerIds.map((id) => equipmentFor(id, scenario.playerLoadout));
   const enemyKits = enemyIds.map((id) => equipmentFor(id, scenario.enemyLoadout));
   const intent = makeCombatIntent(playerIds, enemyIds);
+  intent.rulesetVersion = 'combat-v2.1.0'; // Frozen calibration; current rules use the persistent balance matrix.
   intent.encounterId = `combat_${seed}`;
   intent.seed = seed;
   const snapshot = createCombatEncounterSnapshot({

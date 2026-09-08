@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { compileTraitAbilityMechanics, abilityMechanicsSummary } from '../engine/abilities/AbilityMechanics';
 import type {
   CharacterTrait,
   GameDifficultyLevel,
@@ -1488,7 +1489,7 @@ export const StartScreen: React.FC = () => {
   const handleAddCustomTrait = () => {
     const label = customTraitDraft.label.trim();
     const description = customTraitDraft.description.trim();
-    if (!label) return;
+    if (!label || !compileTraitAbilityMechanics({ id: 'custom_preview', label, description, source: 'custom' })) return;
 
     if (editingCustomTraitId) {
       setCustomTraits((current) => current.map((trait) => (
@@ -2611,7 +2612,7 @@ export const StartScreen: React.FC = () => {
               <>
                 <section className="setup-block">
                   <h2>开局特质</h2>
-                  <p className="section-hint">最多选择三条。特质不会直接给六维加点，而是进入提示词，影响叙事机会、NPC 反应和条件判定。</p>
+                  <p className="section-hint">最多选择三条。描述用于叙事，数值效果以已识别或绑定的执行规则为准；进入游戏后可在“绝艺”面板核对和调整。</p>
                 </section>
                 <div className="trait-panel">
                   <div className="trait-grid">
@@ -2655,10 +2656,12 @@ export const StartScreen: React.FC = () => {
                       <textarea
                         value={customTraitDraft.description}
                         onChange={(event) => setCustomTraitDraft((draft) => ({ ...draft, description: event.target.value }))}
-                        placeholder="特质描述，会进入开局 prompt，并影响 LLM 如何理解主角。"
+                        placeholder="写出明确数值规则，例如：每小时生命恢复满；伤害×2；命中+15；快速完美学习技能。"
                       />
                       <div>
-                        <button className="nav-btn" onClick={handleAddCustomTrait} disabled={!customTraitDraft.label.trim()}>{editingCustomTraitId ? '保存修改' : '保存特质'}</button>
+                        <p role="status">{abilityMechanicsSummary(compileTraitAbilityMechanics({ id: 'custom_preview', ...customTraitDraft, source: 'custom' })) ?? '尚未识别到可执行数值规则，不能作为已生效特质保存。请补充明确周期/数值或使用下方示例。'}</p>
+                        {['每小时生命恢复满', '每回合恢复2生命', '伤害×2', '命中+15', '部队战力+20', '快速完美学习技能'].map(example => <button type="button" className="nav-btn" key={example} onClick={() => setCustomTraitDraft(draft => ({ ...draft, description: `${draft.description}\n数值规则：${example}` }))}>{example}</button>)}
+                        <button className="nav-btn" onClick={handleAddCustomTrait} disabled={!customTraitDraft.label.trim() || !compileTraitAbilityMechanics({ id: 'custom_preview', ...customTraitDraft, source: 'custom' })}>{editingCustomTraitId ? '保存修改' : '保存特质'}</button>
                         <button className="nav-btn back" onClick={cancelCustomTraitEdit}>取消</button>
                       </div>
                     </div>

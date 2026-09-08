@@ -7,6 +7,7 @@ import type {
 } from '../types';
 import type { UniqueArtSemanticProfile } from '../encounterV2/EncounterContracts';
 import { normalizePlayerVitals } from '../character/PlayerVitals';
+import { applyRecoveryEffects } from './PassiveAbilityRuntime';
 import {
   compileTraitAbilityMechanics,
   compileUniqueArtAbilityMechanics,
@@ -29,12 +30,12 @@ function executable(mechanics: AbilityMechanics | undefined): mechanics is Abili
     && (mechanics.mode !== 'authoritative' || mechanics.confirmedByPlayer);
 }
 
-export function resolveLearningProgressPolicy(traits: readonly CharacterTrait[] | undefined): LearningProgressPolicy {
+export function resolveLearningProgressPolicy(traits: readonly CharacterTrait[] | undefined, arts: readonly CharacterUniqueArt[] = []): LearningProgressPolicy {
   let multiplier = 1;
   let minimumProgress = 0;
   let setToMaxLevel = false;
   const sourceTraitIds = new Set<string>();
-  for (const trait of traits ?? []) {
+  for (const trait of [...(traits ?? []), ...arts.map(art => ({ id: art.id, label: art.name, description: art.description, source: art.source, mechanics: compileUniqueArtAbilityMechanics(art) }))]) {
     const mechanics = compileTraitAbilityMechanics(trait);
     if (!executable(mechanics)) continue;
     for (const rule of [...mechanics.rules].sort((left, right) => left.priority - right.priority)) {
@@ -55,7 +56,7 @@ export function resolveLearningProgressPolicy(traits: readonly CharacterTrait[] 
 }
 
 export function applyPlayerLearningRulesToNewArts(state: RuntimeState, previousState: RuntimeState): RuntimeState {
-  const policy = resolveLearningProgressPolicy(state.player.traits);
+  const policy = resolveLearningProgressPolicy(state.player.traits, previousState.player.uniqueArts);
   if (!policy.setToMaxLevel) return state;
   const previousIds = new Set((previousState.player.uniqueArts ?? []).map((art) => art.id));
   const newArts = (state.player.uniqueArts ?? []).filter((art) => !previousIds.has(art.id));
@@ -84,7 +85,8 @@ function hasCompletedUseOutcome(playerInput: string, narrativeText: string, art:
     || intent.includes(art.id)
     || narrative.includes(art.name)
     || narrative.includes(art.id);
-  if (!identifiesArt || !/使用|施展|发动|催动|运转|运使|使出|运功/u.test(narrative)) return false;
+  const explicitIntent = (intent.includes(art.name) || intent.includes(art.id)) && /使用|施展|发动|催动|运转|运使|使出|运功/u.test(intent);
+  if (!identifiesArt || (!explicitIntent && !/使用|施展|发动|催动|运转|运使|使出|运功/u.test(narrative))) return false;
   const failedUse = /(?:未能|没能|无法|不能|并未|没有)(?:成功)?(?:使用|施展|发动|催动|运转|运使|使出|运功)/u.test(narrative)
     || /(?:使用|施展|发动|催动|运转|运使|使出|运功)(?:[^。！？]{0,16})(?:失败|未成|被打断|遭打断|中断|中止|取消)/u.test(narrative)
     || new RegExp(`${escapeRegExp(art.name)}(?:[^。！？]{0,16})(?:失败|未成|被打断|遭打断|中断|中止|取消)`, 'u').test(narrative);
@@ -113,8 +115,9 @@ export function settlePlayerAuthoredArtUse(
       const target = next ?? structuredClone(state);
       const vitals = normalizePlayerVitals(target.player.vitals);
       const before = { hp: vitals.hp, stamina: vitals.stamina };
-      let hp = vitals.hp;
-      let stamina = vitals.stamina;
+      applyRecoveryEffects(target, rule.effects);
+      let hp = target.player.vitals!.hp;
+      let stamina = target.player.vitals!.stamina;
       for (const effect of rule.effects) {
         if (effect.type !== 'restore_to_max') continue;
         if (effect.resource === 'hp' && (hp > 0 || effect.allowRevive)) hp = vitals.maxHp;

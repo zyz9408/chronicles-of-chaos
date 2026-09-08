@@ -8,8 +8,8 @@ describe('ReleaseNotesPanel', () => {
 
     expect(markup).toContain('role="dialog"');
     expect(markup).toContain('2026年9月9日');
-    expect(markup).toContain('dateTime="2026-09-09T00:26:00+08:00"');
-    expect(markup).toContain('>00:26</time>');
+    expect(markup).toContain('dateTime="2026-09-09T03:00:00+08:00"');
+    expect(markup).toContain('>03:00</time>');
     expect(markup).toContain('v1.8.7');
     expect(markup).toContain('兼容升级');
     expect(markup).toContain('不是原作者');

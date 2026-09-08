@@ -29,7 +29,7 @@ describe('releaseNotes', () => {
   it('exposes the compatible custom release and retains historical publication details', () => {
     expect(APP_VERSION).toBe('1.8.7');
     expect(APP_VERSION_LABEL).toBe('v1.8.7');
-    expect(VERSIONED_RELEASE_NOTES[0].updates[0].title).toContain('兼容升级');
+    expect(VERSIONED_RELEASE_NOTES[0].updates[0].title).toContain('自愈规则');
     expect(VERSIONED_RELEASE_NOTES[0].updates[0].items.join('')).toContain('不是原作者');
     expect(RAW_RELEASE_NOTES).toHaveLength(26);
     expect(RAW_RELEASE_NOTES[0]?.id).toBe('2026-09-05');

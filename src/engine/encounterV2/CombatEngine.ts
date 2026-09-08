@@ -1,5 +1,6 @@
 import {
   COMBAT_RULESET_VERSION,
+  ATTRIBUTE_COMBAT_RULESET_VERSION,
   ENCOUNTER_CONTRACT_VERSION,
   type EncounterActionLogEntry,
   type SemanticEffect,
@@ -26,6 +27,9 @@ import {
   calculateNormalAttackDamage,
   calculateV21BlockChance,
   calculateV21HitChance,
+  calculateV22HitChance,
+  calculateV22NormalAttackDamage,
+  calculateV22SkillMultiplier,
   calculateV21NormalAttackDamage,
   calculateV21ScopedDamageCap,
   calculateRetreatChance,
@@ -115,7 +119,7 @@ function runtimeFor(state: CombatEngineState, actorId: string): CombatRuntimeCom
 
 function effectiveMartial(state: CombatEngineState, combatant: CombatRuntimeCombatant): number {
   const penalty = combatant.statuses.includes('severely_wounded') ? 15 : 0;
-  return clamp(snapshotFor(state, combatant.actorId).martial - penalty, 0, 100);
+  return clamp(snapshotFor(state, combatant.actorId).martial - penalty, 0, state.snapshot.intent.rulesetVersion === COMBAT_RULESET_VERSION ? 160 : 100);
 }
 
 function effectConditionMatches(
@@ -226,7 +230,7 @@ export function createCombatEngineState(snapshot: CombatEncounterSnapshot): Comb
     maxHp: combatant.maxHp,
     stamina: combatant.stamina,
     maxStamina: combatant.maxStamina,
-    speed: combatant.speed,
+    speed: snapshot.intent.rulesetVersion === COMBAT_RULESET_VERSION ? clamp(combatant.speed * (1 + (combatant.martial - 50) * 0.006), 50, 220) : combatant.speed,
     // A small seeded opening offset removes the permanent player-first bias
     // for equal-speed actors without weakening speed over subsequent turns.
     gauge: random.nextIntInclusive(0, 99),
@@ -303,7 +307,7 @@ interface StrikeOptions {
 }
 
 function usesCombatV21(state: CombatEngineState): boolean {
-  return state.snapshot.intent.rulesetVersion === COMBAT_RULESET_VERSION;
+  return state.snapshot.intent.rulesetVersion === COMBAT_RULESET_VERSION || state.snapshot.intent.rulesetVersion === ATTRIBUTE_COMBAT_RULESET_VERSION;
 }
 
 function leadershipAura(state: CombatEngineState, side: CombatRuntimeCombatant['side']): number {
@@ -360,7 +364,8 @@ function performStrike(
     + leadershipAccuracyModifier;
   const defenderEvasion = defender.modifiers.evasion
     + passiveModifier(state, defender, attacker, 'modify_evasion', ['before_attack'], false);
-  const hitChance = v21 ? calculateV21HitChance({
+  const v22 = state.snapshot.intent.rulesetVersion === COMBAT_RULESET_VERSION;
+  const hitChance = v21 ? (v22 ? calculateV22HitChance : calculateV21HitChance)({
     attackerMartial,
     defenderMartial,
     attackerIntelligence: attackerSnapshot.intelligence ?? 50,
@@ -379,11 +384,11 @@ function performStrike(
     attackerLuck: attackerSnapshot.luck,
     defenderLuck: defenderSnapshot.luck,
   });
-  const martialHitModifier = (attackerMartial - defenderMartial) * (v21 ? 0.60 : 0.55);
+  const martialHitModifier = (attackerMartial - defenderMartial) * (v22 ? 0.8 : v21 ? 0.60 : 0.55);
   const intelligenceHitModifier = v21
-    ? ((attackerSnapshot.intelligence ?? 50) - (defenderSnapshot.intelligence ?? 50)) * 0.10
+    ? ((attackerSnapshot.intelligence ?? 50) - (defenderSnapshot.intelligence ?? 50)) * (v22 ? 0.04 : 0.10)
     : 0;
-  const martialDamageBonus = Math.floor(attackerMartial * (v21 ? 0.16 : 0.12));
+  const martialDamageBonus = Math.floor(attackerMartial * (v22 ? 0.22 : v21 ? 0.16 : 0.12));
   const hit = random.nextIntInclusive(1, 100) <= hitChance;
   if (!hit) return {
     hit: false, blocked: false, critical: false, damage: 0, hitChance, blockChance: 0,
@@ -424,8 +429,10 @@ function performStrike(
   const variance = random.nextIntInclusive(-2, 2);
   const flatDamage = attacker.modifiers.damageFlat
     + passiveModifier(state, attacker, defender, 'modify_damage_flat', ['before_attack', 'on_hit'], true);
+  const authoredMultiplier = passiveEffects(state, attacker).filter(effect => effect.operation === 'modify_damage_multiplier' && effect.trigger === 'before_attack' && effectConditionMatches(state, attacker, defender, effect, true))
+    .reduce((product, effect) => product * Math.max(0, effect.value), 1);
   const passiveMultiplier = attacker.modifiers.damageMultiplier
-    * Math.max(0, passiveModifier(state, attacker, defender, 'modify_damage_multiplier', ['before_attack'], true) || 1);
+    * (v22 ? clamp(authoredMultiplier, 0, 10) : Math.max(0, passiveModifier(state, attacker, defender, 'modify_damage_multiplier', ['before_attack'], true) || 1));
   const armorTier = options.armorPiercing
     ? 0
     : clamp(
@@ -453,11 +460,11 @@ function performStrike(
     armorTier,
     maxDamage,
   };
-  const baseDamage = options.normalAttack ? (v21
+  const baseDamage = options.normalAttack ? (v22 ? calculateV22NormalAttackDamage({ ...normalDamageInput, defenderMartial, multiplier: passiveMultiplier }) : v21
     ? calculateV21NormalAttackDamage(normalDamageInput)
     : calculateNormalAttackDamage(normalDamageInput)) : calculateArtDamage({
     rawDamage,
-    damageMultiplier: options.damageMultiplier * passiveMultiplier,
+    damageMultiplier: options.damageMultiplier * passiveMultiplier * (v22 ? calculateV22SkillMultiplier(attackerMartial, defenderMartial) : 1),
     critical,
     blocked,
     defending: defender.defending,
@@ -556,16 +563,22 @@ function applyRoundStartPassiveUniqueArts(
   state: CombatEngineState,
   actor: CombatRuntimeCombatant,
 ): void {
-  const profiles = snapshotFor(state, actor.actorId).uniqueArtProfiles
+  const snapshot = snapshotFor(state, actor.actorId);
+  const profiles = [...snapshot.uniqueArtProfiles, ...(state.snapshot.intent.rulesetVersion === COMBAT_RULESET_VERSION ? snapshot.traitProfiles : [])]
     .filter((profile) => profile.activation === 'passive' || profile.activation === 'hybrid');
   let restoredHp = 0;
   let restoredStamina = 0;
   for (const profile of profiles) {
     for (const effect of [...profile.effects].sort((left, right) => left.priority - right.priority)) {
       if (effect.trigger !== 'round_start'
-        || (effect.operation !== 'restore_hp' && effect.operation !== 'restore_stamina')
+        || (!['restore_hp', 'restore_stamina'].includes(effect.operation)
+          && !(state.snapshot.intent.rulesetVersion === COMBAT_RULESET_VERSION && ['restore_hp_to_max', 'restore_stamina_to_max'].includes(effect.operation)))
         || (effect.target !== 'self' && effect.target !== 'current_attacker')
         || !effectConditionMatches(state, actor, actor, effect, false)) {
+        continue;
+      }
+      if (state.snapshot.intent.rulesetVersion === COMBAT_RULESET_VERSION && effect.stackingGroup?.startsWith('authored:')) {
+        applyExecutableEffects(actor, [effect]);
         continue;
       }
       if (effect.operation === 'restore_hp') {

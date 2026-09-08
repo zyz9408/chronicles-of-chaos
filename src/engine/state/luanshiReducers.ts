@@ -2181,7 +2181,7 @@ function applyCharacterUniqueArtProgressRecord(
     const artIndex = arts.findIndex((art) => art.id === command.artId.trim());
     if (artIndex < 0) return { arts, applied: false };
     const learningPolicy = command.characterType === 'player'
-      ? resolveLearningProgressPolicy(state.player.traits)
+      ? resolveLearningProgressPolicy(state.player.traits, state.player.uniqueArts)
       : undefined;
     const result = applyUniqueArtProgressEvidence(arts[artIndex], command, turnKey, learningPolicy);
     if (!result.applied) return { arts, applied: false };

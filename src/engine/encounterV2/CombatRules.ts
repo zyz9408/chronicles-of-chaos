@@ -200,6 +200,28 @@ export function calculateV21ScopedDamageCap(baseCap: number, martial: number): n
   return Math.max(1, baseCap + adjustment);
 }
 
+/** V2.2: symmetric skill gap; fixed checkpoints keep the preceding functions. */
+export function calculateV22SkillMultiplier(attackerMartial: number, defenderMartial: number): number {
+  return clamp(Math.exp(clamp(attackerMartial - defenderMartial, -100, 100) * 0.016), 0.25, 4);
+}
+
+export function calculateV22HitChance(input: Parameters<typeof calculateV21HitChance>[0]): number {
+  return clamp(78 + (input.attackerMartial - input.defenderMartial) * 0.8
+    + (input.attackerIntelligence - input.defenderIntelligence) * 0.04
+    + input.weaponAccuracy + input.attackerAccuracy - input.defenderEvasion
+    + (input.attackerLuck - input.defenderLuck) * 0.1, 5, 99);
+}
+
+export function calculateV22NormalAttackDamage(input: Parameters<typeof calculateV21NormalAttackDamage>[0] & { defenderMartial: number; multiplier: number }): number {
+  let damage = (input.weaponBaseDamage + Math.floor(input.attackerMartial * 0.22) + input.flatDamage + input.randomVariance)
+    * calculateV22SkillMultiplier(input.attackerMartial, input.defenderMartial) * input.multiplier;
+  if (input.critical && !input.blocked) damage *= 1.5;
+  if (input.blocked) damage *= input.defenderWasDefending ? 0.2 : 0.4;
+  else if (input.defenderWasDefending) damage *= 0.8;
+  damage *= 1 - (ARMOR_REDUCTION_BY_TIER[clamp(Math.trunc(input.armorTier), 0, 5)] ?? 0);
+  return Math.min(input.maxDamage === undefined ? 200 : input.maxDamage * calculateV22SkillMultiplier(input.attackerMartial, input.defenderMartial), Math.max(1, Math.round(damage)));
+}
+
 export function calculateRetreatChance(input: {
   ownAverageSpeed: number;
   enemyAverageSpeed: number;

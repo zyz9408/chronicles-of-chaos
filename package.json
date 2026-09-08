@@ -4,6 +4,7 @@
   "version": "1.8.7",
   "type": "module",
   "scripts": {
+    "balance:simulate": "vitest run tests/balance/EncounterBalance.test.ts",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "tsc --noEmit --noUnusedLocals --noUnusedParameters -p tsconfig.json && eslint \"src/**/*.{ts,tsx}\"",

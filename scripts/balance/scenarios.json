@@ -1,0 +1,19 @@
+{
+  "seeds": 64,
+  "combat": [
+    { "name": "100 vs 40 civilian", "hero": 100, "foe": 40, "count": 1 },
+    { "name": "100 vs three 40 guards", "hero": 100, "foe": 40, "count": 3 },
+    { "name": "100 at 60HP vs three 40 guards", "hero": 100, "foe": 40, "count": 3, "hp": 60 },
+    { "name": "100 at 10HP vs 100 peer", "hero": 100, "foe": 100, "count": 1, "hp": 10 },
+    { "name": "100 vs 70 veteran", "hero": 100, "foe": 70, "count": 1 },
+    { "name": "100 vs 100 peer", "hero": 100, "foe": 100, "count": 1 },
+    { "name": "50 vs 50 peer", "hero": 50, "foe": 50, "count": 1 },
+    { "name": "40 vs 100 reverse", "hero": 40, "foe": 100, "count": 1 }
+  ],
+  "war": [
+    { "name": "equal troops commander 100 vs 40", "hero": 100, "foe": 40, "own": 1000, "enemy": 1000 },
+    { "name": "equal troops commander 50 vs 50", "hero": 50, "foe": 50, "own": 1000, "enemy": 1000 },
+    { "name": "commander 100 outnumbered tenfold", "hero": 100, "foe": 50, "own": 500, "enemy": 5000 },
+    { "name": "commander 40 numerical advantage threefold", "hero": 40, "foe": 100, "own": 3000, "enemy": 1000 }
+  ]
+}

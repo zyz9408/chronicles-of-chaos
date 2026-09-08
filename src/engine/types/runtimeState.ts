@@ -132,6 +132,7 @@ export interface RuntimeState {
   passiveUniqueArtTurnSettlement?: PassiveUniqueArtTurnSettlement;
   /** Recent deterministic executions of player-authored ability rules. */
   abilityRuleExecutions?: AbilityRuleExecutionTrace[];
+  abilityRuleTimers?: Record<string, { lastProcessedMinute: number; remainderMinutes: number; checksum: string }>;
   /** v1.8 recovery evidence for a committed turn whose writeback was quarantined. */
   stateWritebackRecovery?: StateWritebackRecoveryCapsule;
   /** Stable AVG presentation identities and the local visual partition owned by this save. */

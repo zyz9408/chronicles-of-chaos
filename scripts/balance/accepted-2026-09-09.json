@@ -1,0 +1,246 @@
+{
+  "model": "real-engines-v1",
+  "assumptions": "standard difficulty; full health unless scenario overrides; no equipment or arts; same luck/intelligence in combat; equal training and supply; war steady advance; built-in AI in combat",
+  "metrics": [
+    {
+      "mode": "combat",
+      "version": "combat-v2.1.0",
+      "name": "100 vs 40 civilian",
+      "seeds": 256,
+      "winRate": 1,
+      "actionsP50": 5,
+      "actionsP90": 6,
+      "hpP50": 86
+    },
+    {
+      "mode": "combat",
+      "version": "combat-v2.1.0",
+      "name": "100 vs three 40 guards",
+      "seeds": 256,
+      "winRate": 0.1328125,
+      "actionsP50": 13,
+      "actionsP90": 23,
+      "hpP50": 0
+    },
+    {
+      "mode": "combat",
+      "version": "combat-v2.1.0",
+      "name": "100 at 60HP vs three 40 guards",
+      "seeds": 256,
+      "winRate": 0,
+      "actionsP50": 7,
+      "actionsP90": 11,
+      "hpP50": 0
+    },
+    {
+      "mode": "combat",
+      "version": "combat-v2.1.0",
+      "name": "100 at 10HP vs 100 peer",
+      "seeds": 256,
+      "winRate": 0,
+      "actionsP50": 1,
+      "actionsP90": 3,
+      "hpP50": 0
+    },
+    {
+      "mode": "combat",
+      "version": "combat-v2.1.0",
+      "name": "100 vs 70 veteran",
+      "seeds": 256,
+      "winRate": 0.99609375,
+      "actionsP50": 6,
+      "actionsP90": 7,
+      "hpP50": 67
+    },
+    {
+      "mode": "combat",
+      "version": "combat-v2.1.0",
+      "name": "100 vs 100 peer",
+      "seeds": 256,
+      "winRate": 0.53515625,
+      "actionsP50": 7,
+      "actionsP90": 10,
+      "hpP50": 4
+    },
+    {
+      "mode": "combat",
+      "version": "combat-v2.1.0",
+      "name": "50 vs 50 peer",
+      "seeds": 256,
+      "winRate": 0.50390625,
+      "actionsP50": 13,
+      "actionsP90": 17,
+      "hpP50": 2
+    },
+    {
+      "mode": "combat",
+      "version": "combat-v2.1.0",
+      "name": "40 vs 100 reverse",
+      "seeds": 256,
+      "winRate": 0,
+      "actionsP50": 5,
+      "actionsP90": 6,
+      "hpP50": 0
+    },
+    {
+      "mode": "combat",
+      "version": "combat-v2.2.0",
+      "name": "100 vs 40 civilian",
+      "seeds": 256,
+      "winRate": 1,
+      "actionsP50": 2,
+      "actionsP90": 3,
+      "hpP50": 100
+    },
+    {
+      "mode": "combat",
+      "version": "combat-v2.2.0",
+      "name": "100 vs three 40 guards",
+      "seeds": 256,
+      "winRate": 1,
+      "actionsP50": 8,
+      "actionsP90": 9,
+      "hpP50": 94
+    },
+    {
+      "mode": "combat",
+      "version": "combat-v2.2.0",
+      "name": "100 at 60HP vs three 40 guards",
+      "seeds": 256,
+      "winRate": 1,
+      "actionsP50": 8,
+      "actionsP90": 9,
+      "hpP50": 54
+    },
+    {
+      "mode": "combat",
+      "version": "combat-v2.2.0",
+      "name": "100 at 10HP vs 100 peer",
+      "seeds": 256,
+      "winRate": 0.00390625,
+      "actionsP50": 1,
+      "actionsP90": 2,
+      "hpP50": 0
+    },
+    {
+      "mode": "combat",
+      "version": "combat-v2.2.0",
+      "name": "100 vs 70 veteran",
+      "seeds": 256,
+      "winRate": 1,
+      "actionsP50": 3,
+      "actionsP90": 4,
+      "hpP50": 89
+    },
+    {
+      "mode": "combat",
+      "version": "combat-v2.2.0",
+      "name": "100 vs 100 peer",
+      "seeds": 256,
+      "winRate": 0.53125,
+      "actionsP50": 5,
+      "actionsP90": 8,
+      "hpP50": 7
+    },
+    {
+      "mode": "combat",
+      "version": "combat-v2.2.0",
+      "name": "50 vs 50 peer",
+      "seeds": 256,
+      "winRate": 0.48828125,
+      "actionsP50": 11,
+      "actionsP90": 14,
+      "hpP50": 0
+    },
+    {
+      "mode": "combat",
+      "version": "combat-v2.2.0",
+      "name": "40 vs 100 reverse",
+      "seeds": 256,
+      "winRate": 0,
+      "actionsP50": 1,
+      "actionsP90": 2,
+      "hpP50": 0
+    },
+    {
+      "mode": "war",
+      "version": "war-v2.6.0",
+      "name": "equal troops commander 100 vs 40",
+      "seeds": 256,
+      "winRate": 1,
+      "drawRate": 0,
+      "ownLossP50": 49,
+      "enemyLossP50": 183
+    },
+    {
+      "mode": "war",
+      "version": "war-v2.6.0",
+      "name": "equal troops commander 50 vs 50",
+      "seeds": 256,
+      "winRate": 0,
+      "drawRate": 1,
+      "ownLossP50": 183,
+      "enemyLossP50": 183
+    },
+    {
+      "mode": "war",
+      "version": "war-v2.6.0",
+      "name": "commander 100 outnumbered tenfold",
+      "seeds": 256,
+      "winRate": 0,
+      "drawRate": 0,
+      "ownLossP50": 110,
+      "enemyLossP50": 743
+    },
+    {
+      "mode": "war",
+      "version": "war-v2.6.0",
+      "name": "commander 40 numerical advantage threefold",
+      "seeds": 256,
+      "winRate": 0,
+      "drawRate": 0,
+      "ownLossP50": 517,
+      "enemyLossP50": 74
+    },
+    {
+      "mode": "war",
+      "version": "war-v2.7.0",
+      "name": "equal troops commander 100 vs 40",
+      "seeds": 256,
+      "winRate": 1,
+      "drawRate": 0,
+      "ownLossP50": 27,
+      "enemyLossP50": 213
+    },
+    {
+      "mode": "war",
+      "version": "war-v2.7.0",
+      "name": "equal troops commander 50 vs 50",
+      "seeds": 256,
+      "winRate": 0,
+      "drawRate": 1,
+      "ownLossP50": 183,
+      "enemyLossP50": 183
+    },
+    {
+      "mode": "war",
+      "version": "war-v2.7.0",
+      "name": "commander 100 outnumbered tenfold",
+      "seeds": 256,
+      "winRate": 0,
+      "drawRate": 0,
+      "ownLossP50": 125,
+      "enemyLossP50": 655
+    },
+    {
+      "mode": "war",
+      "version": "war-v2.7.0",
+      "name": "commander 40 numerical advantage threefold",
+      "seeds": 256,
+      "winRate": 0,
+      "drawRate": 0,
+      "ownLossP50": 528,
+      "enemyLossP50": 52
+    }
+  ]
+}

@@ -424,7 +424,7 @@ export function materializeLevelledUniqueArtProjection(
     armorPiercing: scope === 'personal_combat'
       ? profile.armorPiercing || personalPowerClass === 'heavy' || personalPowerClass === 'ultimate'
       : profile.armorPiercing,
-    effects: profile.effects.map((effect) => scaleEffect(
+    effects: profile.effects.map((effect) => effect.stackingGroup?.startsWith('authored:') ? clone(effect) : scaleEffect(
       effect,
       useAggressiveWarScaling ? warEffectFactor : factor,
     )),

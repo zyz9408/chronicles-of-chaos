@@ -169,8 +169,9 @@ describe('CombatEngine deterministic core', () => {
       playerOverrides: { abilityScores: { 武力: 80, 智力: 80, 统率: 90, 机运: 50 } },
       enemyOverrides: { abilityScores: { 武力: 60, 智力: 50, 统率: 50, 机运: 50 } },
     });
+    const legacySnapshot = { ...snapshot, intent: { ...snapshot.intent, rulesetVersion: 'combat-v2.1.0' as const } };
     const state = executeCombatAction(
-      forceTurn(createCombatEngineState(snapshot), 'player_1'),
+      forceTurn(createCombatEngineState(legacySnapshot), 'player_1'),
       { type: 'normal_attack', actorId: 'player_1', targetId: 'enemy_1' },
     );
 

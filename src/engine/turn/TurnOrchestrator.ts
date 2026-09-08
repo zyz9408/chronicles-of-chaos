@@ -4,6 +4,7 @@
 // ============================================================
 
 import { bridgeFixedNpcResponse } from '../identity/FixedNpcIdentityBridge';
+import { settlePassiveAbilityRules } from '../abilities/PassiveAbilityRuntime';
 import type {
   WorldBook,
   RuntimeState,
@@ -971,6 +972,7 @@ export async function executeTurn(
       recoveryKind: narratorResponse.writeback?.playerRecoveryKind,
     }).state;
     newState = settlePlayerAuthoredArtUse(newState, playerInput);
+    newState = settlePassiveAbilityRules(newState, runtimeState);
     newState = settlePassiveUniqueArtsAfterRuntimeTurn(newState, runtimeState).state;
   }
 

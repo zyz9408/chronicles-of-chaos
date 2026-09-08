@@ -2,9 +2,11 @@ export const ENCOUNTER_CONTRACT_VERSION = 1 as const;
 export const SEMANTIC_PROJECTION_VERSION = 1 as const;
 
 export const LEGACY_COMBAT_RULESET_VERSION = 'combat-v2.0.0' as const;
-export const COMBAT_RULESET_VERSION = 'combat-v2.1.0' as const;
+export const ATTRIBUTE_COMBAT_RULESET_VERSION = 'combat-v2.1.0' as const;
+export const COMBAT_RULESET_VERSION = 'combat-v2.2.0' as const;
 export const SUPPORTED_COMBAT_RULESET_VERSIONS = [
   LEGACY_COMBAT_RULESET_VERSION,
+  ATTRIBUTE_COMBAT_RULESET_VERSION,
   COMBAT_RULESET_VERSION,
 ] as const;
 export const LEGACY_WAR_RULESET_VERSION = 'war-v2.0.0' as const;
@@ -13,7 +15,8 @@ export const BALANCED_WAR_RULESET_VERSION = 'war-v2.2.0' as const;
 export const THEATER_WAR_RULESET_VERSION = 'war-v2.3.0' as const;
 export const AGGRESSIVE_WAR_RULESET_VERSION = 'war-v2.4.0' as const;
 export const REBALANCED_WAR_RULESET_VERSION = 'war-v2.5.0' as const;
-export const WAR_RULESET_VERSION = 'war-v2.6.0' as const;
+export const ATTRIBUTE_WAR_RULESET_VERSION = 'war-v2.6.0' as const;
+export const WAR_RULESET_VERSION = 'war-v2.7.0' as const;
 export const SUPPORTED_WAR_RULESET_VERSIONS = [
   LEGACY_WAR_RULESET_VERSION,
   COMMAND_WAR_RULESET_VERSION,
@@ -21,6 +24,7 @@ export const SUPPORTED_WAR_RULESET_VERSIONS = [
   THEATER_WAR_RULESET_VERSION,
   AGGRESSIVE_WAR_RULESET_VERSION,
   REBALANCED_WAR_RULESET_VERSION,
+  ATTRIBUTE_WAR_RULESET_VERSION,
   WAR_RULESET_VERSION,
 ] as const;
 

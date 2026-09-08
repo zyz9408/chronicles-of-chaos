@@ -46,6 +46,7 @@ function runCombat(seed: string, input: {
   const playerIds = Array.from({ length: input.players ?? 1 }, (_, index) => `player_${index + 1}`);
   const enemyIds = Array.from({ length: input.enemies ?? 1 }, (_, index) => `enemy_${index + 1}`);
   const intent = makeCombatIntent(playerIds, enemyIds);
+  intent.rulesetVersion = 'combat-v2.1.0'; // Frozen baseline; V2.2 is covered by tests/balance.
   intent.encounterId = `encounter_combat_${seed}`;
   intent.seed = seed;
   const snapshot = createCombatEncounterSnapshot({

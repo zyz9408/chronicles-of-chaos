@@ -8,6 +8,7 @@ import { normalizeUniqueArtRarity } from './NpcUniqueArtPolicy';
 import type { SemanticEffect, UniqueArtSemanticProfile } from '../encounterV2/EncounterContracts';
 import { materializeLevelledUniqueArtProjection } from '../encounterV2/UniqueArtProjectionRuntime';
 import { normalizePlayerVitals } from './PlayerVitals';
+import { compileUniqueArtAbilityMechanics } from '../abilities/AbilityMechanics';
 
 const RECOVERY_LIMIT_BY_RARITY = Object.freeze({
   white: 2,
@@ -55,6 +56,7 @@ export function settlePassiveUniqueArtsAfterRuntimeTurn(
   const appliedArtIds = new Set<string>();
 
   for (const { profile, art } of profiles) {
+    if (compileUniqueArtAbilityMechanics(art)?.rules.some(rule => rule.trigger === 'after_runtime_turn' || rule.trigger === 'on_time_elapsed')) continue;
     const materialized = materializeLevelledUniqueArtProjection(art, profile, 'runtime_turn');
     const effectLimit = RECOVERY_LIMIT_BY_RARITY[normalizeUniqueArtRarity(art.rarity)];
     for (const effect of [...materialized.effects].sort((left, right) => left.priority - right.priority)) {

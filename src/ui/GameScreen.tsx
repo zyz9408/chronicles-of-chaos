@@ -1,4 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { settlePassiveAbilityRules } from '../engine/abilities/PassiveAbilityRuntime';
+import { AbilityRulesPanel } from './AbilityRulesPanel';
 import type {
   CharacterEquipmentItem,
   EquipmentSlot,
@@ -1838,7 +1840,7 @@ export const GameScreen: React.FC<Props> = ({
       assertExecutionCurrent(execution);
       finishUiProcessingStage(narrativeStage);
 
-      const completed = completeCombatNarrativeTurn(baseState, {
+      const completed = settlePassiveAbilityRules(completeCombatNarrativeTurn(baseState, {
         resultHash: result.resultHash,
         narrativeText: generated.narrativeText,
         suggestedActions: generated.suggestedActions,
@@ -1849,7 +1851,7 @@ export const GameScreen: React.FC<Props> = ({
         completionTokens: generated.usage?.completionTokens,
         totalTokens: generated.usage?.totalTokens,
         rawResponse: generated.rawResponse,
-      });
+      }), baseState);
       const turnNumber = completed.turnLog.length;
       const rollbackCandidate = createTurnRollbackSnapshot({
         beforeState: baseState,
@@ -2035,7 +2037,7 @@ export const GameScreen: React.FC<Props> = ({
       assertExecutionCurrent(execution);
       finishUiProcessingStage(narrativeStage);
 
-      const completed = completeWarNarrativeTurn(baseState, {
+      const completed = settlePassiveAbilityRules(completeWarNarrativeTurn(baseState, {
         resultHash: result.resultHash,
         narrativeText: generated.narrativeText,
         suggestedActions: generated.suggestedActions,
@@ -2046,7 +2048,7 @@ export const GameScreen: React.FC<Props> = ({
         completionTokens: generated.usage?.completionTokens,
         totalTokens: generated.usage?.totalTokens,
         rawResponse: generated.rawResponse,
-      });
+      }), baseState);
       const turnNumber = completed.turnLog.length;
       const rollbackCandidate = createTurnRollbackSnapshot({
         beforeState: baseState,
@@ -7710,6 +7712,13 @@ export const GameScreen: React.FC<Props> = ({
                 onClose={() => setActiveSystemPanel(null)}
               />
 
+                <AbilityRulesPanel state={runtimeState} disabled={isProcessing || isMemorySummaryProcessing || Boolean(runtimeState.encounterV2?.active)} onApply={async (id, kind, mechanics) => {
+                  const nextState = { ...runtimeState, player: { ...runtimeState.player,
+                    ...(kind === 'trait' ? { traits: runtimeState.player.traits?.map(trait => trait.id === id ? { ...trait, mechanics } : trait) }
+                      : { uniqueArts: runtimeState.player.uniqueArts?.map(art => art.id === id ? { ...art, mechanics } : art) }),
+                  } };
+                  await commitPlayerMutation(nextState, () => setMessage('数值规则已保存；后续结算按此规则执行。'));
+                }} />
               <div className="unique-arts-count-row">
                 <span>已记录 <strong>{uniqueArtsPanelModel.totalCount}</strong></span>
                 <span>主角 <strong>{uniqueArtsPanelModel.playerCount}</strong></span>

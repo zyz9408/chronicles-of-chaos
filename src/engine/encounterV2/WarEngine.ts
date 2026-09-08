@@ -8,6 +8,7 @@ import {
 } from './EncounterDeterminism';
 import {
   AGGRESSIVE_WAR_RULESET_VERSION,
+  ATTRIBUTE_WAR_RULESET_VERSION,
   BALANCED_WAR_RULESET_VERSION,
   LEGACY_WAR_RULESET_VERSION,
   REBALANCED_WAR_RULESET_VERSION,
@@ -165,22 +166,22 @@ function usesWarV22(state: WarEngineState): boolean {
     || state.snapshot.intent.rulesetVersion === THEATER_WAR_RULESET_VERSION
     || state.snapshot.intent.rulesetVersion === AGGRESSIVE_WAR_RULESET_VERSION
     || state.snapshot.intent.rulesetVersion === REBALANCED_WAR_RULESET_VERSION
-    || state.snapshot.intent.rulesetVersion === WAR_RULESET_VERSION;
+    || usesAttributeCommandModel(state);
 }
 
 function usesAggressiveCommandModel(state: WarEngineState): boolean {
   return state.snapshot.intent.rulesetVersion === AGGRESSIVE_WAR_RULESET_VERSION
     || state.snapshot.intent.rulesetVersion === REBALANCED_WAR_RULESET_VERSION
-    || state.snapshot.intent.rulesetVersion === WAR_RULESET_VERSION;
+    || usesAttributeCommandModel(state);
 }
 
 function usesRebalancedCommandModel(state: WarEngineState): boolean {
   return state.snapshot.intent.rulesetVersion === REBALANCED_WAR_RULESET_VERSION
-    || state.snapshot.intent.rulesetVersion === WAR_RULESET_VERSION;
+    || usesAttributeCommandModel(state);
 }
 
 function usesAttributeCommandModel(state: WarEngineState): boolean {
-  return state.snapshot.intent.rulesetVersion === WAR_RULESET_VERSION;
+  return state.snapshot.intent.rulesetVersion === WAR_RULESET_VERSION || state.snapshot.intent.rulesetVersion === ATTRIBUTE_WAR_RULESET_VERSION;
 }
 
 function commanderFactor(state: WarEngineState, side: EncounterSide): number {
@@ -454,8 +455,10 @@ function collectRoundEffects(
       totals.percentLimit[targetSide] = Math.max(totals.percentLimit[targetSide], artLimits.percent);
       totals.directLimit[targetSide] = Math.max(totals.directLimit[targetSide], artLimits.direct);
     }
+    const authored = state.snapshot.intent.rulesetVersion === WAR_RULESET_VERSION && entry.effect.stackingGroup?.startsWith('authored:');
+    if (authored) totals.percentLimit[targetSide] = Math.max(totals.percentLimit[targetSide], 280);
     const directLimit = artLimits?.direct ?? 15;
-    const percentLimit = artLimits?.percent ?? 30;
+    const percentLimit = authored ? 280 : artLimits?.percent ?? 30;
     const boundedDirect = clampWarValue(entry.effect.value, -directLimit, directLimit);
     const boundedPercent = clampWarValue(entry.effect.value, -percentLimit, percentLimit);
     switch (entry.effect.operation) {
@@ -703,6 +706,16 @@ function engagedStrengths(
   );
   if (!usesWarV22(state)) {
     return { player: playerRawStrength, enemy: enemyRawStrength };
+  }
+  if (state.snapshot.intent.rulesetVersion === WAR_RULESET_VERSION) {
+    // Frontage limits headcount, not a commander's quality/training advantage.
+    const soldiers = (side: EncounterSide) => state.forces.filter(force => force.side === side).reduce((sum, force) => sum + force.remainingStrength, 0);
+    const frontage = (own: number, enemy: number, coordination: number) => own > enemy && enemy > 0
+      ? (enemy + (own - enemy) * clampWarValue(0.65 + coordination * 0.002, 0.65, 0.85)) / own : 1;
+    return {
+      player: playerRawStrength * frontage(soldiers('player'), soldiers('enemy'), sideCoordination(state, 'player')),
+      enemy: enemyRawStrength * frontage(soldiers('enemy'), soldiers('player'), sideCoordination(state, 'enemy')),
+    };
   }
   return resolveWarEngagedStrengths({
     playerRawStrength,

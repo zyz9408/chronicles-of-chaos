@@ -1,3 +1,5 @@
+import { COMBAT_RULESET_VERSION } from './EncounterContracts';
+import { installAuthoredCombatProfiles } from '../abilities/AuthoredCombatProfiles';
 import {
   EQUIPMENT_QUALITY_BASELINES,
   EQUIPMENT_QUALITY_LIMITS,
@@ -156,6 +158,7 @@ function createCombatantSnapshot(
   side: CombatantSnapshot['side'],
   stableOrder: number,
   profiles: ReadonlyMap<string, SemanticProjection>,
+  extendedAttributes = false,
 ): CombatantSnapshot {
   const actorId = sourceActorId(source);
   const traitIds = (source.traits ?? []).map((trait) => trait.id);
@@ -305,7 +308,7 @@ function createCombatantSnapshot(
     -MAX_COMBINED_TREASURE_SPEED_MODIFIER,
     MAX_COMBINED_TREASURE_SPEED_MODIFIER,
   );
-  const traitSpeed = traitProfiles.flatMap((profile) => profile.effects)
+  const traitSpeed = [...traitProfiles, ...(extendedAttributes ? uniqueArtProfiles : [])].flatMap((profile) => profile.effects)
     .filter((effect) => effect.trigger === 'battle_start'
       && effect.condition === 'always'
       && effect.operation === 'modify_speed'
@@ -323,7 +326,7 @@ function createCombatantSnapshot(
     ...(source.combatArchetype ? { combatArchetype: source.combatArchetype } : {}),
     level: Math.max(1, Math.trunc(finiteOr(source.level, 1))),
     xp: Math.max(0, Math.trunc(finiteOr(source.xp, 0))),
-    martial: clamp(finiteOr(source.abilityScores?.武力, 50), 0, 100),
+    martial: clamp(finiteOr(source.abilityScores?.武力, 50), 0, extendedAttributes ? 160 : 100),
     intelligence: clamp(finiteOr(source.abilityScores?.智力, 50), 0, 100),
     leadership: clamp(finiteOr(source.abilityScores?.统率, 50), 0, 100),
     luck: clamp(finiteOr(source.abilityScores?.机运, 50), 0, 100),
@@ -366,6 +369,7 @@ export function createCombatEncounterSnapshot(input: CreateCombatEncounterSnapsh
     profiles,
     allSources.flatMap((source) => source.uniqueArts ?? []),
   );
+  if (input.intent.rulesetVersion === COMBAT_RULESET_VERSION) installAuthoredCombatProfiles(profiles, allSources);
   const sourcesById = new Map<string, CombatCharacterSource>();
   for (const source of allSources) {
     const actorId = sourceActorId(source);
@@ -380,7 +384,7 @@ export function createCombatEncounterSnapshot(input: CreateCombatEncounterSnapsh
   const combatants = orderedParticipants.map(({ actorId, side }, stableOrder) => {
     const source = sourcesById.get(actorId);
     if (!source) throw new Error(`开战意图中的参战者 ${actorId} 没有对应角色来源。`);
-    return createCombatantSnapshot(source, side, stableOrder, profiles);
+    return createCombatantSnapshot(source, side, stableOrder, profiles, input.intent.rulesetVersion === COMBAT_RULESET_VERSION);
   });
 
   assertUnique(input.lootableItemIds, 'lootableItemIds');

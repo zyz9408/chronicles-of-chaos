@@ -1,5 +1,6 @@
 import {
   AGGRESSIVE_WAR_RULESET_VERSION,
+  ATTRIBUTE_WAR_RULESET_VERSION,
   SUPPORTED_COMBAT_RULESET_VERSIONS,
   ENCOUNTER_CONTRACT_VERSION,
   ENCOUNTER_ENVIRONMENT_TAGS,
@@ -372,7 +373,7 @@ export function validateEncounterStartIntent(value: unknown): EncounterValidatio
     const participation = isRecord(value.participation) ? value.participation : undefined;
     const requiresParticipation = value.rulesetVersion === THEATER_WAR_RULESET_VERSION
       || value.rulesetVersion === AGGRESSIVE_WAR_RULESET_VERSION
-      || value.rulesetVersion === WAR_RULESET_VERSION;
+      || value.rulesetVersion === WAR_RULESET_VERSION || value.rulesetVersion === ATTRIBUTE_WAR_RULESET_VERSION;
     if (requiresParticipation && !participation) {
       errors.push(`${String(value.rulesetVersion)} 必须提供 participation，区分会战背景与直接参战兵力。`);
     }

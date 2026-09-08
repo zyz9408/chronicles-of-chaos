@@ -1,4 +1,5 @@
 import { isCurrentTroopLedgerEntry } from '../state/troopLifecycle';
+import { installAuthoredCombatProfiles } from '../abilities/AuthoredCombatProfiles';
 import {
   assertValidEncounterStartIntent,
   validateSemanticProjection,
@@ -12,6 +13,7 @@ import type {
 } from './EncounterContracts';
 import {
   AGGRESSIVE_WAR_RULESET_VERSION,
+  ATTRIBUTE_WAR_RULESET_VERSION,
   LEGACY_WAR_RULESET_VERSION,
   SEMANTIC_PROJECTION_VERSION,
   THEATER_WAR_RULESET_VERSION,
@@ -341,9 +343,10 @@ export function createWarEncounterSnapshot(input: CreateWarEncounterSnapshotInpu
   if (input.intent.kind !== 'war') throw new Error('War 快照只接受 war 意图。');
   if (!input.sessionId.trim()) throw new Error('sessionId 不能为空。');
   const profiles = validateProjectionBundle(input.projections);
+  if (input.intent.rulesetVersion === WAR_RULESET_VERSION) installAuthoredCombatProfiles(profiles, [input.playerCommander, input.enemyCommander].filter((source): source is WarCommanderSource => Boolean(source)));
   const useAggressiveWarScaling = input.intent.rulesetVersion === AGGRESSIVE_WAR_RULESET_VERSION
-    || input.intent.rulesetVersion === WAR_RULESET_VERSION;
-  const useEnhancedWarScaling = input.intent.rulesetVersion === WAR_RULESET_VERSION;
+    || input.intent.rulesetVersion === WAR_RULESET_VERSION || input.intent.rulesetVersion === ATTRIBUTE_WAR_RULESET_VERSION;
+  const useEnhancedWarScaling = input.intent.rulesetVersion === WAR_RULESET_VERSION || input.intent.rulesetVersion === ATTRIBUTE_WAR_RULESET_VERSION;
   if (useAggressiveWarScaling) {
     for (const source of [...input.playerTroops, ...input.enemyTroops]) {
       if (profiles.has(source.troopId)) continue;
@@ -387,7 +390,7 @@ export function createWarEncounterSnapshot(input: CreateWarEncounterSnapshotInpu
   );
   const includeV23Fields = input.intent.rulesetVersion === THEATER_WAR_RULESET_VERSION
     || input.intent.rulesetVersion === AGGRESSIVE_WAR_RULESET_VERSION
-    || input.intent.rulesetVersion === WAR_RULESET_VERSION;
+    || input.intent.rulesetVersion === WAR_RULESET_VERSION || input.intent.rulesetVersion === ATTRIBUTE_WAR_RULESET_VERSION;
   const forces = ordered.map(({ troopId, side }, stableOrder) => {
     const source = sourceMap.get(troopId);
     if (!source) throw new Error(`开战意图中的部队 ${troopId} 没有对应部队来源。`);
