@@ -1,0 +1,1 @@
+function w(e,c,d=e){let s=0,u=0;const n=new Set;return({name:t,originalSize:r})=>{if(u++,s+=r,!Number.isSafeInteger(r)||r<0||r>d||s>e||u>c)throw new Error("归档解压大小或文件数量超过安全上限。");if(n.has(t)||t.startsWith("/")||t.includes("\\")||t.split("/").includes(".."))throw new Error("归档包含重复或非法文件路径。");return n.add(t),!0}}export{w as createZipBudgetFilter};
