@@ -2442,6 +2442,7 @@ export const GameScreen: React.FC<Props> = ({
           saveId,
           runtimeState: restored.state,
           deleteSnapshotsAfterTurn: latestTurnNumber - 1,
+          expectedRuntimeState: runtimeState,
           signal: execution.signal,
         }),
         (committed) => {
@@ -2505,6 +2506,7 @@ export const GameScreen: React.FC<Props> = ({
           saveId,
           runtimeState: restored.state,
           deleteSnapshotsAfterTurn: turnNumber - 1,
+          expectedRuntimeState: runtimeState,
           signal: execution.signal,
         }),
         (committed) => {

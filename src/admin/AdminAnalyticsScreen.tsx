@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import './admin-analytics.css';
 
-export const ADMIN_ANALYTICS_PASSCODE = 'coc3';
 
 interface AnalyticsSummary {
   currentOnline: number;
@@ -41,7 +40,7 @@ export interface AnalyticsResponse {
 }
 
 export function isAdminAnalyticsPasscode(value: string): boolean {
-  return value.trim() === ADMIN_ANALYTICS_PASSCODE;
+  return value.trim().length >= 16 && value.trim().length <= 1024;
 }
 
 function formatNumber(value: number): string {
@@ -154,7 +153,7 @@ export function AdminAnalyticsScreen() {
           }}
         >
           <h2>查看匿名统计</h2>
-          <p>请输入约定口令。它只用于避免玩家误入，不是安全认证，也不保护敏感数据。</p>
+          <p>请输入管理员口令以查看统计。</p>
           <label>
             后台口令
             <input

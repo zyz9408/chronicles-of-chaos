@@ -12,7 +12,7 @@ const perfectLearningPattern = /完美|一学即会|一学便会|瞬间掌握|�
 const fastLearningPattern = /快速|迅速|极快|加速|倍速|事半功倍/u;
 
 function sourceText(value: { label?: string; name?: string; description?: string; effectSummary?: string; promptHint?: string }): string {
-  return [value.label, value.name, value.description, value.effectSummary, value.promptHint]
+  return [value.label, value.name, value.effectSummary, value.description, value.promptHint]
     .filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()))
     .join('；')
     .normalize('NFKC');
@@ -136,12 +136,13 @@ export function abilityMechanicsSummary(mechanics: AbilityMechanics | undefined)
 }
 
 function compileRecoveryOrModifier(id: string, text: string, art: boolean): AbilityMechanics | undefined {
+  text = text.replace(/血量|血条|生命值/gu, '生命');
   const rules: AbilityRule[] = [];
   const period = /每(?:隔)?\s*(\d+(?:\.\d+)?|一|二|两|三|四|五|六|七|八|九|十|半)?\s*(分钟|小时|时辰|天|日)/u.exec(text);
   const counts: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10, 半: 0.5 };
   const interval = period ? (counts[period[1]] ?? Number(period[1] ?? 1)) * (({ 分钟: 1, 小时: 60, 时辰: 120, 天: 1440, 日: 1440 } as Record<string, number>)[period[2]] ?? 1) : undefined;
   const perTurn = /每(?:个)?回合|每轮/u.test(text);
-  const onUse = art && /每次(?:使用|发动|施展)|每当使用|使用时|使用后|发动时|施展时|催动时/u.test(text);
+  const onUse = art && /每次(?:使用|发动|施展)|每当使用|使用时|使用后|发动时|施展时|催动时|(?:技能|绝艺|此招)(?:会|可以|能够)?(?:恢复|回复)/u.test(text);
   const full = /恢复(?:全部|所有)(?:的)?生命|回复(?:全部|所有)(?:的)?生命|恢复(?:到|至)?满|回复(?:到|至)?满|回满|满血|(?:生命|体力)(?:值)?恢复(?:至|到)?上限/u.test(text);
   const healing = /生命|回血|自愈|体力/u.test(text) && /恢复|回复|回满|回血|自愈/u.test(text)
     && !/(?:无法|不能|不会|不再)(?:自动)?(?:恢复|回复|回血|自愈)/u.test(text)

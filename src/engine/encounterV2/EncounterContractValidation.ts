@@ -2,6 +2,7 @@ import {
   AGGRESSIVE_WAR_RULESET_VERSION,
   ATTRIBUTE_WAR_RULESET_VERSION,
   SUPPORTED_COMBAT_RULESET_VERSIONS,
+  COMBAT_RULESET_VERSION,
   ENCOUNTER_CONTRACT_VERSION,
   ENCOUNTER_ENVIRONMENT_TAGS,
   ENCOUNTER_SCOPED_ARMOR_CLASSES,
@@ -769,6 +770,7 @@ function validateDeltas(value: unknown, errors: string[]): void {
 }
 
 function validateCombatResult(value: Record<string, unknown>, errors: string[]): void {
+  const vitalsLimit = value.rulesetVersion === COMBAT_RULESET_VERSION ? 100000 : 100;
   if (!(SUPPORTED_COMBAT_RULESET_VERSIONS as readonly unknown[]).includes(value.rulesetVersion)) {
     errors.push(`personal_combat.rulesetVersion 必须为 ${SUPPORTED_COMBAT_RULESET_VERSIONS.join(' / ')}。`);
   }
@@ -787,11 +789,11 @@ function validateCombatResult(value: Record<string, unknown>, errors: string[]):
       else actorIds.push(combatant.actorId);
       if (!['player', 'enemy'].includes(String(combatant.side))) errors.push(`${path}.side 不在白名单中。`);
       else sides.add(String(combatant.side));
-      if (!isFiniteNumber(combatant.hp) || combatant.hp < 0 || combatant.hp > 100) {
-        errors.push(`${path}.hp 必须在 0—100 之间。`);
+      if (!isFiniteNumber(combatant.hp) || combatant.hp < 0 || combatant.hp > vitalsLimit) {
+        errors.push(`${path}.hp 必须在 0—${vitalsLimit} 之间。`);
       }
-      if (!isFiniteNumber(combatant.stamina) || combatant.stamina < 0 || combatant.stamina > 100) {
-        errors.push(`${path}.stamina 必须在 0—100 之间。`);
+      if (!isFiniteNumber(combatant.stamina) || combatant.stamina < 0 || combatant.stamina > vitalsLimit) {
+        errors.push(`${path}.stamina 必须在 0—${vitalsLimit} 之间。`);
       }
       if (!isIntegerInRange(combatant.downCount, 0, 2)) errors.push(`${path}.downCount 必须是 0—2 的整数。`);
       if (!Array.isArray(combatant.statuses) || combatant.statuses.some((status) => !isStableId(status))) {

@@ -23,6 +23,9 @@ import {
   AUTO_SAVE_LIMIT_KEY,
 } from '../settings/SaveSettings';
 import { idbClear } from './IndexedDbStore';
+import { IndexedDbAvgImageGenerationProfileRepository } from '../avg/AvgImageGenerationProfiles';
+import { IndexedDbAvgVisualOverrideRepository } from '../avg/AvgVisualOverrideRepository';
+import { AvgResourcePackManager } from '../avg/AvgResourcePackManager';
 
 export type LocalDataClearScope =
   | 'saves'
@@ -106,5 +109,10 @@ export async function clearLocalData(
   await clearAllSaves();
   await clearCachedData();
   clearPreferenceData(storage);
-  if (scope === 'all') await clearAllApiSettingsAsync(storage as Storage | undefined);
+  await new IndexedDbAvgVisualOverrideRepository().clear();
+  await new AvgResourcePackManager().clear();
+  if (scope === 'all') {
+    await clearAllApiSettingsAsync(storage as Storage | undefined);
+    await new IndexedDbAvgImageGenerationProfileRepository().clear();
+  }
 }

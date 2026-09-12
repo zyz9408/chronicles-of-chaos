@@ -81,6 +81,8 @@ function appendLatestSummary(state: RuntimeState, summary: string): void {
 function hasCompletedUseOutcome(playerInput: string, narrativeText: string, art: CharacterUniqueArt): boolean {
   const intent = playerInput.normalize('NFKC');
   const narrative = narrativeText.normalize('NFKC');
+  const declined = new RegExp(`(?:不|别|放弃|取消|无需|未能|没有)(?:再|要|打算)?(?:使用|施展|发动|催动|运转|运使|使出|运功)[^，。！？;；]{0,16}(?:${escapeRegExp(art.name)}|${escapeRegExp(art.id)})`, 'u');
+  if (declined.test(intent) || declined.test(narrative)) return false;
   const identifiesArt = intent.includes(art.name)
     || intent.includes(art.id)
     || narrative.includes(art.name)
@@ -134,7 +136,10 @@ export function settlePlayerAuthoredArtUse(
         trigger: rule.trigger,
         status: hp !== before.hp || stamina !== before.stamina ? 'applied' : 'skipped',
         summary: hp !== before.hp || stamina !== before.stamina
-          ? `${art.name}按玩家权威规则将${hp !== before.hp ? '生命' : '体力'}恢复至上限`
+          ? `${art.name}按玩家权威规则恢复${[
+            hp !== before.hp ? `生命 ${hp - before.hp}（${hp}/${vitals.maxHp}）` : '',
+            stamina !== before.stamina ? `体力 ${stamina - before.stamina}（${stamina}/${vitals.maxStamina}）` : '',
+          ].filter(Boolean).join('、')}`
           : `${art.name}当前无需恢复或不允许复活`,
         before,
         after,

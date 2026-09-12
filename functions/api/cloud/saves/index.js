@@ -1,3 +1,4 @@
+import { deleteCloudRows, drainCloudObjectCleanup } from '../../../_shared/cloudCleanup.js';
 import {
   cloudError,
   cloudJsonResponse,
@@ -28,9 +29,10 @@ function toPublicSave(row) {
 }
 
 export async function onRequestGet(context) {
+  const { env } = context;
   const session = await requireCloudSession(context);
   if (session.response) return session.response;
-  const { env } = context;
+  await drainCloudObjectCleanup(env, session.user.user_id);
   const limits = getCloudLimits(env);
   const result = await env.CLOUD_SAVE_DB.prepare(`
     SELECT slot_id, revision, size_bytes, checksum_sha256,
@@ -63,32 +65,7 @@ export async function onRequestDelete(context) {
   }
   const session = await requireCloudSession(context);
   if (session.response) return session.response;
-  const result = await env.CLOUD_SAVE_DB.prepare(`
-    SELECT object_key, size_bytes FROM cloud_saves WHERE user_id = ?1
-  `).bind(session.user.user_id).all();
-  const rows = Array.isArray(result?.results) ? result.results : [];
-  try {
-    await Promise.all(rows.map((row) => env.CLOUD_SAVE_BUCKET.delete(row.object_key)));
-  } catch {
-    return cloudError('cloud_storage_failed', 503, '云端对象删除失败，未修改存档索引。');
-  }
-  const releasedBytes = rows.reduce((total, row) => total + Number(row.size_bytes ?? 0), 0);
-  const nowIso = new Date().toISOString();
-  await env.CLOUD_SAVE_DB.batch([
-    env.CLOUD_SAVE_DB.prepare('DELETE FROM cloud_saves WHERE user_id = ?1')
-      .bind(session.user.user_id),
-    env.CLOUD_SAVE_DB.prepare(`
-      UPDATE cloud_users
-      SET usage_bytes = MAX(0, usage_bytes - ?2), updated_at = ?3
-      WHERE user_id = ?1
-    `).bind(session.user.user_id, releasedBytes, nowIso),
-    env.CLOUD_SAVE_DB.prepare(`
-      UPDATE cloud_quota
-      SET used_bytes = MAX(0, used_bytes - ?1), updated_at = ?2
-      WHERE scope = 'global'
-    `).bind(releasedBytes, nowIso),
-  ]);
-  return cloudJsonResponse({ ok: true, deleted: rows.length });
+  return deleteCloudRows(env, session.user.user_id, 'all');
 }
 
 export function onRequest() {

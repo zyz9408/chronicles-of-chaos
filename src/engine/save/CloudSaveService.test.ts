@@ -43,7 +43,7 @@ describe('CloudSaveService preferences', () => {
   it('encrypts full API settings in the browser and rejects a wrong passphrase', async () => {
     const archive: ApiSettingsArchive = {
       schema: 'coc.v2.api-settings',
-      version: 2,
+      version: 3,
       exportedAt: '2026-08-02T00:00:00.000Z',
       configs: [{
         id: 'api_main',

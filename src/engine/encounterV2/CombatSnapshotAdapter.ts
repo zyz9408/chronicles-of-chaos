@@ -315,8 +315,10 @@ function createCombatantSnapshot(
       && effect.target === 'self')
     .reduce((sum, effect) => sum + effect.value, 0);
 
-  const hp = clamp(Math.round(finiteOr(source.vitals?.hp, 100)), 0, 100);
-  const stamina = clamp(Math.round(finiteOr(source.vitals?.stamina, 100)), 0, 100);
+  const maxHp = extendedAttributes ? clamp(Math.round(finiteOr(source.vitals?.maxHp, 100)), 1, 100000) : 100;
+  const maxStamina = extendedAttributes ? clamp(Math.round(finiteOr(source.vitals?.maxStamina, 100)), 1, 100000) : 100;
+  const hp = clamp(Math.round(finiteOr(source.vitals?.hp, maxHp)), 0, maxHp);
+  const stamina = clamp(Math.round(finiteOr(source.vitals?.stamina, maxStamina)), 0, maxStamina);
   return {
     actorId,
     name: source.name,
@@ -331,9 +333,9 @@ function createCombatantSnapshot(
     leadership: clamp(finiteOr(source.abilityScores?.统率, 50), 0, 100),
     luck: clamp(finiteOr(source.abilityScores?.机运, 50), 0, 100),
     hp,
-    maxHp: 100,
+    maxHp,
     stamina,
-    maxStamina: 100,
+    maxStamina,
     combatStatuses: normalizeCombatStatuses(source.combatStatuses),
     speed: calculateDerivedSpeed({
       weaponWeight: weapon.weight,
@@ -365,11 +367,11 @@ export function createCombatEncounterSnapshot(input: CreateCombatEncounterSnapsh
   if (!input.sessionId.trim()) throw new Error('sessionId 不能为空。');
   const profiles = validateProjectionBundle(input.projections);
   const allSources = [...input.playerSources, ...input.enemySources];
+  if (input.intent.rulesetVersion === COMBAT_RULESET_VERSION) installAuthoredCombatProfiles(profiles, allSources);
   ensureUniqueArtCompatibilityProfiles(
     profiles,
     allSources.flatMap((source) => source.uniqueArts ?? []),
   );
-  if (input.intent.rulesetVersion === COMBAT_RULESET_VERSION) installAuthoredCombatProfiles(profiles, allSources);
   const sourcesById = new Map<string, CombatCharacterSource>();
   for (const source of allSources) {
     const actorId = sourceActorId(source);

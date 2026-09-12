@@ -5,6 +5,20 @@ export { E2E_STORAGE_MARKER };
 export const E2E_DATABASE_NAME = 'coc_v2_local_data';
 export const E2E_DATABASE_VERSION = 4;
 
+/** Deterministic narrative responses for UI-only history/rollback tests. */
+export async function mockBasicNarrativeTurns(page: Page): Promise<void> {
+  await page.route('https://example.test/v1/chat/completions', async route => {
+    const content = JSON.stringify({
+      protocolVersion: 'lsfy.turn.v1',
+      narrativeText: '【旁白】你完成了本次行动，将沿途见闻整理入卷。',
+      suggestedActions: [],
+      statePatches: [{ type: 'timeAdvance', payload: { minutesAdvanced: 15, reason: '行动', category: 'waiting' }, reason: '行动耗时' }],
+      bundledFeatures: { protocolVersion: 'coc.v2.bundledMain.v1' },
+    });
+    await route.fulfill({ contentType: 'text/event-stream', body: `data: ${JSON.stringify({ choices: [{ delta: { content } }], usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 } })}\n\ndata: [DONE]\n\n` });
+  });
+}
+
 const RESERVED_DEVELOPMENT_PORTS = new Set(['3000', '3001', '5173']);
 
 interface E2eOriginIdentity {

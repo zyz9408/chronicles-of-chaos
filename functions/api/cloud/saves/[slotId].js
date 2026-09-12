@@ -1,3 +1,4 @@
+import { deleteCloudRows, drainCloudObjectCleanup } from '../../../_shared/cloudCleanup.js';
 import {
   cloudError,
   cloudJsonResponse,
@@ -145,8 +146,8 @@ export async function onRequestPut(context) {
       INSERT INTO cloud_upload_reservations (
         reservation_id, user_id, slot_id, target_kind, expected_revision, next_revision,
         next_object_key, upload_bytes, user_growth_bytes, user_limit_bytes,
-        created_at, expires_at, upload_day
-      ) VALUES (?1, ?2, ?3, 'save', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        created_at, expires_at, upload_day, slot_limit
+      ) VALUES (?1, ?2, ?3, 'save', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
     `).bind(
       reservationId,
       session.user.user_id,
@@ -160,9 +161,11 @@ export async function onRequestPut(context) {
       nowIso,
       new Date(now.getTime() + 15 * 60 * 1_000).toISOString(),
       uploadDay,
+      limits.slots,
     ).run();
   } catch (error) {
     const code = databaseErrorCode(error);
+    if (code === 'slot_limit_exceeded') return cloudError(code, 409, '云存档槽位已达到上限。');
     if (code === 'global_quota_exceeded') {
       return cloudError(code, 507, '云存档公共免费额度已接近上限，暂时停止上传。');
     }
@@ -231,6 +234,7 @@ export async function onRequestPut(context) {
     ]);
 
     committed = true;
+    await drainCloudObjectCleanup(env, session.user.user_id);
     if (existing?.object_key && existing.object_key !== objectKey) {
       await env.CLOUD_SAVE_BUCKET.delete(existing.object_key).catch(() => undefined);
     }
@@ -281,29 +285,7 @@ export async function onRequestDelete(context) {
     return cloudError('cloud_save_conflict', 409, '云端存档已被其他设备更新，请刷新后重试。');
   }
 
-  try {
-    await env.CLOUD_SAVE_BUCKET.delete(existing.object_key);
-  } catch {
-    return cloudError('cloud_storage_failed', 503, '云端对象删除失败，未修改存档索引。');
-  }
-  const nowIso = new Date().toISOString();
-  const releasedBytes = Number(existing.size_bytes);
-  await env.CLOUD_SAVE_DB.batch([
-    env.CLOUD_SAVE_DB.prepare(`
-      DELETE FROM cloud_saves WHERE user_id = ?1 AND slot_id = ?2 AND revision = ?3
-    `).bind(session.user.user_id, slotId, expectedRevision),
-    env.CLOUD_SAVE_DB.prepare(`
-      UPDATE cloud_users
-      SET usage_bytes = MAX(0, usage_bytes - ?2), updated_at = ?3
-      WHERE user_id = ?1
-    `).bind(session.user.user_id, releasedBytes, nowIso),
-    env.CLOUD_SAVE_DB.prepare(`
-      UPDATE cloud_quota
-      SET used_bytes = MAX(0, used_bytes - ?1), updated_at = ?2
-      WHERE scope = 'global'
-    `).bind(releasedBytes, nowIso),
-  ]);
-  return cloudJsonResponse({ ok: true, deleted: true });
+  return deleteCloudRows(env, session.user.user_id, 'save', slotId, expectedRevision);
 }
 
 export function onRequest() {

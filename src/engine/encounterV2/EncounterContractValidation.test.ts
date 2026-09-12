@@ -657,6 +657,15 @@ describe('EncounterContractValidation', () => {
     expect(validateEncounterResultPayload(createCombatResult())).toEqual({ valid: true, errors: [] });
   });
 
+  it('accepts expanded vitals only for the current combat ruleset', () => {
+    const result = createCombatResult();
+    result.combatants[0].hp = 500;
+    expect(validateEncounterResultPayload(result)).toEqual({ valid: true, errors: [] });
+
+    result.rulesetVersion = LEGACY_COMBAT_RULESET_VERSION;
+    expect(validateEncounterResultPayload(result).errors).toContain('combatants[0].hp 必须在 0—100 之间。');
+  });
+
   it('accepts a complete unsealed war result', () => {
     expect(validateEncounterResultPayload(createWarResult())).toEqual({ valid: true, errors: [] });
   });
@@ -689,12 +698,12 @@ describe('EncounterContractValidation', () => {
   it('rejects duplicate settlement keys and invalid combatant ranges', () => {
     const result = createCombatResult();
     result.deltas.push({ ...result.deltas[0] });
-    result.combatants[0].hp = 101;
+    result.combatants[0].hp = 100001;
 
     const validation = validateEncounterResultPayload(result);
 
     expect(validation.valid).toBe(false);
     expect(validation.errors.some((error) => error.includes('idempotencyKey 不得重复'))).toBe(true);
-    expect(validation.errors).toContain('combatants[0].hp 必须在 0—100 之间。');
+    expect(validation.errors).toContain('combatants[0].hp 必须在 0—100000 之间。');
   });
 });

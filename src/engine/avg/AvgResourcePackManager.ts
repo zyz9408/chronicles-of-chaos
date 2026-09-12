@@ -336,18 +336,34 @@ async function readOpfsAsset(namespace: string, path: string, schema: ResourceDa
 }
 
 async function removeOpfsNamespace(namespace: string, schema: ResourceDatabaseSchema): Promise<void> {
-  if (typeof navigator === 'undefined' || typeof navigator.storage?.getDirectory !== 'function') return;
+  if (schema === 'official-v1') assertSafeNamespace(namespace);
+  if (typeof navigator === 'undefined' || typeof navigator.storage?.getDirectory !== 'function') throw new Error('浏览器文件存储暂时不可用，资源包尚未删除。');
   try {
     const root = await navigator.storage.getDirectory();
     const packs = await root.getDirectoryHandle(OPFS_DIRECTORY);
     await packs.removeEntry(schema === 'official-v1' ? namespace : encodeURIComponent(namespace), { recursive: true });
-  } catch {
-    // Missing namespaces are already clean.
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== 'NotFoundError') throw error;
   }
 }
 
 export class AvgResourcePackManager {
   constructor(private readonly databaseName = AVG_RESOURCE_PACK_DATABASE) {}
+
+  async clear(): Promise<void> {
+    // Remove the owned OPFS directory too, including historical orphan namespaces.
+    if (typeof navigator !== 'undefined' && typeof navigator.storage?.getDirectory === 'function') {
+      try { await (await navigator.storage.getDirectory()).removeEntry(OPFS_DIRECTORY, { recursive: true }); }
+      catch (error) { if (!(error instanceof Error) || error.name !== 'NotFoundError') throw error; }
+    }
+    await this.withDatabase(async (database) => {
+      const names = Array.from(database.objectStoreNames);
+      await runTransaction(database, names, 'readwrite', async tx => {
+        await Promise.all(names.map(name => request(tx.objectStore(name).clear())));
+      });
+    });
+    emitChanged();
+  }
 
   private async withDatabase<T>(
     operation: (database: IDBDatabase, schema: ResourceDatabaseSchema) => Promise<T>,
@@ -651,7 +667,16 @@ export class AvgResourcePackManager {
   }
 
   async uninstall(packId: string): Promise<void> {
-    let removedStorage: { namespace: string; backend: InstalledAvgResourcePack['storageBackend']; schema: ResourceDatabaseSchema } | undefined;
+    const removal = await this.withDatabase(async (database, schema) => {
+      const name = schema === 'official-v1' ? OFFICIAL_STORES.packs : LEGACY_STORES.packs;
+      return runTransaction(database, name, 'readonly', async tx => {
+        const row = await request<OfficialPackRow | LegacyPackRow | undefined>(tx.objectStore(name).get(packId));
+        if (!row) return undefined;
+        const record = schema === 'official-v1' ? (row as OfficialPackRow).record : row as LegacyPackRow;
+        return { namespace: schema === 'official-v1' ? record.storageNamespace : (record as LegacyPackRow).storagePackId ?? packId, backend: record.storageBackend ?? 'indexeddb', schema };
+      });
+    });
+    if (removal?.namespace) await this.deleteStoredAssets(removal.namespace, removal.backend, removal.schema);
     await this.withDatabase(async (database, schema) => {
       const packStoreName = schema === 'official-v1' ? OFFICIAL_STORES.packs : LEGACY_STORES.packs;
       const selectionStoreName = schema === 'official-v1' ? OFFICIAL_STORES.selections : LEGACY_STORES.selections;
@@ -662,7 +687,7 @@ export class AvgResourcePackManager {
         const record = schema === 'official-v1' ? (row as OfficialPackRow).record : row as LegacyPackRow;
         const worldBookId = schema === 'official-v1' ? (row as OfficialPackRow).worldBookId : (row as LegacyPackRow).worldBookId;
         const namespace = schema === 'official-v1' ? record.storageNamespace : (record as LegacyPackRow).storagePackId ?? packId;
-        if (namespace) removedStorage = { namespace, backend: record.storageBackend ?? 'indexeddb', schema };
+        if (namespace !== removal?.namespace) throw new Error('资源包已被另一页面更新，请刷新后重试。');
         packs.delete(packId);
         const activeStore = transaction.objectStore(selectionStoreName);
         const active = await request<OfficialSelectionRow | undefined>(activeStore.get(worldBookId));
@@ -672,7 +697,6 @@ export class AvgResourcePackManager {
         }
       });
     });
-    if (removedStorage) await this.deleteStoredAssets(removedStorage.namespace, removedStorage.backend, removedStorage.schema);
     emitChanged();
   }
 

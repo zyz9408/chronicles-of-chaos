@@ -9,7 +9,7 @@ import {
 
 export async function onRequestGet(context) {
   const { request, env } = context;
-  if (!hasAdminPasscode(request)) {
+  if (!await hasAdminPasscode(request, env)) {
     return jsonResponse({ ok: false, code: 'unauthorized' }, 401);
   }
   if (!env.ANALYTICS_DB) return jsonResponse({ ok: false, code: 'analytics_not_configured' }, 503);

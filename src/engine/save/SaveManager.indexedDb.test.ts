@@ -308,6 +308,18 @@ async function injectNthPutFailure(
 }
 
 describe('SaveManager IndexedDB persistence', () => {
+  it.each(['variables', 'developer', 'restore'])('rejects stale %s writes from another tab', async (kind) => {
+    const save = await createSave(makeState('原始进度'), '并发测试');
+    const previous = (await loadSave(save.id))!.runtimeState;
+    await saveManager.saveCurrentState(save.id, { ...previous, player: { ...previous.player, name: '另一页面的新进度' } });
+    const runtimeState = { ...previous, player: { ...previous.player, name: '旧页面的修改' } };
+    const input = { saveId: save.id, previousRuntimeState: previous, expectedRuntimeState: previous, runtimeState };
+    const commit = kind === 'variables' ? saveManager.commitRuntimeVariableEdit({ ...input, summary: '旧页面修改' })
+      : kind === 'developer' ? saveManager.commitDeveloperOverride({ ...input, commandText: '/dev 旧页面修改' })
+        : saveManager.commitTurnRestore({ ...input, deleteSnapshotsAfterTurn: 0 });
+    await expect(commit).rejects.toThrow('存档已发生变化');
+    expect((await loadSave(save.id))?.runtimeState.player.name).toBe('另一页面的新进度');
+  });
   it('rejects a stale state mutation and turn without overwriting a newer save', async () => {
     const save = await createSave(makeState('旧状态'));
     const updated = { ...save.runtimeState, player: { ...save.runtimeState.player, name: '新状态' } };

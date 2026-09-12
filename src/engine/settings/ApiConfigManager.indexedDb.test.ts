@@ -17,6 +17,15 @@ describe('ApiConfigManager IndexedDB persistence', () => {
     await resetLocalDatabaseForTests();
   });
 
+  it('preserves existing credentials and routes when a replacement archive is malformed', async () => {
+    await upsertApiConfigAsync({ ...createApiConfigDraft('openai_compatible'), apiKey: 'keep-secret' });
+    const before = await exportApiSettings();
+    const malformed = JSON.parse(JSON.stringify({ ...before, configs: [{ id: 'malformed' }] }));
+    await expect(importApiSettings(malformed, { mode: 'replace' })).rejects.toThrow();
+    expect((await exportApiSettings()).configs).toEqual(before.configs);
+    expect(await getApiTaskRoutesAsync()).toEqual(before.routes);
+  });
+
   it('stores API settings in IndexedDB and restores configs plus task routes', async () => {
     const draft = createApiConfigDraft('openai_compatible');
     const saved = await upsertApiConfigAsync({

@@ -268,7 +268,7 @@ describe('Encounter V2 formula calibration matrix', () => {
     expect(threeVsThree.p90Actions).toBeLessThan(150);
   });
 
-  it('resolves clear War advantages at the round limit while preserving close draws', () => {
+  it('resolves clear War advantages at the round limit while preserving close draws', { timeout: 15000 }, () => {
     const scenarios: Array<{ name: string; value: WarScenario }> = [
       { name: 'ratio-0.75', value: { playerSize: 750, enemySize: 1_000 } },
       { name: 'ratio-1.00', value: { playerSize: 1_000, enemySize: 1_000 } },

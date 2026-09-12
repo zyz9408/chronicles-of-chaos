@@ -32,6 +32,11 @@ function state(arts: CharacterUniqueArt[] = [art()]): RuntimeState {
 }
 
 describe('AbilityRuleEngine', () => {
+  it('does not heal when the player explicitly declines to use the named art', () => {
+    const input = state();
+    input.turnLog[0].narrativeText = '刘平决定保留内力，转身撤离。';
+    expect(settlePlayerAuthoredArtUse(input, '我不使用万象回春，改为撤退').player.vitals?.hp).toBe(3);
+  });
   it('restores all current maximum hp and records an idempotent trace', () => {
     const first = settlePlayerAuthoredArtUse(state(), '我施展万象回春');
     expect(first.player.vitals).toMatchObject({ hp: 100, maxHp: 100 });

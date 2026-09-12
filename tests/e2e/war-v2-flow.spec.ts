@@ -181,7 +181,7 @@ async function seedWarEncounter(page: Page): Promise<void> {
     await saveManager.clearAllSaves();
     const created = await saveManager.createSave(state, 'War V2 浏览器验收');
     const intent = {
-      ...fixtures.makeWarIntent(playerIds, enemyIds),
+      ...fixtures.makeWarIntent(playerIds, enemyIds, { player: playerIds.map(() => 1600), enemy: enemyIds.map(() => 420) }),
       encounterId: 'encounter_war_batch4_e2e',
       sourceTurnNumber: 1,
       locationId: location.id,
@@ -320,7 +320,12 @@ test('War V2 preserves the full-screen layout, motion controls and exact-once wo
     const button = screen.locator('button').filter({ hasText: new RegExp(`^${label}$`) });
     if (await button.isEnabled()) {
       await button.click();
-      await expect(screen.locator('.war-v2-stage')).toHaveAttribute('data-motion', new RegExp(motion));
+      // A routed force takes visual priority over the last tactic animation.
+      await expect(screen.locator('.war-v2-stage')).toHaveAttribute('data-motion', new RegExp(`${motion}|is-rout`));
+      if ((await screen.locator('.war-v2-stage').getAttribute('data-motion'))?.includes('is-rout')) {
+        await expect(screen.locator('.war-v2-force-card.is-routed').first()).toContainText('溃败');
+        break;
+      }
     }
   }
   await expect(screen.locator('.war-v2-stage')).toHaveAttribute('data-motion', /is-water/);

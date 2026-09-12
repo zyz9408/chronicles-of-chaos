@@ -122,13 +122,16 @@ async function zipAsync(entries: Record<string, Uint8Array>): Promise<Uint8Array
 }
 
 async function unzipAsync(data: Uint8Array): Promise<Record<string, Uint8Array>> {
+  const limit = 512 * 1024 * 1024;
+  if (data.byteLength > limit) throw new Error('存档归档超过 512 MiB。');
+  const { createZipBudgetFilter } = await import('../storage/ZipBudget');
   const { unzip, unzipSync } = await loadSaveArchiveCodec();
-  const unzipSynchronously = () => unzipSync(data);
+  const unzipSynchronously = () => unzipSync(data, { filter: createZipBudgetFilter(limit, 1024, 384 * 1024 * 1024) });
   if (typeof Worker !== 'function') return unzipSynchronously();
 
   try {
     return await new Promise((resolve, reject) => {
-      unzip(data, (error, entries) => {
+      unzip(data, { filter: createZipBudgetFilter(limit, 1024, 384 * 1024 * 1024) }, (error, entries) => {
         if (error) reject(error);
         else resolve(entries);
       });

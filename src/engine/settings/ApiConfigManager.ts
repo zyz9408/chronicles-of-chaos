@@ -7,6 +7,7 @@ import {
   idbGetMeta,
   idbPut,
   idbSetMeta,
+  withLocalTransaction,
 } from '../storage/IndexedDbStore';
 
 export type ApiProviderId =
@@ -639,30 +640,32 @@ export async function importApiSettings(
   options: ImportApiSettingsOptions = {},
 ): Promise<void> {
   if (
-    archive.schema !== 'coc.v2.api-settings'
+    !archive || archive.schema !== 'coc.v2.api-settings'
     || (archive.version !== 1 && archive.version !== 2 && archive.version !== 3)
     || !Array.isArray(archive.configs)
   ) {
     throw new Error('API 设置文件格式不正确');
   }
 
+  const configs = archive.configs.map((config) => {
+    if (!config || ['id', 'name', 'provider', 'baseUrl', 'apiKey', 'model'].some(
+      (key) => typeof (config as unknown as Record<string, unknown>)[key] !== 'string',
+    ) || !config.id.trim()) throw new Error('API 设置包含无效配置');
+    return normalizeStoredApiConfig(config);
+  });
   await ensureLegacyApiSettingsMigrated();
-
-  if (options.mode === 'replace') {
-    await idbClear('apiConfigs');
-  }
-
-  for (const config of archive.configs) {
-    await idbPut('apiConfigs', normalizeStoredApiConfig(config));
-  }
-  const allConfigs = (await idbGetAll<ApiConfigArchive>('apiConfigs')).map(normalizeStoredApiConfig);
-  const routes = normalizeApiTaskRoutes(archive.routes, allConfigs);
-  await idbSetMeta(API_ROUTES_META_KEY, routes);
-  await idbSetMeta(
-    API_FEATURE_EXECUTION_MODES_META_KEY,
-    normalizeApiFeatureExecutionModes(archive.featureExecutionModes, routes),
-  );
-  await idbSetMeta(API_LEGACY_MIGRATION_META_KEY, true);
+  await withLocalTransaction(['apiConfigs', 'meta'], 'readwrite', async ({ store, request }) => {
+    const configStore = store('apiConfigs');
+    if (options.mode === 'replace') await request(configStore.clear());
+    for (const config of configs) await request(configStore.put(config));
+    const allConfigs = await request<ApiConfigArchive[]>(configStore.getAll());
+    const routes = normalizeApiTaskRoutes(archive.routes, allConfigs);
+    await Promise.all([
+      request(store('meta').put({ key: API_ROUTES_META_KEY, value: routes })),
+      request(store('meta').put({ key: API_FEATURE_EXECUTION_MODES_META_KEY, value: normalizeApiFeatureExecutionModes(archive.featureExecutionModes, routes) })),
+      request(store('meta').put({ key: API_LEGACY_MIGRATION_META_KEY, value: true })),
+    ]);
+  });
 }
 
 export function maskApiKey(apiKey: string): string {

@@ -262,12 +262,13 @@ export function parseCloudSaveMetadataHeader(request) {
 }
 
 export function safeReturnTo(value) {
-  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) return '/';
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || /[\\\u0000-\u0020]/u.test(value)) return '/';
   return value.slice(0, 500);
 }
 
 export function databaseErrorCode(error) {
   const message = error instanceof Error ? error.message : String(error ?? '');
+  if (message.includes('slot_limit_exceeded')) return 'slot_limit_exceeded';
   if (message.includes('global_quota_exceeded')) return 'global_quota_exceeded';
   if (message.includes('user_quota_exceeded')) return 'user_quota_exceeded';
   if (message.includes('daily_upload_limit_exceeded')) return 'daily_upload_limit_exceeded';

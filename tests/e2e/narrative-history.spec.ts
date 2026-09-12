@@ -1,7 +1,10 @@
 import { expect, type Page, test } from '@playwright/test';
+import { mockBasicNarrativeTurns, seedMainNarrativeApi } from './e2eStorage';
 
 async function enterDebugGame(page: Page) {
-  await page.goto('/');
+  await seedMainNarrativeApi(page);
+  await mockBasicNarrativeTurns(page);
+  await page.addLocatorHandler(page.getByRole('button', { name: '关闭更新日志' }), async locator => { await locator.click(); });
   await page.getByRole('button', { name: '新的征程' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
@@ -16,6 +19,8 @@ async function enterDebugGame(page: Page) {
 async function submitAction(page: Page, action: string) {
   await page.locator('.input-row textarea').fill(action);
   await page.getByRole('button', { name: '执行行动' }).click();
+  await expect(page.locator('.input-row textarea')).toHaveValue('');
+  await expect(page.getByTestId('processing-stage-box')).toHaveCount(0);
 }
 
 test('narrative history gives every rendered turn its own header in chronological order', async ({ page }) => {

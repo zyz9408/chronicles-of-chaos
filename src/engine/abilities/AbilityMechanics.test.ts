@@ -8,6 +8,10 @@ import {
 } from './AbilityMechanics';
 
 describe('AbilityMechanics compiler', () => {
+  it.each(['每次使用恢复100%血量', '每次使用恢复100%生命', '我这个技能会恢复100%血量'])('compiles %s without losing the amount', (effectSummary) => {
+    const mechanics = compileUniqueArtAbilityMechanics({ id: 'art_heal', name: '回春', rarity: 'red', domain: 'personalCombat', level: 1, description: '', effectSummary, source: 'custom' });
+    expect(mechanics?.rules[0].effects[0]).toMatchObject({ type: 'restore_amount', value: 100, percent: true });
+  });
   it('compiles an explicit full-heal-on-use promise into an authoritative rule', () => {
     const art: CharacterUniqueArt = {
       id: 'art_full_heal', name: '万象回春', rarity: 'red', domain: 'personalCombat', level: 1,

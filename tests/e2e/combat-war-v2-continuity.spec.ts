@@ -260,7 +260,7 @@ async function stageWarCheckpoint(page: Page, saveId: string): Promise<void> {
       updatedAt: state.currentDate,
     }];
     const intent = {
-      ...fixtures.makeWarIntent([playerTroopId], [enemyTroopId]),
+      ...fixtures.makeWarIntent([playerTroopId], [enemyTroopId], { player: [4000], enemy: [100] }),
       encounterId: 'encounter_war_batch5_continuity',
       sourceTurnNumber: state.turnLog.length,
       locationId: state.currentLocationId,
@@ -323,10 +323,11 @@ test.describe.serial('Combat and War V2 incremental continuity regression', () =
       baseURL: `http://127.0.0.1:${process.env.PLAYWRIGHT_PORT ?? '41731'}`,
       viewport: { width: 1366, height: 768 },
     });
+    await context.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }));
     page = await context.newPage();
     page.on('console', (message) => {
       if (message.type() === 'error' || message.type() === 'warning') {
-        consoleProblems.push(`${message.type()}: ${message.text()}`);
+        consoleProblems.push(`${message.type()}: ${message.text()} (${message.location().url})`);
       }
     });
     await installEncounterNarrativeStream(page);
@@ -383,7 +384,7 @@ test.describe.serial('Combat and War V2 incremental continuity regression', () =
       const pursue = warScreen.getByRole('button', { name: '追击', exact: true });
       const accept = warScreen.getByRole('button', { name: '接受投降', exact: true });
       const resume = warScreen.getByRole('button', { name: '确认风险并恢复手动指挥', exact: true });
-      const assault = warScreen.getByRole('button', { name: '全军强攻', exact: true });
+      const assault = warScreen.getByRole('button', { name: /^全军强攻：/ });
       if (await pursue.isVisible().catch(() => false)) await pursue.click();
       else if (await accept.isVisible().catch(() => false)) await accept.click();
       else if (await resume.isVisible().catch(() => false)) await resume.click();

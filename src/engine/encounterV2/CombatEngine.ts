@@ -69,6 +69,7 @@ function cloneCombatant(combatant: CombatRuntimeCombatant): CombatRuntimeCombata
     artUsage: { ...combatant.artUsage },
     itemUsage: { ...combatant.itemUsage },
     itemQuantities: { ...combatant.itemQuantities },
+    ...(combatant.effectUsage ? { effectUsage: Object.fromEntries(Object.entries(combatant.effectUsage).map(([key, value]) => [key, { ...value }])) } : {}),
     modifiers: { ...combatant.modifiers },
   };
 }
@@ -390,11 +391,15 @@ function performStrike(
     : 0;
   const martialDamageBonus = Math.floor(attackerMartial * (v22 ? 0.22 : v21 ? 0.16 : 0.12));
   const hit = random.nextIntInclusive(1, 100) <= hitChance;
-  if (!hit) return {
+  if (!hit) {
+    applyPassiveEvent(state, defender, attacker, 'on_evade', false);
+    applyPassiveEvent(state, attacker, defender, 'after_attack', true);
+    return {
     hit: false, blocked: false, critical: false, damage: 0, hitChance, blockChance: 0,
     criticalChance: 0, martialHitModifier, intelligenceHitModifier,
     leadershipAccuracyModifier, martialDamageBonus,
   };
+  }
 
   const penetration = attackerSnapshot.weapon.armorPenetration + attacker.modifiers.armorPenetration
     + passiveModifier(state, attacker, defender, 'modify_armor_penetration', ['before_attack'], true);
@@ -483,6 +488,12 @@ function performStrike(
   const beforeHp = defender.hp;
   defender.hp = Math.max(0, defender.hp - damage);
   if (beforeHp > 0 && defender.hp === 0) markDowned(defender);
+  applyPassiveEvent(state, attacker, defender, 'on_hit', true);
+  if (critical) applyPassiveEvent(state, attacker, defender, 'on_critical', true);
+  if (blocked) applyPassiveEvent(state, defender, attacker, 'on_block', false);
+  if (damage > 0) applyPassiveEvent(state, defender, attacker, 'on_damage_taken', false);
+  if (beforeHp > 0 && defender.hp === 0) applyPassiveEvent(state, defender, attacker, 'on_downed', false);
+  applyPassiveEvent(state, attacker, defender, 'after_attack', true);
   return {
     hit: true, blocked, critical, damage, hitChance, blockChance, criticalChance,
     martialHitModifier, intelligenceHitModifier, leadershipAccuracyModifier, martialDamageBonus,
@@ -553,7 +564,8 @@ function applyExecutableEffects(target: CombatRuntimeCombatant, effects: readonl
         break;
       default: {
         const key = modifierKey(effect.operation);
-        if (key) target.modifiers[key] += effect.value;
+        if (key === 'damageMultiplier') target.modifiers[key] *= effect.value;
+        else if (key) target.modifiers[key] += effect.value;
       }
     }
   }
@@ -634,6 +646,36 @@ function resolveEffectTargets(
   }
 }
 
+function applyEventEffects(state: CombatEngineState, actor: CombatRuntimeCombatant, targets: CombatRuntimeCombatant[], effects: readonly SemanticEffect[], sourceId: string, trigger: SemanticEffect['trigger'], attacking: boolean): void {
+  if (state.snapshot.intent.rulesetVersion !== COMBAT_RULESET_VERSION) return;
+  for (const { effect, index } of effects.map((effect, index) => ({ effect, index })).sort((a, b) => a.effect.priority - b.effect.priority)) {
+    if (effect.trigger !== trigger) continue;
+    const recipients = effect.target === 'self' || (effect.target === 'current_attacker' && attacking) || (effect.target === 'current_defender' && !attacking) ? [actor]
+      : effect.target === 'all_allies' ? state.combatants.filter(c => c.side === actor.side && isActive(c))
+        : effect.target === 'all_enemies' ? state.combatants.filter(c => c.side !== actor.side && isActive(c)) : targets;
+    const eligible = recipients.filter(target => effectConditionMatches(state, actor, target, effect, attacking));
+    if (!eligible.length) continue;
+    const key = `${sourceId}:${index}`;
+    const round = state.actionLog.filter(entry => entry.actorId === actor.actorId).length;
+    const previous = actor.effectUsage?.[key];
+    const usage = { total: previous?.total ?? 0, round, roundCount: previous?.round === round ? previous.roundCount : 0 };
+    if (usage.total >= (effect.perEncounterLimit ?? Infinity) || usage.roundCount >= (effect.perRoundLimit ?? Infinity)) continue;
+    for (const target of eligible) applyExecutableEffects(target, [effect]);
+    (actor.effectUsage ??= {})[key] = { ...usage, total: usage.total + 1, roundCount: usage.roundCount + 1 };
+  }
+}
+
+function applyArtEvent(state: CombatEngineState, actor: CombatRuntimeCombatant, targets: CombatRuntimeCombatant[], art: UniqueArtSemanticProfile, trigger: SemanticEffect['trigger']): void {
+  applyEventEffects(state, actor, targets, art.effects, art.sourceId, trigger, true);
+}
+
+function applyPassiveEvent(state: CombatEngineState, owner: CombatRuntimeCombatant, other: CombatRuntimeCombatant, trigger: SemanticEffect['trigger'], attacking: boolean): void {
+  const snapshot = snapshotFor(state, owner.actorId);
+  for (const profile of [...snapshot.traitProfiles, ...snapshot.equipmentProfiles, ...snapshot.uniqueArtProfiles.filter(p => p.activation === 'passive' || p.activation === 'hybrid')]) {
+    applyEventEffects(state, owner, [other], profile.effects, profile.sourceId, trigger, attacking);
+  }
+}
+
 export function executeCombatAction(input: CombatEngineState, action: CombatAction): CombatEngineState {
   const state = cloneState(input);
   if (state.phase !== 'awaiting_action' || state.currentActorId !== action.actorId) {
@@ -684,6 +726,7 @@ export function executeCombatAction(input: CombatEngineState, action: CombatActi
       targetIds = targets.map((target) => target.actorId);
       actor.stamina -= staminaCost;
       actor.artUsage[art.sourceId] = used + 1;
+      applyArtEvent(state, actor, targets, art, 'on_unique_art_use');
       let hitsLanded = 0;
       let blockedHits = 0;
       let criticalHits = 0;
@@ -694,6 +737,11 @@ export function executeCombatAction(input: CombatEngineState, action: CombatActi
         for (let hitIndex = 0; hitIndex < art.maxHits; hitIndex += 1) {
           const target = damageTargets[hitIndex % damageTargets.length];
           if (!target || !isActive(target)) continue;
+          const savedModifiers = new Map(state.combatants.map(c => [c.actorId, { ...c.modifiers }]));
+          // Active strike modifiers last for this strike only. Hybrid passive modifiers
+          // are already evaluated by performStrike and must not be applied twice.
+          if (art.activation === 'active') applyArtEvent(state, actor, [target], art, 'before_attack');
+          const strikeModifiers = new Map(state.combatants.map(c => [c.actorId, { ...c.modifiers }]));
           const strike = performStrike(state, random, actor, target, {
             accuracyModifier: art.accuracyModifier,
             damageMultiplier: art.powerMultiplier / art.maxHits,
@@ -702,6 +750,21 @@ export function executeCombatAction(input: CombatEngineState, action: CombatActi
             canCrit: art.canCrit,
             normalAttack: false,
           });
+          for (const combatant of state.combatants) {
+            const saved = savedModifiers.get(combatant.actorId)!;
+            const temporary = strikeModifiers.get(combatant.actorId)!;
+            for (const key of Object.keys(saved) as Array<keyof typeof saved>) {
+              if (saved[key] === temporary[key]) continue;
+              combatant.modifiers[key] = key === 'damageMultiplier'
+                ? temporary[key] === 0 ? saved[key] : combatant.modifiers[key] * saved[key] / temporary[key]
+                : combatant.modifiers[key] + saved[key] - temporary[key];
+            }
+          }
+          if (art.activation === 'active') {
+            if (strike.hit) applyArtEvent(state, actor, [target], art, 'on_hit');
+            if (strike.critical) applyArtEvent(state, actor, [target], art, 'on_critical');
+            applyArtEvent(state, actor, [target], art, 'after_attack');
+          }
           attributeStrike ??= strike;
           if (strike.hit) hitsLanded += 1;
           if (strike.blocked) blockedHits += 1;
@@ -709,13 +772,8 @@ export function executeCombatAction(input: CombatEngineState, action: CombatActi
           totalDamage += strike.damage;
         }
       }
-      if (art.purpose !== 'damage') {
-        for (const effect of art.effects) {
-          const effectTargets = effect.target === 'self' || effect.target === 'current_attacker'
-            ? [actor]
-            : targets;
-          for (const target of effectTargets) applyExecutableEffects(target, [effect]);
-        }
+      if (state.snapshot.intent.rulesetVersion !== COMBAT_RULESET_VERSION && art.purpose !== 'damage') {
+        for (const effect of art.effects) for (const target of effect.target === 'self' || effect.target === 'current_attacker' ? [actor] : targets) applyExecutableEffects(target, [effect]);
       }
       Object.assign(values, {
         artId: art.sourceId,

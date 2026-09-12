@@ -10,9 +10,14 @@ import {
   isTrustedMutationRequest,
   signState,
   verifyState,
+  safeReturnTo,
 } from './cloud.js';
 
 describe('cloud free-tier safety contract', () => {
+  it('keeps OAuth return paths on the same origin', () => {
+    for (const value of ['//evil.example', '/\\evil.example', '/\t/evil.example', 'https://evil.example']) expect(safeReturnTo(value)).toBe('/');
+    expect(safeReturnTo('/?save=1')).toBe('/?save=1');
+  });
   it('allows operators to lower limits but never raise the hard ceilings', () => {
     expect(getCloudLimits({
       CLOUD_SAVE_GLOBAL_LIMIT_BYTES: '999999999999',

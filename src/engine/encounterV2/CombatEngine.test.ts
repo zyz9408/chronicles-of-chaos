@@ -11,6 +11,7 @@ import { simulateCombatWithLocalAi } from './CombatAi';
 import { createCombatEncounterSnapshot } from './CombatSnapshotAdapter';
 import type { CombatEngineState, CombatRuntimeCombatant } from './CombatTypes';
 import { LEGACY_COMBAT_RULESET_VERSION } from './EncounterContracts';
+import { createCompatibilityPersonalCombatArtProjection } from './UniqueArtProjectionRuntime';
 import {
   bundle,
   makeCombatIntent,
@@ -72,6 +73,51 @@ function forceTurn(
 }
 
 describe('CombatEngine deterministic core', () => {
+  it.each([false, true])('heals and seals the real maximum without inventing an attack (stored compatibility: %s)', (storedCompatibility) => {
+    const snapshot = buildSnapshot({ projections: storedCompatibility ? bundle(createCompatibilityPersonalCombatArtProjection({ id: 'art_heal', rarity: 'red' })) : bundle(), playerOverrides: {
+      vitals: { hp: 10, maxHp: 500, stamina: 40, maxStamina: 200 },
+      uniqueArts: [{ id: 'art_heal', name: '回春', rarity: 'red', domain: 'personalCombat', level: 1, description: '', effectSummary: '每次使用恢复50%血量', source: 'custom' }],
+    } });
+    expect(snapshot.combatants[0].uniqueArtProfiles[0]).toMatchObject({ targetMode: 'self', purpose: 'healing' });
+    const result = executeCombatAction(forceTurn(createCombatEngineState(snapshot), 'player_1'), { type: 'unique_art', actorId: 'player_1', artId: 'art_heal', targetIds: [] });
+    expect(result.combatants[0]).toMatchObject({ hp: 260, maxHp: 500, maxStamina: 200 });
+    expect(result.combatants[1].hp).toBe(snapshot.combatants[1].hp);
+    const ended = executeCombatAction(forceTurn(result, 'player_1'), { type: 'surrender', actorId: 'player_1' });
+    expect(finalizeCombatResult(ended, '2026-09-12T00:00:00.000Z', { playerActorId: 'player_1' }).combatants[0].hp).toBe(260);
+  });
+
+  it('runs on-hit status effects for damage arts only when their conditions match', () => {
+    const profile = makeDamageArtProfile('art_poison', { accuracyModifier: 20, effects: [
+      { trigger: 'on_hit', condition: 'always', operation: 'apply_status', target: 'current_defender', value: 1, priority: 1, statusId: 'poisoned' },
+      { trigger: 'on_hit', condition: 'self_hp_below_30', operation: 'apply_status', target: 'current_defender', value: 1, priority: 2, statusId: 'stunned' },
+    ] });
+    const snapshot = buildSnapshot({ projections: bundle(profile), playerOverrides: { uniqueArts: [{ id: 'art_poison', name: '毒刃', rarity: 'red', domain: 'personalCombat', level: 1, description: '', effectSummary: '', source: 'custom' }] } });
+    let hits = 0;
+    for (let i = 0; i < 30; i++) {
+      const initial = createCombatEngineState({ ...snapshot, seed: `poison-${i}` });
+      const result = executeCombatAction(forceTurn(initial, 'player_1'), { type: 'unique_art', actorId: 'player_1', artId: 'art_poison', targetIds: ['enemy_1'] });
+      if (result.combatants[1].hp < initial.combatants[1].hp) {
+        hits++;
+        expect(result.combatants[1].statuses).toContain('poisoned');
+        expect(result.combatants[1].statuses).not.toContain('stunned');
+      }
+    }
+    expect(hits).toBeGreaterThan(0);
+  });
+  it('executes defensive recovery once per encounter without mutating the input state', () => {
+    const profile = makeDamageArtProfile('art_resilience', { activation: 'passive', effects: [
+      { trigger: 'on_damage_taken', condition: 'always', operation: 'restore_hp', target: 'self', value: 7, priority: 1, perEncounterLimit: 1 },
+    ] });
+    const snapshot = buildSnapshot({ projections: bundle(profile), enemyOverrides: { uniqueArts: [{ id: 'art_resilience', name: '坚韧', rarity: 'red', domain: 'personalCombat', level: 1, description: '', effectSummary: '', source: 'custom' }] } });
+    let state = createCombatEngineState(snapshot);
+    for (let i = 0; i < 10 && state.combatants[1].hp > 0; i++) {
+      const input = forceTurn(state, 'player_1');
+      const before = structuredClone(input);
+      state = executeCombatAction(input, { type: 'normal_attack', actorId: 'player_1', targetId: 'enemy_1' });
+      expect(input).toEqual(before);
+    }
+    expect(state.combatants[1].effectUsage?.['art_resilience:0'].total).toBe(1);
+  });
   it.each([
     [1, 1],
     [1, 3],

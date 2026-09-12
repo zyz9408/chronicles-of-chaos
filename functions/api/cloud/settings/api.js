@@ -1,3 +1,4 @@
+import { deleteCloudRows, drainCloudObjectCleanup } from '../../../_shared/cloudCleanup.js';
 import {
   CLOUD_SETTINGS_UPLOAD_LIMIT_BYTES,
   cloudError,
@@ -214,6 +215,7 @@ export async function onRequestPut(context) {
       ).bind(reservationId),
     ]);
     committed = true;
+    await drainCloudObjectCleanup(env, session.user.user_id);
     if (existing?.object_key && existing.object_key !== objectKey) {
       await env.CLOUD_SAVE_BUCKET.delete(existing.object_key).catch(() => undefined);
     }
@@ -260,30 +262,7 @@ export async function onRequestDelete(context) {
   if (expectedRevision === null || expectedRevision !== Number(existing.revision)) {
     return cloudError('cloud_settings_conflict', 409, '云端 API 配置已被其他设备更新。');
   }
-  try {
-    await env.CLOUD_SAVE_BUCKET.delete(existing.object_key);
-  } catch {
-    return cloudError('cloud_storage_failed', 503, '云端 API 配置对象删除失败。');
-  }
-  const nowIso = new Date().toISOString();
-  const releasedBytes = Number(existing.size_bytes);
-  await env.CLOUD_SAVE_DB.batch([
-    env.CLOUD_SAVE_DB.prepare(`
-      DELETE FROM cloud_settings
-      WHERE user_id = ?1 AND kind = 'api_settings' AND revision = ?2
-    `).bind(session.user.user_id, expectedRevision),
-    env.CLOUD_SAVE_DB.prepare(`
-      UPDATE cloud_users
-      SET usage_bytes = MAX(0, usage_bytes - ?2), updated_at = ?3
-      WHERE user_id = ?1
-    `).bind(session.user.user_id, releasedBytes, nowIso),
-    env.CLOUD_SAVE_DB.prepare(`
-      UPDATE cloud_quota
-      SET used_bytes = MAX(0, used_bytes - ?1), updated_at = ?2
-      WHERE scope = 'global'
-    `).bind(releasedBytes, nowIso),
-  ]);
-  return cloudJsonResponse({ ok: true, deleted: true });
+  return deleteCloudRows(env, session.user.user_id, 'settings', undefined, expectedRevision);
 }
 
 export function onRequest() {

@@ -210,7 +210,7 @@ function isApiSettingsArchive(value: unknown): value is ApiSettingsArchive {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const archive = value as Partial<ApiSettingsArchive>;
   return archive.schema === 'coc.v2.api-settings'
-    && (archive.version === 1 || archive.version === 2)
+    && (archive.version === 1 || archive.version === 2 || archive.version === 3)
     && Array.isArray(archive.configs)
     && archive.routes !== null
     && typeof archive.routes === 'object';
@@ -485,7 +485,8 @@ export async function downloadCloudSave(save: CloudSaveItem): Promise<void> {
     throw new CloudSaveApiError('云存档内容与槽位不匹配，未写入本机。', 'slot_mismatch', 500);
   }
   await importSaves(archive, { mode: 'merge' });
-  rememberCloudRevision(save.slotId, save.revision);
+  const downloadedRevision = Number(response.headers.get('x-coc-save-revision'));
+  rememberCloudRevision(save.slotId, Number.isSafeInteger(downloadedRevision) && downloadedRevision > 0 ? downloadedRevision : save.revision);
 }
 
 export async function deleteCloudSave(save: CloudSaveItem): Promise<void> {

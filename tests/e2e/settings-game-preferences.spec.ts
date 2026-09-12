@@ -1,7 +1,9 @@
 import { expect, test } from '@playwright/test';
+import { seedMainNarrativeApi } from './e2eStorage';
 
 test('game settings exposes narrative render depth and reroll snapshot depth', async ({ page }) => {
-  await page.goto('/');
+  await seedMainNarrativeApi(page);
+  await page.addLocatorHandler(page.getByRole('button', { name: '关闭更新日志' }), async locator => { await locator.click(); });
   await page.getByRole('button', { name: '设置' }).click();
 
   await expect(page.getByRole('heading', { name: '游戏设定' })).toBeVisible();

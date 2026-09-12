@@ -25,7 +25,7 @@ test('downloaded save ZIP is complete and can be imported again', async ({ page 
   const manifest = JSON.parse(strFromU8(entries['manifest.json']));
   expect(manifest).toMatchObject({
     format: 'chronicles-of-chaos-v2-save-archive',
-    version: 1,
+    version: 2,
     schema: 'coc.v2.saves',
   });
 

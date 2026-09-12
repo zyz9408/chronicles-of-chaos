@@ -16,7 +16,6 @@ import {
 } from '../state/RuntimeStateMigration';
 import { hasPersistenceValueChanged } from '../state/persistenceChange';
 import {
-  idbClear,
   idbDeleteMeta,
   idbGetAll,
   idbGetMeta,
@@ -341,6 +340,7 @@ export async function commitTurnRestore(
       ]);
       if (!existing) return null;
 
+      assertExpectedSaveState(existing, input.expectedRuntimeState);
       const nextSave = buildUpdatedSave(existing, input.runtimeState);
       const currentSnapshots = allSnapshots.filter((snapshot) => snapshot.saveId === input.saveId);
       const retainedSnapshots = currentSnapshots
@@ -383,6 +383,7 @@ export async function commitDeveloperOverride(
       if (!existing) return null;
 
       const next = buildUpdatedSave(existing, input.runtimeState);
+      assertExpectedSaveState(existing, input.expectedRuntimeState ?? input.previousRuntimeState);
       const checkpoint: DeveloperOverrideCheckpoint = {
         version: 1,
         saveId: input.saveId,
@@ -480,6 +481,7 @@ export async function commitRuntimeVariableEdit(
       if (!existing) return null;
 
       const next = buildUpdatedSave(existing, input.runtimeState);
+      assertExpectedSaveState(existing, input.expectedRuntimeState ?? input.previousRuntimeState);
       const checkpoint: RuntimeVariableCheckpoint = {
         version: 1,
         saveId: input.saveId,
@@ -664,11 +666,16 @@ export async function pruneAutoSaves(limit: number, protectedSaveId?: string): P
  */
 export async function clearAllSaves(): Promise<void> {
   await ensureLegacySavesMigrated();
-  await idbClear('saves');
-  await idbClear('saveSummaries');
-  await idbClear('turnSnapshots');
-  await idbDeleteMeta(LAST_SAVE_META_KEY);
-  await idbSetMeta(SAVE_SUMMARY_INDEX_META_KEY, true);
+  await withLocalTransaction(['saves', 'saveSummaries', 'turnSnapshots', 'meta'], 'readwrite', async ({ store, request }) => {
+    const keys = await request<IDBValidKey[]>(store('meta').getAllKeys());
+    await Promise.all([
+      request(store('saves').clear()), request(store('saveSummaries').clear()), request(store('turnSnapshots').clear()),
+      request(store('meta').delete(LAST_SAVE_META_KEY)),
+      ...keys.filter(key => typeof key === 'string' && (key.startsWith(DEVELOPER_OVERRIDE_CHECKPOINT_META_PREFIX) || key.startsWith(RUNTIME_VARIABLE_CHECKPOINT_META_PREFIX)))
+        .map(key => request(store('meta').delete(key))),
+      request(store('meta').put({ key: SAVE_SUMMARY_INDEX_META_KEY, value: true })),
+    ]);
+  });
 }
 
 /** 检查是否有存档 */

@@ -139,8 +139,11 @@ export async function parseAvgVisualPartitionArchive(
   if (!(archiveBytes instanceof Uint8Array) || archiveBytes.byteLength === 0) throw new Error('视觉分区归档不能为空。');
   if (archiveBytes.byteLength > MAX_AVG_VISUAL_ARCHIVE_BYTES) throw new Error('视觉分区归档超过 384 MiB。');
   const { strFromU8, unzipSync } = await import('fflate');
+  const { createZipBudgetFilter } = await import('../storage/ZipBudget');
+  const budget = createZipBudgetFilter(MAX_AVG_VISUAL_PARTITION_BYTES, MAX_AVG_VISUAL_ARCHIVE_ENTRIES);
   const entries = unzipSync(archiveBytes, {
     filter: ({ name, originalSize }) => {
+      budget({ name, originalSize });
       if (!isSafeArchivePath(name)) throw new Error('视觉分区包含非法文件路径。');
       if (originalSize > MAX_AVG_VISUAL_PARTITION_BYTES) throw new Error('视觉分区文件解压后过大。');
       return true;

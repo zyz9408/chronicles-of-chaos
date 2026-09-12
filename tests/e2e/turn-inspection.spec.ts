@@ -1,4 +1,5 @@
 import { expect, type Page, test } from '@playwright/test';
+import { mockBasicNarrativeTurns, seedMainNarrativeApi } from './e2eStorage';
 
 function getTurnByTitle(page: Page, title: RegExp) {
   const matchingTitle = page.getByTestId('turn-display-title').filter({ hasText: title });
@@ -73,7 +74,9 @@ function expectAtMostOneCardPerSemanticTurn(observedStates: ObservedNarrativeCar
 }
 
 async function enterDebugGame(page: Page) {
-  await page.goto('/');
+  await seedMainNarrativeApi(page);
+  await mockBasicNarrativeTurns(page);
+  await page.addLocatorHandler(page.getByRole('button', { name: '关闭更新日志' }), async locator => { await locator.click(); });
   await page.getByRole('button', { name: '新的征程' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '下一步' }).click();

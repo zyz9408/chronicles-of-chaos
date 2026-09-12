@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  ADMIN_ANALYTICS_PASSCODE,
   dayKeyFor,
   hasAdminPasscode,
   hashAnalyticsId,
@@ -62,10 +61,12 @@ describe('Cloudflare analytics privacy boundary', () => {
     expect(sessionHash).toMatch(/^[a-f0-9]{64}$/);
     expect(visitorHash).not.toBe(sessionHash);
 
-    expect(ADMIN_ANALYTICS_PASSCODE).toBe('coc3');
-    expect(hasAdminPasscode(new Request('https://example.com', {
-      headers: { 'x-coc-admin-passcode': 'coc3' }
-    }))).toBe(true);
-    expect(hasAdminPasscode(new Request('https://example.com'))).toBe(false);
+    const env = { ADMIN_ANALYTICS_PASSCODE: 'test-admin-secret-123' };
+    expect(await hasAdminPasscode(new Request('https://example.com', {
+      headers: { 'x-coc-admin-passcode': env.ADMIN_ANALYTICS_PASSCODE }
+    }), env)).toBe(true);
+    expect(await hasAdminPasscode(new Request('https://example.com'), env)).toBe(false);
+    expect(await hasAdminPasscode(new Request('https://example.com', { headers: { 'x-coc-admin-passcode': 'coc3' } }), env)).toBe(false);
+    expect(await hasAdminPasscode(new Request('https://example.com'), {})).toBe(false);
   });
 });

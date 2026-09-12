@@ -58,7 +58,7 @@ function createFakeD1() {
 }
 
 describe('analytics endpoints', () => {
-  it('requires coc3 for the low-sensitivity admin endpoint', async () => {
+  it('requires a configured server-side secret for the admin endpoint', async () => {
     const unauthorized = await getAdminAnalytics({
       request: new Request('https://example.com/api/admin/analytics'),
       env: {}
@@ -67,9 +67,9 @@ describe('analytics endpoints', () => {
 
     const unconfigured = await getAdminAnalytics({
       request: new Request('https://example.com/api/admin/analytics', {
-        headers: { 'x-coc-admin-passcode': 'coc3' }
+        headers: { 'x-coc-admin-passcode': 'test-admin-secret-123' }
       }),
-      env: {}
+      env: { ADMIN_ANALYTICS_PASSCODE: 'test-admin-secret-123' }
     });
     expect(unconfigured.status).toBe(503);
   });
@@ -77,9 +77,9 @@ describe('analytics endpoints', () => {
   it('returns only aggregate admin metrics with the agreed passcode', async () => {
     const response = await getAdminAnalytics({
       request: new Request('https://example.com/api/admin/analytics', {
-        headers: { 'x-coc-admin-passcode': 'coc3' }
+        headers: { 'x-coc-admin-passcode': 'test-admin-secret-123' }
       }),
-      env: { ANALYTICS_DB: createFakeD1(), ANALYTICS_TIMEZONE: 'Asia/Shanghai' }
+      env: { ADMIN_ANALYTICS_PASSCODE: 'test-admin-secret-123', ANALYTICS_DB: createFakeD1(), ANALYTICS_TIMEZONE: 'Asia/Shanghai' }
     });
     const payload = await response.json();
 

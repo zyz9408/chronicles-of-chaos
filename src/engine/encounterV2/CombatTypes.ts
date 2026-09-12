@@ -145,6 +145,7 @@ export interface CombatRuntimeCombatant {
   revivedOnce: boolean;
   statuses: string[];
   artUsage: Record<string, number>;
+  effectUsage?: Record<string, { total: number; round: number; roundCount: number }>;
   itemUsage: Record<string, number>;
   itemQuantities: Record<string, number>;
   modifiers: {

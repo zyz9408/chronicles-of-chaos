@@ -133,6 +133,7 @@ test('settings, prompt registry, map, and visual manifests load only when opened
 
   await page.goto('/');
   expect(moduleRequests).toHaveLength(0);
+  await page.getByRole('button', { name: '关闭更新日志' }).click();
   await page.getByRole('button', { name: /设置$/ }).click();
   const loadingBox = await page.locator('.settings-modal-loading').boundingBox();
   expect(loadingBox).not.toBeNull();
@@ -202,7 +203,7 @@ test('desktop battle and map visuals stay stable and avoid repeated source reque
   await page.screenshot({ path: 'output/playwright/ui-batch8/desktop-map-1920x1080.png', fullPage: true });
 });
 
-test('mobile variants recover from one failed request without changing their slots', async ({ page }) => {
+test('mobile variants recover from an image outage on retry without changing their slots', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   let failWarOnce = true;
   let failMapOnce = true;
@@ -214,7 +215,7 @@ test('mobile variants recover from one failed request without changing their slo
       await route.abort();
       return;
     }
-    if (failMapOnce && /\/generated\/maps\/mobile\//.test(url)) {
+    if (/\/generated\/maps\/(?:mobile|display)\//.test(url) && !url.includes('retry=')) {
       failMapOnce = false;
       await route.abort();
       return;
@@ -249,6 +250,8 @@ test('mobile variants recover from one failed request without changing their slo
 
   await page.getByTestId('right-menu-map').click();
   const mapBase = page.getByTestId('map-historical-base-layer');
+  await expect.poll(() => mapBase.locator('img').evaluate(image => (image as HTMLImageElement).currentSrc)).toMatch(/\/maps\/mobile\//);
+  await expect.poll(() => failMapOnce).toBe(false);
   await expect(mapBase).toHaveAttribute('data-visual-state', 'error');
   const mapErrorBox = await mapBase.boundingBox();
   await mapBase.getByRole('button', { name: '重试载入' }).click();

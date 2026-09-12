@@ -1,7 +1,9 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { seedMainNarrativeApi } from './e2eStorage';
 
 async function startDebugGame(page: Page): Promise<void> {
-  await page.goto('/');
+  await seedMainNarrativeApi(page);
+  await page.addLocatorHandler(page.getByRole('button', { name: '关闭更新日志' }), async locator => { await locator.click(); });
   await page.getByRole('button', { name: '新的征程' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
@@ -32,7 +34,8 @@ async function expectModalKeyboardBoundary(page: Page, dialog: Locator, opener: 
 }
 
 test('start-screen settings traps focus, inerts the menu, closes on Escape, and restores its opener', async ({ page }) => {
-  await page.goto('/');
+  await seedMainNarrativeApi(page);
+  await page.addLocatorHandler(page.getByRole('button', { name: '关闭更新日志' }), async locator => { await locator.click(); });
   const opener = page.locator('.main-menu .menu-btn').filter({ hasText: '设置' });
   await opener.click();
 

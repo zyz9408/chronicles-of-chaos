@@ -57,6 +57,26 @@ function makeRecoverableState(recoveryPatch?: StatePatch): RuntimeState {
 }
 
 describe('StateWritebackRecoveryService', () => {
+  it('keeps post-turn vitals when repairing a sibling player field', async () => {
+    const pre = makeState();
+    const post = makeState(true);
+    pre.player.vitals = { hp: 50, maxHp: 100, stamina: 40, maxStamina: 100 };
+    post.player.vitals = { hp: 80, maxHp: 100, stamina: 25, maxStamina: 100 };
+    const trait = { id: 'trait_test', label: '谨慎', description: '仔细观察', source: 'custom' };
+    const command = { action: 'updatePlayerTraits', characterId: 'player', characterName: '刘备', traits: [trait], summary: '修复特质品级' };
+    const invalid: StatePatch = { type: 'luanshiCommand', payload: { command }, reason: '修复' };
+    post.stateWritebackRecovery = createStateWritebackRecoveryCapsule({
+      preTurnState: pre, postTurnState: post, frozenNarrativeText: post.turnLog[0].narrativeText,
+      initialPatches: [invalid], rejectedCandidates: [{ attempt: 1, patches: [invalid], writebackJson: '{}', diagnostics: [{ patchIndex: 0, errors: ['missing rarity'], warnings: [] }] }], quarantinedPatchIndexes: [0],
+    });
+    const client: LlmClient = { generate: async () => ({ provider: 'openai_compatible', model: 'test', content: JSON.stringify({ statePatches: [{ ...invalid, payload: { command: { ...command, traits: [{ ...trait, rarity: 'blue' }] } } }] }) }) };
+    const result = await prepareStateWritebackRecovery({ currentState: post, worldBook, apiConfig, llmClient: client });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.preview.state.player.vitals).toEqual(post.player.vitals);
+      expect(result.preview.state.player.traits?.[0].rarity).toBe('blue');
+    }
+  });
   it('prepares, previews and commits a bounded repair without changing the frozen turn', async () => {
     const state = makeRecoverableState();
     const client: LlmClient = { generate: async () => ({

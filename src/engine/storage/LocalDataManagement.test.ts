@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { idbGetAll, idbPut, resetLocalDatabaseForTests } from './IndexedDbStore';
+import { createAvgImageGenerationProfile, IndexedDbAvgImageGenerationProfileRepository } from '../avg/AvgImageGenerationProfiles';
 import {
   clearLocalData,
   clearPreferenceData,
@@ -32,6 +33,16 @@ class MemoryStorage {
 }
 
 describe('LocalDataManagement', () => {
+  it('clears image credentials and persisted checkpoints with all local data', async () => {
+    const repository = new IndexedDbAvgImageGenerationProfileRepository();
+    const profile = await repository.saveProfile({ ...createAvgImageGenerationProfile(), baseUrl: 'https://example.test', model: 'test' }, 'secret-image-api-key');
+    await idbPut('meta', { key: 'developerOverrideCheckpoint:deleted-save', value: { runtimeState: { secret: 'old story' } } });
+    await clearLocalData('allExceptApi', new MemoryStorage());
+    expect(await repository.getCredential(profile.id)).toBe('secret-image-api-key');
+    expect((await idbGetAll<{key: string}>('meta')).some(row => row.key.startsWith('developerOverrideCheckpoint:'))).toBe(false);
+    await clearLocalData('all', new MemoryStorage());
+    expect(await repository.getCredential(profile.id)).toBeUndefined();
+  });
   beforeEach(async () => {
     await resetLocalDatabaseForTests();
   });

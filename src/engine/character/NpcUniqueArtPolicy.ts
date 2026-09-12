@@ -317,7 +317,10 @@ function mergeExistingArt(existing: CharacterUniqueArt, incoming: CharacterUniqu
   const rarity = compareUniqueArtRarity(incoming.rarity, existing.rarity) >= 0
     ? normalizeUniqueArtRarity(incoming.rarity)
     : existing.rarity;
-  const mechanics = compileUniqueArtAbilityMechanics(existing)
+  const explicitUpdate = incoming.description !== existing.description || incoming.effectSummary !== existing.effectSummary;
+  const mechanics = (explicitUpdate && !existing.mechanics?.compiledFrom.startsWith('玩家手动确认模板:')
+    ? compileUniqueArtAbilityMechanics({ ...incoming, mechanics: undefined }) : undefined)
+    ?? compileUniqueArtAbilityMechanics(existing)
     ?? compileUniqueArtAbilityMechanics(incoming);
   const merged: CharacterUniqueArt = {
     ...cloneUniqueArt(existing),

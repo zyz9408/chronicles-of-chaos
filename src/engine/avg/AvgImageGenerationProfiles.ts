@@ -101,6 +101,13 @@ export function describeAvgImageCredential(value?: string): string {
 export class IndexedDbAvgImageGenerationProfileRepository {
   constructor(private readonly databaseName = AVG_IMAGE_PROFILE_DATABASE_NAME) {}
 
+  async clear(): Promise<void> {
+    await this.transact(['profiles', 'credentials', 'meta'], 'readwrite', async tx => {
+      await Promise.all(['profiles', 'credentials', 'meta'].map(name => req(tx.objectStore(name).clear())));
+    });
+    emitChanged();
+  }
+
   private async transact<T>(stores: string | string[], mode: IDBTransactionMode, operation: (tx: IDBTransaction) => Promise<T>): Promise<T> {
     const db = await openDatabase(this.databaseName);
     const tx = db.transaction(stores, mode);

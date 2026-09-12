@@ -35,6 +35,7 @@ export type StateWritebackRecoveryPreparationResult =
     };
 
 function clone<T>(value: T): T {
+  if (value === undefined) return value;
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
@@ -168,6 +169,21 @@ function diagnosticsFromPreparation(
   ));
 }
 
+function mergeRepairedFields(current: unknown, baseline: unknown, repaired: unknown): unknown {
+  if (canonicalStoredValue(baseline) === canonicalStoredValue(repaired)) return clone(current);
+  const record = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+  if (record(current) && record(baseline) && record(repaired)) {
+    const result = clone(current);
+    for (const key of new Set([...Object.keys(baseline), ...Object.keys(repaired)])) {
+      if (canonicalStoredValue(baseline[key]) === canonicalStoredValue(repaired[key])) continue;
+      if (!(key in repaired)) delete result[key];
+      else result[key] = mergeRepairedFields(current[key], baseline[key], repaired[key]);
+    }
+    return result;
+  }
+  return clone(repaired);
+}
+
 function buildProposedState(input: {
   currentState: RuntimeState;
   preTurnState: RuntimeState;
@@ -203,7 +219,7 @@ function buildProposedState(input: {
       if (repairedValue === undefined) {
         delete (proposed as unknown as Record<string, unknown>)[key];
       } else {
-        (proposed as unknown as Record<string, unknown>)[key] = clone(repairedValue);
+        (proposed as unknown as Record<string, unknown>)[key] = mergeRepairedFields(proposed[key], baselineValue, repairedValue);
       }
     }
   }

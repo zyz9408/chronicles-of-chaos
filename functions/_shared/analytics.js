@@ -1,6 +1,5 @@
 export const ONLINE_WINDOW_SECONDS = 120;
 export const DEFAULT_ANALYTICS_TIMEZONE = 'Asia/Shanghai';
-export const ADMIN_ANALYTICS_PASSCODE = 'coc3';
 
 const textEncoder = new TextEncoder();
 
@@ -85,8 +84,15 @@ export function readCloudflareRegion(request) {
   };
 }
 
-export function hasAdminPasscode(request) {
-  return request.headers.get('x-coc-admin-passcode') === ADMIN_ANALYTICS_PASSCODE;
+export async function hasAdminPasscode(request, env = {}) {
+  const secret = env.ADMIN_ANALYTICS_PASSCODE;
+  const supplied = request.headers.get('x-coc-admin-passcode') ?? '';
+  if (typeof secret !== 'string' || secret.length < 16 || !supplied || supplied.length > 1024) return false;
+  const [expected, actual] = await Promise.all([secret, supplied].map(async value =>
+    new Uint8Array(await crypto.subtle.digest('SHA-256', textEncoder.encode(value)))));
+  let difference = 0;
+  for (let i = 0; i < expected.length; i++) difference |= expected[i] ^ actual[i];
+  return difference === 0;
 }
 
 export function rows(result) {

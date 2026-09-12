@@ -9,6 +9,7 @@ import type {
   TroopLedgerEntry,
 } from '../types';
 import { CORE_PLAYER_ATTRIBUTE_KEYS } from '../character/progression';
+import { compileUniqueArtAbilityMechanics } from '../abilities/AbilityMechanics';
 import {
   getHoldingCapacityLimits,
   validateHoldingCapacityUpdate,
@@ -386,6 +387,9 @@ function applyUniqueArtDraft(
     upgradedAt: state.currentDate,
   };
   if (errors.length) return { ok: false, errors };
+  if (updated.description !== target.art.description || updated.effectSummary !== target.art.effectSummary) {
+    updated.mechanics = compileUniqueArtAbilityMechanics({ ...updated, mechanics: undefined });
+  }
   if (target.ownerKind === 'player') {
     return {
       ok: true,

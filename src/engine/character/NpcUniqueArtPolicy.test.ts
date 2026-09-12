@@ -135,6 +135,13 @@ describe('NpcUniqueArtPolicy', () => {
     ]);
   });
 
+  it('recompiles an explicit new healing amount on the same art', () => {
+    const existing = makeArt({ id: 'art_heal', description: '每次使用恢复10%生命', effectSummary: '每次使用恢复10%生命' });
+    const first = mergeStableNpcUniqueArts([existing], []);
+    const merged = mergeStableNpcUniqueArts(first, [{ ...existing, effectSummary: '每次使用恢复100%生命' }]);
+    expect(merged[0].mechanics?.rules[0].effects[0]).toMatchObject({ value: 100, percent: true });
+  });
+
   it('self-heals duplicate arts already persisted under drifted IDs', () => {
     const merged = mergeStableNpcUniqueArts([
       makeArt({

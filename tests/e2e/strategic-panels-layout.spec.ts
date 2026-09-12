@@ -456,6 +456,7 @@ test('strategic panels render compact faction, holding, and troop layouts', asyn
     await expect(mapPanel.getByTestId('map-focus-card')).toContainText('地图焦点');
     expect(await mapPanel.boundingBox()).toEqual(mapPanelBoxBeforeSelection);
   }
+  await mapPanel.getByRole('button', { name: '复位全国' }).click();
   await mapPanel.getByRole('button', { name: '放大地图' }).click();
   await expect(mapPanel.locator('.map-v2-zoom-level')).toHaveText('区域');
   await expectMapLabelsNotToOverlap(mapPanel);
@@ -546,15 +547,27 @@ test('panel visual load errors keep layout stable and retry in place', async ({ 
   const holdingPanel = page.getByTestId('holding-panel');
   await holdingPanel.getByRole('tab', { name: /控制领地/ }).click();
   const visualState = holdingPanel.getByTestId('holding-visual-state');
+  // Playwright scrolls the off-screen retry button into view. Compare layout
+  // coordinates independent of ancestor scrolling, not viewport coordinates.
+  const layoutBox = () => visualState.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    let x = rect.x;
+    let y = rect.y;
+    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+      x += parent.scrollLeft;
+      y += parent.scrollTop;
+    }
+    return { x, y, width: rect.width, height: rect.height };
+  });
   await expect(visualState).toHaveClass(/panel-visual-state--loading/);
-  const loadingBox = await visualState.boundingBox();
+  const loadingBox = await layoutBox();
   await expect(visualState).toHaveClass(/panel-visual-state--load-error/);
   await expect(visualState).toContainText('图像载入失败');
-  expect(await visualState.boundingBox()).toEqual(loadingBox);
+  expect(await layoutBox()).toEqual(loadingBox);
   await visualState.getByRole('button', { name: '重试载入' }).click();
   await expect(visualState).toHaveClass(/panel-visual-state--loading/);
   await expect(visualState).toHaveClass(/panel-visual-state--display-ready/);
-  expect(await visualState.boundingBox()).toEqual(loadingBox);
+  expect(await layoutBox()).toEqual(loadingBox);
   await expect(visualState.locator('.panel-visual-image--thumbnail')).toHaveCount(0);
   await expect(visualState.locator('.panel-visual-image--display.is-ready')).toBeVisible();
 });

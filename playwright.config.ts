@@ -10,6 +10,7 @@ const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROME_PATH
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30_000,
+  workers: 1,
   expect: {
     timeout: 5_000,
   },
@@ -24,7 +25,7 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   webServer: {
-    command: `npm run dev -- --mode e2e --host 127.0.0.1 --port ${playwrightPort} --strictPort`,
+    command: `node node_modules/vite/bin/vite.js --mode e2e --host 127.0.0.1 --port ${playwrightPort} --strictPort`,
     url: playwrightBaseUrl,
     reuseExistingServer: false,
     timeout: 120_000,
